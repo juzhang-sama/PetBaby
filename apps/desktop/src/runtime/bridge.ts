@@ -1,5 +1,5 @@
 import { invoke } from "@tauri-apps/api/core";
-import type { HitRegionPayload, ProbePreferences, WindowMode } from "./contracts";
+import type { HitRegionPayload, ProbePreferences } from "./contracts";
 import type { FullscreenSnapshot } from "./fullscreen";
 
 export interface HitRegionEvidence {
@@ -16,15 +16,5 @@ export function applyHitRegion(payload: HitRegionPayload): Promise<HitRegionEvid
 export const loadPreferences = (): Promise<ProbePreferences> => invoke("load_preferences");
 export const savePreferences = (value: ProbePreferences): Promise<void> => invoke("save_preferences", { value });
 export const beginDrag = (): Promise<void> => invoke("begin_drag");
-
-export interface WindowModeEvidence {
-  requested: WindowMode;
-  applied: boolean;
-  strategy: string;
-  parentHwnd: number | null;
-}
-
-export const setWindowMode = (mode: WindowMode): Promise<WindowModeEvidence> =>
-  invoke("set_window_mode", { mode });
 
 export const probeFullscreen = (): Promise<FullscreenSnapshot> => invoke("probe_fullscreen");

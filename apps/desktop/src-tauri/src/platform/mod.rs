@@ -1,18 +1,9 @@
-use crate::windowing::{RegionSpan, WindowMode};
+use crate::windowing::RegionSpan;
 
 #[derive(Debug, thiserror::Error)]
 pub enum PlatformError {
     #[error("Windows API {operation} failed with code {code}")]
     WindowsApi { operation: &'static str, code: u32 },
-}
-
-#[derive(Debug, serde::Serialize)]
-#[serde(rename_all = "camelCase")]
-pub struct WindowModeEvidence {
-    pub requested: WindowMode,
-    pub applied: bool,
-    pub strategy: &'static str,
-    pub parent_hwnd: Option<isize>,
 }
 
 #[derive(Debug, Clone, Copy, serde::Serialize)]
@@ -36,11 +27,6 @@ pub struct FullscreenSnapshot {
 pub trait PlatformAdapter: Send + Sync {
     fn configure_pet_window(&self, hwnd: isize) -> Result<(), PlatformError>;
     fn apply_hit_region(&self, hwnd: isize, spans: &[RegionSpan]) -> Result<(), PlatformError>;
-    fn set_window_mode(
-        &self,
-        hwnd: isize,
-        mode: WindowMode,
-    ) -> Result<WindowModeEvidence, PlatformError>;
     fn probe_fullscreen(&self, own_pid: u32) -> Result<FullscreenSnapshot, PlatformError>;
 }
 

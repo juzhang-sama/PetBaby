@@ -66,19 +66,6 @@ fn begin_drag(window: tauri::WebviewWindow) -> Result<(), String> {
 }
 
 #[tauri::command]
-fn set_window_mode(
-    window: tauri::WebviewWindow,
-    state: tauri::State<'_, AppState>,
-    mode: windowing::WindowMode,
-) -> Result<platform::WindowModeEvidence, String> {
-    let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as isize;
-    state
-        .platform
-        .set_window_mode(hwnd, mode)
-        .map_err(|error| error.to_string())
-}
-
-#[tauri::command]
 fn probe_fullscreen(
     state: tauri::State<'_, AppState>,
 ) -> Result<platform::FullscreenSnapshot, String> {
@@ -94,11 +81,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         tray::TrayIconBuilder,
     };
 
-    let companion = MenuItem::with_id(app, "companion", "陪伴模式", true, None::<&str>)?;
-    let desktop = MenuItem::with_id(app, "desktop", "桌面模式（实验性）", true, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "显示或隐藏", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&companion, &desktop, &toggle, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &quit])?;
     let mut builder = TrayIconBuilder::new().menu(&menu);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -109,25 +94,6 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 return;
             };
             match event.id().as_ref() {
-                "companion" | "desktop" => {
-                    let mode = if event.id().as_ref() == "companion" {
-                        windowing::WindowMode::Companion
-                    } else {
-                        windowing::WindowMode::Desktop
-                    };
-                    if let (Ok(hwnd), state) = (window.hwnd(), app.state::<AppState>()) {
-                        match state.platform.set_window_mode(hwnd.0 as isize, mode) {
-                            Ok(evidence) => println!(
-                                "[desktop-pet] mode applied: requested={:?} strategy={} parent={:?}",
-                                evidence.requested, evidence.strategy, evidence.parent_hwnd
-                            ),
-                            Err(error) => println!(
-                                "[desktop-pet] set_window_mode failed for {:?}: {error}",
-                                mode
-                            ),
-                        }
-                    }
-                }
                 "toggle" => {
                     if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
@@ -155,7 +121,6 @@ pub fn run() {
             load_preferences,
             save_preferences,
             begin_drag,
-            set_window_mode,
             probe_fullscreen
         ])
         .setup(|app| {

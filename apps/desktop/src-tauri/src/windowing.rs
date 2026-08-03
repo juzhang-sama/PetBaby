@@ -2,9 +2,9 @@ use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
+#[expect(dead_code)] // reserved for future window-mode extension
 pub enum WindowMode {
     Companion,
-    Desktop,
 }
 
 #[cfg(test)]
@@ -14,6 +14,11 @@ mod mode_tests {
     #[test]
     fn rejects_unknown_window_mode() {
         assert!(serde_json::from_str::<WindowMode>("\"floating\"").is_err());
+    }
+
+    #[test]
+    fn rejects_desktop_mode() {
+        assert!(serde_json::from_str::<WindowMode>("\"desktop\"").is_err());
     }
 }
 
