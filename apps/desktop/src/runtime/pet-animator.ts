@@ -41,6 +41,7 @@ export class PetAnimator {
   private nextBlinkAt = 0;
   private blinkingUntil = 0;
   private bounceUntil = 0;
+  private bounceActive = false;
 
   constructor(private readonly driver: AnimatorDriver) {}
 
@@ -61,16 +62,17 @@ export class PetAnimator {
 
   setIntent(intent: BehaviorIntent): void {
     if (intent.type === "react-happy") {
-      this.bounceUntil = this.lastTick + BOUNCE_MS;
+      this.startBounce();
       this.driver.setAccentVisible(true);
     } else if (intent.type === "react-curious") {
       this.driver.shift(0, -6);
       this.driver.setAccentVisible(true);
+      this.scheduleShiftReset(400);
     } else if (intent.type === "carried") {
       this.setMode("carried");
     } else if (intent.type === "landed") {
       this.setMode("idle");
-      this.bounceUntil = this.lastTick + BOUNCE_MS;
+      this.startBounce();
     } else if (intent.type === "sleep") {
       this.setMode("idle");
       this.driver.setEyesOpen(false);
@@ -78,6 +80,23 @@ export class PetAnimator {
       this.driver.setEyesOpen(true);
     }
   }
+
+  private startBounce(): void {
+    this.bounceUntil = this.lastTick + BOUNCE_MS;
+    this.bounceActive = true;
+  }
+
+  private resetShift(): void {
+    this.driver.shift(0, 0);
+    this.driver.setAccentVisible(false);
+  }
+
+  private scheduleShiftReset(delayMs: number): void {
+    // best effort: reset on the next tick after the delay
+    this.shiftResetAt = this.lastTick + delayMs;
+  }
+
+  private shiftResetAt = 0;
 
   forceBlink(): void {
     this.blinkingUntil = this.lastTick + BLINK_CLOSED_MS;
@@ -106,11 +125,21 @@ export class PetAnimator {
     }
 
     // bounce feedback
-    if (now < this.bounceUntil && this.mode !== "carried") {
-      const progress = 1 - (this.bounceUntil - now) / BOUNCE_MS;
-      const squash = 1 + Math.sin(progress * Math.PI) * 0.06;
-      this.driver.scaleSquash(squash);
-      this.driver.shift(0, -Math.sin(progress * Math.PI) * 10);
+    if (this.bounceActive && this.mode !== "carried") {
+      if (now < this.bounceUntil) {
+        const progress = 1 - (this.bounceUntil - now) / BOUNCE_MS;
+        const squash = 1 + Math.sin(progress * Math.PI) * 0.06;
+        this.driver.scaleSquash(squash);
+        this.driver.shift(0, -Math.sin(progress * Math.PI) * 10);
+      } else {
+        this.bounceActive = false;
+        this.resetShift();
+      }
+    }
+
+    if (this.shiftResetAt > 0 && now >= this.shiftResetAt) {
+      this.shiftResetAt = 0;
+      this.resetShift();
     }
   }
 }

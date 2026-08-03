@@ -91,6 +91,20 @@ describe("PetAnimator", () => {
     animator.stop();
   });
 
+  it("resets the bounce offset after the bounce finishes", () => {
+    const driver = fakeDriver();
+    const animator = new PetAnimator(driver);
+    animator.start();
+    animator.setIntent({ type: "react-happy" });
+    animator.tick(0);
+    animator.tick(400);
+    expect(driver.calls).toContain("shift");
+    const shifts = driver.calls.filter((c) => c === "shift").length;
+    animator.tick(700);
+    expect(driver.calls.filter((c) => c === "shift").length).toBe(shifts + 1);
+    animator.stop();
+  });
+
   it("plays a bounce for react-happy intent", () => {
     const driver = fakeDriver();
     const animator = new PetAnimator(driver);

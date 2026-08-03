@@ -104,7 +104,6 @@ export class PetStage {
     }, { passive: false });
     this.app.canvas.addEventListener("dblclick", () => {
       this.dispatchEvent({ type: "double-clicked" });
-      void this.setFlipped(!this.preferences.flipped);
     });
     window.addEventListener("resize", () => void this.layoutAndApplyRegion());
   }
