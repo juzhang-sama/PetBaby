@@ -248,21 +248,33 @@ export class PetStage {
       width: this.preferences.width,
       height: this.preferences.height,
     };
-    const intersects = monitors.some((monitor) => {
-      const area = { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height };
-      return saved.x < area.x + area.width && saved.x + saved.width > area.x
-        && saved.y < area.y + area.height && saved.y + saved.height > area.y;
-    });
+    const defaultSize = { width: 420, height: 520 };
+
     let restored = saved;
-    if (!intersects) {
+    let anchored = false;
+    for (const monitor of monitors) {
+      const area = { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height };
+      const overlaps = saved.x < area.x + area.width && saved.x + saved.width > area.x
+        && saved.y < area.y + area.height && saved.y + saved.height > area.y;
+      if (!overlaps) continue;
+      // size larger than 95% of a monitor is treated as a leftover snap state
+      if (saved.width > area.width * 0.95 || saved.height > area.height * 0.95) {
+        restored = { ...clampRectToWorkArea(saved, area, 64), ...defaultSize };
+      } else {
+        restored = clampRectToWorkArea(saved, area, 64);
+      }
+      anchored = true;
+      break;
+    }
+    if (!anchored) {
       const monitor = await primaryMonitor();
       if (monitor) {
-        restored = clampRectToWorkArea(saved, {
-          x: monitor.position.x,
-          y: monitor.position.y,
-          width: monitor.size.width,
-          height: monitor.size.height,
-        });
+        const area = { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height };
+        if (saved.width > area.width * 0.95 || saved.height > area.height * 0.95) {
+          restored = { ...clampRectToWorkArea(saved, area, 64), ...defaultSize };
+        } else {
+          restored = clampRectToWorkArea(saved, area, 64);
+        }
       }
     }
     Object.assign(this.preferences, restored);

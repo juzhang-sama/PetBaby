@@ -24,3 +24,11 @@ it("keeps at least 64 pixels visible after a display is removed", () => {
     64,
   )).toEqual({ x: 1856, y: 900, width: 420, height: 520 });
 });
+
+it("pulls a near-fullscreen leftover back inside the work area", () => {
+  expect(clampRectToWorkArea(
+    { x: 702, y: 509, width: 1936, height: 1096 },
+    { x: 0, y: 0, width: 1920, height: 1080 },
+    64,
+  )).toEqual({ x: 0, y: -16, width: 1936, height: 1096 });
+});
