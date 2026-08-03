@@ -88,6 +88,20 @@ fn parse_manifest(
 }
 
 #[tauri::command]
+fn asset_import(
+    app: tauri::AppHandle,
+    pet_id: String,
+    source_path: String,
+) -> Result<runtime_assets::importer::ImportedAsset, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let dest = data_dir.join("pets").join(&pet_id).join("assets");
+    runtime_assets::importer::import_png_source(&pet_id, std::path::Path::new(&source_path), &dest)
+}
+
+#[tauri::command]
 fn pet_list(state: tauri::State<'_, SharedPetRepository>) -> Result<Vec<PetSummary>, String> {
     let repo = state.lock().map_err(|_| "pets lock poisoned")?;
     repo.list()
@@ -205,6 +219,7 @@ pub fn run() {
             begin_drag,
             probe_fullscreen,
             parse_manifest,
+            asset_import,
             pet_list,
             pet_create,
             pet_get,
