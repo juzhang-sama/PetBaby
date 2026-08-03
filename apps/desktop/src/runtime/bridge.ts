@@ -18,3 +18,11 @@ export const savePreferences = (value: ProbePreferences): Promise<void> => invok
 export const beginDrag = (): Promise<void> => invoke("begin_drag");
 
 export const probeFullscreen = (): Promise<FullscreenSnapshot> => invoke("probe_fullscreen");
+
+export interface AssetHealth {
+  petId: string;
+  status: "healthy" | "corrupt" | "missing";
+  manifestPath: string;
+}
+
+export const assetScan = (): Promise<AssetHealth[]> => invoke("asset_scan");

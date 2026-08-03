@@ -1,6 +1,6 @@
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { availableMonitors, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
-import { Application, Assets, Sprite } from "pixi.js";
+import { Application, Assets, Graphics, Sprite, Text } from "pixi.js";
 import { applyHitRegion, loadPreferences, savePreferences } from "./bridge";
 import type { ProbePreferences } from "./contracts";
 import { clampRectToWorkArea, computeContainRect } from "./geometry";
@@ -23,7 +23,7 @@ export class PetStage {
     renderOnce: () => this.app.render(),
   });
 
-  async mount(root: HTMLElement): Promise<void> {
+  async mount(root: HTMLElement, degraded?: { status: string }): Promise<void> {
     this.root = root;
     this.preferences = await loadPreferences();
     const petWindow = getCurrentWindow();
@@ -37,6 +37,11 @@ export class PetStage {
       preference: "webgl",
     });
     root.replaceChildren(this.app.canvas);
+    if (degraded) {
+      this.renderDegradedPlaceholder(degraded.status);
+      this.scheduler.setTier("still");
+      return;
+    }
     const texture = await Assets.load("/test-assets/pet-probe.png");
     this.source = texture.source.resource as CanvasImageSource;
     this.sprite = new Sprite(texture);
@@ -86,6 +91,28 @@ export class PetStage {
   private dragging = false;
   private dragStartMouse: { x: number; y: number } | null = null;
   private dragStartWindow: { x: number; y: number } | null = null;
+
+  private renderDegradedPlaceholder(status: string): void {
+    const width = this.root.clientWidth;
+    const height = this.root.clientHeight;
+    const box = new Graphics()
+      .roundRect(width / 2 - 90, height / 2 - 70, 180, 140, 24)
+      .fill({ color: 0x88909a, alpha: 0.9 });
+    const label = new Text({
+      text: status === "missing" ? "资产缺失" : "资产损坏",
+      style: { fill: 0xffffff, fontSize: 20, fontWeight: "600" },
+    });
+    label.anchor.set(0.5, 0.5);
+    label.position.set(width / 2, height / 2);
+    const hint = new Text({
+      text: "请在设置中重新导入",
+      style: { fill: 0xe8e8e8, fontSize: 12 },
+    });
+    hint.anchor.set(0.5, 0.5);
+    hint.position.set(width / 2, height / 2 + 34);
+    this.app.stage.addChild(box, label, hint);
+    this.app.render();
+  }
 
   private async onPointerDown(event: PointerEvent): Promise<void> {
     if (event.button !== 0) return;

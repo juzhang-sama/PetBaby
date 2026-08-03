@@ -1,12 +1,14 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
 import { PetStage } from "./runtime/pet-stage";
-import { probeFullscreen } from "./runtime/bridge";
+import { assetScan, probeFullscreen } from "./runtime/bridge";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
 
-await new PetStage().mount(root);
+const health = await assetScan();
+const unhealthy = health.find((entry) => entry.status !== "healthy");
+await new PetStage().mount(root, unhealthy ? { status: unhealthy.status } : undefined);
 
 let hiddenForFullscreen = false;
 window.setInterval(async () => {

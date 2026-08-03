@@ -102,6 +102,15 @@ fn asset_import(
 }
 
 #[tauri::command]
+fn asset_scan(app: tauri::AppHandle) -> Result<Vec<runtime_assets::loader::AssetHealth>, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    Ok(runtime_assets::loader::scan_assets(&data_dir.join("pets")))
+}
+
+#[tauri::command]
 fn pet_list(state: tauri::State<'_, SharedPetRepository>) -> Result<Vec<PetSummary>, String> {
     let repo = state.lock().map_err(|_| "pets lock poisoned")?;
     repo.list()
@@ -224,6 +233,7 @@ pub fn run() {
             probe_fullscreen,
             parse_manifest,
             asset_import,
+            asset_scan,
             pet_list,
             pet_create,
             pet_get,

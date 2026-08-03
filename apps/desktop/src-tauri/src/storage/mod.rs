@@ -1,4 +1,4 @@
-﻿pub mod migrate;
+pub mod migrate;
 
 use rusqlite::Connection;
 use std::path::Path;
@@ -10,7 +10,24 @@ pub struct Storage {
 impl Storage {
     pub fn open(dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
-        let db = Connection::open(dir.join("desktop-pet.db")).map_err(|error| error.to_string())?;
+        let db_path = dir.join("desktop-pet.db");
+        match Self::open_connection(&db_path) {
+            Ok(storage) => Ok(storage),
+            Err(first_error) => {
+                // corrupt database: back it up and rebuild from migrations
+                let backup = dir.join(format!("desktop-pet.db.corrupt-{}", std::process::id()));
+                let _ = std::fs::rename(&db_path, &backup);
+                let _ = std::fs::remove_file(dir.join("desktop-pet.db-shm"));
+                let _ = std::fs::remove_file(dir.join("desktop-pet.db-wal"));
+                Self::open_connection(&db_path).map_err(|error| {
+                    format!("database corrupt and rebuild failed: {first_error}; then {error}")
+                })
+            }
+        }
+    }
+
+    fn open_connection(db_path: &Path) -> Result<Self, String> {
+        let db = Connection::open(db_path).map_err(|error| error.to_string())?;
         db.pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| error.to_string())?;
         db.pragma_update(None, "foreign_keys", "ON")

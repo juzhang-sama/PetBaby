@@ -31,7 +31,11 @@ pub fn load(path: &Path) -> io::Result<ProbePreferences> {
     if !path.exists() {
         return Ok(ProbePreferences::default());
     }
-    serde_json::from_slice(&fs::read(path)?).map_err(io::Error::other)
+    match serde_json::from_slice(&fs::read(path)?) {
+        Ok(value) => Ok(value),
+        // corrupt preferences fall back to defaults instead of blocking startup
+        Err(_) => Ok(ProbePreferences::default()),
+    }
 }
 
 pub fn save(path: &Path, value: &ProbePreferences) -> io::Result<()> {
@@ -61,6 +65,16 @@ mod tests {
         };
         save(&path, &value).unwrap();
         assert_eq!(load(&path).unwrap(), value);
+        let _ = fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn corrupt_preferences_fall_back_to_defaults() {
+        let root = std::env::temp_dir().join(format!("desktop-pet-pref-{}", std::process::id()));
+        let path = root.join("preferences.json");
+        fs::create_dir_all(&root).unwrap();
+        fs::write(&path, b"{ this is not valid json !").unwrap();
+        assert_eq!(load(&path).unwrap(), ProbePreferences::default());
         let _ = fs::remove_dir_all(root);
     }
 }
