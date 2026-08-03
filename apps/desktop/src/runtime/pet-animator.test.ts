@@ -76,6 +76,21 @@ describe("PetAnimator", () => {
     animator.stop();
   });
 
+  it("resumes breathing after landing", () => {
+    const driver = fakeDriver();
+    const animator = new PetAnimator(driver);
+    animator.start();
+    animator.setIntent({ type: "carried" });
+    animator.tick(1_000);
+    const breathCallsCarried = driver.calls.filter((c) => c === "breath").length;
+    animator.setIntent({ type: "landed" });
+    animator.tick(2_000);
+    animator.tick(2_500);
+    const breathCallsAfter = driver.calls.filter((c) => c === "breath").length;
+    expect(breathCallsAfter).toBeGreaterThan(breathCallsCarried);
+    animator.stop();
+  });
+
   it("plays a bounce for react-happy intent", () => {
     const driver = fakeDriver();
     const animator = new PetAnimator(driver);
