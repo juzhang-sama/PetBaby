@@ -15,6 +15,9 @@ STYLE_CONSTRAINTS = [
     "no text, no watermark, no extra objects",
     "high fidelity to the reference: keep the exact fur/coat colors, markings, "
     "ear shape, eye color and face proportions so the owner can recognise the pet",
+    "faithful face details: keep the exact eye shape, eye colour and highlights, "
+    "nose shape, whiskers, mouth and any face markings; the pet's expression should "
+    "be calm and natural, as in the reference photo",
 ]
 
 LOCKED_TRAIT_LABELS = {

@@ -75,13 +75,17 @@ def remove_background_rembg(image: Image.Image) -> Image.Image:
 
 
 def remove_background(image: Image.Image, method: str = "auto") -> Image.Image:
-    """Remove the background. auto: chroma-key when uniform, else rembg."""
+    """Remove the background. auto: rembg (semantic) first, chroma-key fallback."""
     if method == "chroma":
         return remove_background_chroma(image)
     if method == "rembg":
         return remove_background_rembg(image)
     if method != "auto":
         raise BackgroundRemovalError(f"unknown method: {method}")
-    if is_uniform_background(image):
-        return remove_background_chroma(image)
-    return remove_background_rembg(image)
+    try:
+        return remove_background_rembg(image)
+    except Exception:
+        # rembg unavailable or failed: fall back to chroma-key
+        if is_uniform_background(image):
+            return remove_background_chroma(image)
+        raise
