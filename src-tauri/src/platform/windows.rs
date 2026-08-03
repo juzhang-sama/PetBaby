@@ -8,8 +8,8 @@ use windows_sys::Win32::{
     UI::WindowsAndMessaging::{
         EnumWindows, FindWindowExW, FindWindowW, GetWindowLongPtrW, GetWindowRect,
         SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
-        HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-        WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        HWND_TOPMOST, SMTO_NORMAL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     },
 };
 
@@ -140,7 +140,11 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                         0,
                         0,
                         0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        SWP_NOMOVE
+                            | SWP_NOSIZE
+                            | SWP_NOACTIVATE
+                            | SWP_FRAMECHANGED
+                            | SWP_SHOWWINDOW,
                     ) == 0
                     {
                         return Err(last_error("SetWindowPos"));
@@ -189,7 +193,7 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                         rect.top,
                         rect.right - rect.left,
                         rect.bottom - rect.top,
-                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
                     ) == 0
                     {
                         return Err(last_error("SetWindowPos"));
