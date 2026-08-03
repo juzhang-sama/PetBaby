@@ -10,9 +10,10 @@ use windows_sys::Win32::{
     UI::{
         Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
         WindowsAndMessaging::{
-            GetClassNameW, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
-            GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-            SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+            GetClassNameW, GetWindowLongPtrW, IsWindowVisible, SetWindowLongPtrW, SetWindowPos,
+            ShowWindow, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
+            SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+            WS_EX_TOPMOST,
         },
     },
 };
