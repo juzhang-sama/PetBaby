@@ -9,3 +9,7 @@ npm install
 npm test
 npm run tauri dev
 ```
+
+## M0 状态
+
+M0 的当前结论见 [M0技术结论](docs/验证记录/M0技术结论.md)。该文档区分已通过、实验性、未通过和未测试能力；README 不单独重复可能过期的兼容性结论。
