@@ -7,9 +7,9 @@ use windows_sys::Win32::{
     Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
     UI::WindowsAndMessaging::{
         EnumWindows, FindWindowExW, FindWindowW, GetWindowLongPtrW, GetWindowRect,
-        SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOP,
-        HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
-        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
+        HWND_NOTOPMOST, HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
+        SWP_SHOWWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     },
 };
 
@@ -162,7 +162,7 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                     }
                     if SetWindowPos(
                         hwnd as *mut c_void,
-                        HWND_TOP,
+                        HWND_NOTOPMOST,
                         rect.left,
                         rect.top,
                         rect.right - rect.left,
@@ -176,7 +176,7 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                 Ok(WindowModeEvidence {
                     requested: mode,
                     applied: true,
-                    strategy: "workerw-parent",
+                    strategy: "workerw-parent-notopmost",
                     parent_hwnd: Some(workerw),
                 })
             }
