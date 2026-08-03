@@ -7,9 +7,9 @@ use windows_sys::Win32::{
     Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
     UI::WindowsAndMessaging::{
         EnumWindows, FindWindowExW, FindWindowW, GetWindowLongPtrW, GetWindowRect,
-        SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE,
-        HWND_NOTOPMOST, HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_SHOWWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
+        HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
     },
 };
 
@@ -127,6 +127,11 @@ impl PlatformAdapter for WindowsPlatformAdapter {
         match mode {
             WindowMode::Companion => {
                 unsafe {
+                    let style = GetWindowLongPtrW(hwnd as HWND, GWL_STYLE);
+                    let exstyle = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
+                    if style != 0 {
+                        SetWindowLongPtrW(hwnd as HWND, GWL_STYLE, style & !(WS_CHILD as isize));
+                    }
                     let _ = SetParent(hwnd as *mut c_void, null_mut());
                     if SetWindowPos(
                         hwnd as *mut c_void,
@@ -139,6 +144,13 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                     ) == 0
                     {
                         return Err(last_error("SetWindowPos"));
+                    }
+                    if exstyle != 0 {
+                        SetWindowLongPtrW(
+                            hwnd as HWND,
+                            GWL_EXSTYLE,
+                            exstyle | WS_EX_TOPMOST as isize,
+                        );
                     }
                 }
                 Ok(WindowModeEvidence {
@@ -155,6 +167,16 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                     if GetWindowRect(hwnd as HWND, &mut rect) == 0 {
                         return Err(last_error("GetWindowRect"));
                     }
+                    let style = GetWindowLongPtrW(hwnd as HWND, GWL_STYLE);
+                    let exstyle = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
+                    SetWindowLongPtrW(hwnd as HWND, GWL_STYLE, style | WS_CHILD as isize);
+                    if exstyle != 0 {
+                        SetWindowLongPtrW(
+                            hwnd as HWND,
+                            GWL_EXSTYLE,
+                            exstyle & !(WS_EX_TOPMOST as isize),
+                        );
+                    }
                     SetLastError(0);
                     let previous = SetParent(hwnd as *mut c_void, workerw as *mut c_void);
                     if previous.is_null() && GetLastError() != 0 {
@@ -162,7 +184,7 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                     }
                     if SetWindowPos(
                         hwnd as *mut c_void,
-                        HWND_NOTOPMOST,
+                        null_mut(),
                         rect.left,
                         rect.top,
                         rect.right - rect.left,
@@ -176,7 +198,7 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                 Ok(WindowModeEvidence {
                     requested: mode,
                     applied: true,
-                    strategy: "workerw-parent-notopmost",
+                    strategy: "workerw-child",
                     parent_hwnd: Some(workerw),
                 })
             }
