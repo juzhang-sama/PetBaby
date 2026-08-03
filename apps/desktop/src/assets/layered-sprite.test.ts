@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { computeLayerLayout, flipScaleX } from "./layered-sprite";
+import { computeLayerLayout } from "./layered-sprite";
 
 describe("computeLayerLayout", () => {
   it("scales all layers uniformly to the viewport", () => {
@@ -20,8 +20,11 @@ describe("computeLayerLayout", () => {
     expect(layout.y + layout.height).toBeLessThanOrEqual(520 + 0.001);
   });
 
-  it("mirrors the x scale when flipped", () => {
-    expect(flipScaleX(0.82, false)).toBe(0.82);
-    expect(flipScaleX(0.82, true)).toBe(-0.82);
+  it("centers the asset horizontally", () => {
+    const layout = computeLayerLayout(
+      { width: 512, height: 512 },
+      { width: 420, height: 520 },
+    );
+    expect(layout.x).toBe(0);
   });
 });

@@ -18,6 +18,13 @@ export interface LayerLayout extends Size {
   scale: number;
 }
 
+export interface BodyBounds {
+  x: number;
+  y: number;
+  width: number;
+  height: number;
+}
+
 export function computeLayerLayout(source: Size, viewport: Size): LayerLayout {
   if (source.width <= 0 || source.height <= 0 || viewport.width <= 0 || viewport.height <= 0) {
     throw new RangeError("sizes must be positive");
@@ -34,10 +41,6 @@ export function computeLayerLayout(source: Size, viewport: Size): LayerLayout {
   };
 }
 
-export function flipScaleX(scale: number, flipped: boolean): number {
-  return flipped ? -Math.abs(scale) : Math.abs(scale);
-}
-
 export class LayeredSprite {
   private readonly container = new Container();
   private body!: Sprite;
@@ -45,8 +48,11 @@ export class LayeredSprite {
   private eyeClosed!: Sprite;
   private accent: Sprite | undefined;
   private baseScale = 1;
+  private userScale = 1;
+  private flipped = false;
   private breathPhase = 0;
   private carried = false;
+  private layout!: LayerLayout;
 
   get stageObject(): Container {
     return this.container;
@@ -59,11 +65,11 @@ export class LayeredSprite {
       eyeClosed: await Assets.load(this.assets.eyeClosedUrl),
       accent: this.assets.accentUrl ? await Assets.load(this.assets.accentUrl) : undefined,
     };
-    const layout = computeLayerLayout(
+    this.layout = computeLayerLayout(
       { width: textures.body.width, height: textures.body.height },
       viewport,
     );
-    this.baseScale = layout.scale;
+    this.baseScale = this.layout.scale;
 
     this.body = new Sprite(textures.body);
     this.eyeOpen = new Sprite(textures.eyeOpen);
@@ -75,9 +81,9 @@ export class LayeredSprite {
 
     for (const layer of [this.body, this.eyeOpen, this.eyeClosed, this.accent]) {
       if (!layer) continue;
-      layer.anchor.set(0, 0);
-      layer.position.set(layout.x, layout.y);
-      layer.scale.set(layout.scale);
+      layer.anchor.set(0.5, 0);
+      layer.position.set(this.layout.x + this.layout.width / 2, this.layout.y);
+      layer.scale.set(this.layout.scale);
     }
     this.container.addChild(this.body, this.eyeOpen, this.eyeClosed);
     if (this.accent) this.container.addChild(this.accent);
@@ -95,26 +101,32 @@ export class LayeredSprite {
   setBreathPhase(phase: number): void {
     this.breathPhase = phase;
     const breathe = 1 + Math.sin(phase * Math.PI * 2) * 0.02;
-    const scale = this.baseScale * breathe;
     const carriedScale = this.carried ? 0.94 : 1;
+    const scale = this.baseScale * breathe * carriedScale;
     for (const layer of [this.body, this.eyeOpen, this.eyeClosed, this.accent]) {
       if (!layer) continue;
-      layer.scale.set(flipScaleX(scale * carriedScale, this.container.scale.x < 0), scale * carriedScale);
+      const sx = this.flipped ? -scale : scale;
+      layer.scale.set(sx, scale);
     }
   }
 
   setFlip(flipped: boolean): void {
-    this.container.scale.x = flipped ? -1 : 1;
+    this.flipped = flipped;
   }
 
   setUserScale(scale: number): void {
-    const current = this.container.scale.x < 0 ? -1 : 1;
-    this.container.scale.set(current * scale, scale);
+    this.userScale = scale;
+    this.container.scale.set(scale, scale);
   }
 
   setSquash(factor: number): void {
-    this.container.scale.y = this.baseScale * factor;
-    this.container.scale.x = (this.container.scale.x < 0 ? -1 : 1) * this.baseScale / factor;
+    const breathe = 1 + Math.sin(this.breathPhase * Math.PI * 2) * 0.02;
+    const base = this.baseScale * breathe * (this.carried ? 0.94 : 1);
+    for (const layer of [this.body, this.eyeOpen, this.eyeClosed, this.accent]) {
+      if (!layer) continue;
+      const sx = this.flipped ? -(base / factor) : base / factor;
+      layer.scale.set(sx, base * factor);
+    }
   }
 
   setShift(dx: number, dy: number): void {
@@ -123,11 +135,25 @@ export class LayeredSprite {
 
   setCarried(carried: boolean): void {
     this.carried = carried;
-    const lift = carried ? 14 : 0;
-    this.container.y = carried ? -lift : 0;
   }
 
   setAccentVisible(visible: boolean): void {
     if (this.accent) this.accent.visible = visible;
+  }
+
+  /** Current visual bounds of the body layer in viewport coordinates. */
+  getBodyBounds(): BodyBounds {
+    const body = this.body;
+    const cs = this.container.scale;
+    const width = body.width * Math.abs(body.scale.x) * Math.abs(cs.x);
+    const height = body.height * Math.abs(body.scale.y) * Math.abs(cs.y);
+    const centerX = (body.x + this.container.position.x) * cs.x;
+    const topY = (body.y + this.container.position.y) * cs.y;
+    return {
+      x: centerX - width / 2,
+      y: topY,
+      width,
+      height,
+    };
   }
 }

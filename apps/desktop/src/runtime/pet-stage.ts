@@ -110,12 +110,6 @@ export class PetStage {
   }
 
   private async layoutAndApplyRegion(): Promise<void> {
-    const bodyTexture = await Assets.load("/test-assets/layered/body.png");
-    const layout = computeContainRect(
-      { width: bodyTexture.width, height: bodyTexture.height },
-      { width: this.root.clientWidth, height: this.root.clientHeight },
-    );
-    this.baseScale = layout.scale;
     this.layered.setFlip(this.preferences.flipped);
     this.layered.setUserScale(this.preferences.scale);
     this.app.render();
@@ -196,15 +190,11 @@ export class PetStage {
     canvas.height = this.root.clientHeight;
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("2D canvas is unavailable for hit-mask extraction");
-    const bodyTexture = await Assets.load("/test-assets/layered/body.png");
-    const width = bodyTexture.width * this.baseScale * this.preferences.scale;
-    const height = bodyTexture.height * this.baseScale * this.preferences.scale;
-    const x = (canvas.width - width) / 2;
-    const y = canvas.height - height;
+    const bounds = this.layered.getBodyBounds();
     context.save();
     context.translate(this.preferences.flipped ? canvas.width : 0, 0);
     context.scale(this.preferences.flipped ? -1 : 1, 1);
-    context.drawImage(this.bodySource, x, y, width, height);
+    context.drawImage(this.bodySource, bounds.x, bounds.y, bounds.width, bounds.height);
     context.restore();
     const image = context.getImageData(0, 0, canvas.width, canvas.height);
     await applyHitRegion({
