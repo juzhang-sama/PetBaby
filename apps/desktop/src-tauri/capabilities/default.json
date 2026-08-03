@@ -2,7 +2,7 @@
   "$schema": "../gen/schemas/desktop-schema.json",
   "identifier": "default",
   "description": "M1 pet window permissions",
-  "windows": ["pet", "settings"],
+  "windows": ["pet", "settings", "calibration"],
   "permissions": [
     "core:default",
     "core:window:default",

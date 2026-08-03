@@ -177,6 +177,26 @@ fn pet_state_save(
     store.save(&format!("pet:{pet_id}:behavior"), &value)
 }
 
+#[tauri::command]
+fn pet_calibration_load(
+    state: tauri::State<'_, pets::state::SharedStateStore>,
+) -> Result<Option<String>, String> {
+    let store = state.lock().map_err(|_| "state lock poisoned")?;
+    store.load("pet:probe:calibration")
+}
+
+#[tauri::command]
+fn pet_calibration_save(
+    state: tauri::State<'_, pets::state::SharedStateStore>,
+    value: serde_json::Value,
+) -> Result<(), String> {
+    let store = state.lock().map_err(|_| "state lock poisoned")?;
+    store.save(
+        "pet:probe:calibration",
+        &serde_json::to_string(&value).map_err(|error| error.to_string())?,
+    )
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -185,8 +205,9 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 
     let toggle = MenuItem::with_id(app, "toggle", "显示或隐藏", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
+    let calibration = MenuItem::with_id(app, "calibration", "校准", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &settings, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &settings, &calibration, &quit])?;
     let mut builder = TrayIconBuilder::new().menu(&menu);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -204,6 +225,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
             }
             "settings" => {
                 if let Some(window) = app.get_webview_window("settings") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "calibration" => {
+                if let Some(window) = app.get_webview_window("calibration") {
                     let _ = window.show();
                     let _ = window.set_focus();
                 }
@@ -261,7 +288,9 @@ pub fn run() {
             pet_set_active,
             pet_get_active,
             pet_state_load,
-            pet_state_save
+            pet_state_save,
+            pet_calibration_load,
+            pet_calibration_save
         ])
         .run(tauri::generate_context!())
         .expect("failed to run desktop pet runtime");
