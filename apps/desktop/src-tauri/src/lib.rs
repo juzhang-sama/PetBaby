@@ -1,5 +1,6 @@
 mod platform;
 mod preferences;
+mod runtime_assets;
 mod windowing;
 
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
@@ -75,6 +76,13 @@ fn probe_fullscreen(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn parse_manifest(
+    json: String,
+) -> Result<runtime_assets::manifest::RuntimeAssetManifestV1, String> {
+    runtime_assets::manifest::parse_manifest(&json)
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -121,7 +129,8 @@ pub fn run() {
             load_preferences,
             save_preferences,
             begin_drag,
-            probe_fullscreen
+            probe_fullscreen,
+            parse_manifest
         ])
         .setup(|app| {
             let window = app.get_webview_window("pet").ok_or("pet window missing")?;
