@@ -241,15 +241,18 @@ unsafe extern "system" fn desktop_event_cb(
         return;
     }
 
-    let is_desktop = if event == EVENT_SYSTEM_DESKTOPSWITCH {
-        true
-    } else if event == EVENT_SYSTEM_FOREGROUND {
+    let mut class_name = String::new();
+    if event == EVENT_SYSTEM_FOREGROUND {
         let mut name = [0u16; 64];
         let len = GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32);
         if len <= 0 {
             return;
         }
-        let class_name = String::from_utf16_lossy(&name[..len as usize]);
+        class_name = String::from_utf16_lossy(&name[..len as usize]);
+    }
+    let is_desktop = if event == EVENT_SYSTEM_DESKTOPSWITCH {
+        true
+    } else if event == EVENT_SYSTEM_FOREGROUND {
         class_name == "Progman" || class_name == "WorkerW" || class_name == "Shell_TrayWnd"
     } else {
         false
@@ -259,6 +262,7 @@ unsafe extern "system" fn desktop_event_cb(
     }
 
     let pet = state.pet_hwnd as HWND;
+    let was_visible = IsWindowVisible(pet);
     ShowWindow(pet, SW_SHOWNOACTIVATE);
     SetWindowPos(
         pet,
@@ -268,6 +272,10 @@ unsafe extern "system" fn desktop_event_cb(
         0,
         0,
         SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
+    );
+    let now_visible = IsWindowVisible(pet);
+    println!(
+        "[desktop-pet] win-event event=0x{event:X} class={class_name} pet_visible_before={was_visible} after={now_visible}"
     );
 }
 
@@ -297,10 +305,12 @@ fn install_desktop_hook(hwnd: isize) -> Result<(), PlatformError> {
             WINEVENT_OUTOFCONTEXT,
         );
         if hook.is_null() {
+            println!("[desktop-pet] SetWinEventHook FAILED");
             return Err(last_error("SetWinEventHook"));
         }
         state.hook = hook as usize;
         state.pet_hwnd = hwnd;
+        println!("[desktop-pet] desktop hook installed 0x{hook:?}");
     }
     Ok(())
 }
