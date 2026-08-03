@@ -7,7 +7,7 @@ use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError, HWND},
     Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
     UI::{
-        Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
+        Accessibility::{SetWinEventHook, HWINEVENTHOOK},
         WindowsAndMessaging::{
             GetClassNameW, GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, ShowWindow,
             GWL_EXSTYLE, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
