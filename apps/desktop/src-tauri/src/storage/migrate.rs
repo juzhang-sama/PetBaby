@@ -1,6 +1,5 @@
-use rusqlite::Connection;
+﻿use rusqlite::Connection;
 
-#[expect(dead_code)] // consumed by Storage::open in Task 4 wiring
 pub const MIGRATIONS: &[&str] = &[
     // v1: pets, variants and state tables
     r#"
@@ -26,7 +25,6 @@ pub const MIGRATIONS: &[&str] = &[
     "#,
 ];
 
-#[expect(dead_code)] // consumed by Storage::open in Task 4 wiring
 pub fn apply(db: &Connection) -> Result<(), String> {
     let current: i64 = db
         .query_row("PRAGMA user_version", [], |row| row.get(0))

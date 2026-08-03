@@ -1,11 +1,14 @@
+mod pets;
 mod platform;
 mod preferences;
 mod runtime_assets;
 mod storage;
 mod windowing;
 
+use pets::pet::{IdentityMode, Pet, PetSummary, Species};
+use pets::{ActivePetSession, SharedActivePetSession, SharedPetRepository};
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
-use std::sync::Arc;
+use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use windowing::{normalize_spans, scale_spans, HitRegionEvidence, HitRegionPayload};
 
@@ -84,6 +87,54 @@ fn parse_manifest(
     runtime_assets::manifest::parse_manifest(&json)
 }
 
+#[tauri::command]
+fn pet_list(state: tauri::State<'_, SharedPetRepository>) -> Result<Vec<PetSummary>, String> {
+    let repo = state.lock().map_err(|_| "pets lock poisoned")?;
+    repo.list()
+}
+
+#[tauri::command]
+fn pet_create(
+    state: tauri::State<'_, SharedPetRepository>,
+    species: Species,
+    identity_mode: IdentityMode,
+) -> Result<Pet, String> {
+    let repo = state.lock().map_err(|_| "pets lock poisoned")?;
+    repo.create(species, identity_mode)
+}
+
+#[tauri::command]
+fn pet_get(
+    state: tauri::State<'_, SharedPetRepository>,
+    pet_id: String,
+) -> Result<Option<Pet>, String> {
+    let repo = state.lock().map_err(|_| "pets lock poisoned")?;
+    repo.get(&pet_id)
+}
+
+#[tauri::command]
+fn pet_delete(state: tauri::State<'_, SharedPetRepository>, pet_id: String) -> Result<(), String> {
+    let repo = state.lock().map_err(|_| "pets lock poisoned")?;
+    repo.delete(&pet_id)
+}
+
+#[tauri::command]
+fn pet_set_active(
+    state: tauri::State<'_, SharedActivePetSession>,
+    pet_id: String,
+) -> Result<(), String> {
+    let mut session = state.lock().map_err(|_| "session lock poisoned")?;
+    session.set_active(pet_id)
+}
+
+#[tauri::command]
+fn pet_get_active(
+    state: tauri::State<'_, SharedActivePetSession>,
+) -> Result<Option<String>, String> {
+    let session = state.lock().map_err(|_| "session lock poisoned")?;
+    Ok(session.active().cloned())
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -121,19 +172,18 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
-        .manage(AppState {
-            platform: Arc::new(WindowsPlatformAdapter),
-        })
-        .invoke_handler(tauri::generate_handler![
-            probe_version,
-            apply_hit_region,
-            load_preferences,
-            save_preferences,
-            begin_drag,
-            probe_fullscreen,
-            parse_manifest
-        ])
         .setup(|app| {
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .map_err(|error| error.to_string())?;
+            let storage = Arc::new(Mutex::new(storage::Storage::open(&data_dir.join("pets"))?));
+            app.manage(
+                Arc::new(Mutex::new(pets::repository::PetRepository::new(storage)))
+                    as SharedPetRepository,
+            );
+            app.manage(Arc::new(Mutex::new(ActivePetSession::new())) as SharedActivePetSession);
+
             let window = app.get_webview_window("pet").ok_or("pet window missing")?;
             let hwnd = window.hwnd()?.0 as isize;
             app.state::<AppState>()
@@ -144,8 +194,26 @@ pub fn run() {
             build_tray(app)?;
             Ok(())
         })
+        .manage(AppState {
+            platform: Arc::new(WindowsPlatformAdapter),
+        })
+        .invoke_handler(tauri::generate_handler![
+            probe_version,
+            apply_hit_region,
+            load_preferences,
+            save_preferences,
+            begin_drag,
+            probe_fullscreen,
+            parse_manifest,
+            pet_list,
+            pet_create,
+            pet_get,
+            pet_delete,
+            pet_set_active,
+            pet_get_active
+        ])
         .run(tauri::generate_context!())
-        .expect("failed to run desktop pet probe");
+        .expect("failed to run desktop pet runtime");
 }
 
 #[cfg(test)]

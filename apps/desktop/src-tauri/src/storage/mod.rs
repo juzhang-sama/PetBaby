@@ -1,15 +1,13 @@
-pub mod migrate;
+﻿pub mod migrate;
 
 use rusqlite::Connection;
 use std::path::Path;
 
-#[expect(dead_code)] // consumed by pets::PetRepository in Task 4
 pub struct Storage {
     pub(crate) db: Connection,
 }
 
 impl Storage {
-    #[expect(dead_code)] // consumed by pets::PetRepository in Task 4
     pub fn open(dir: &Path) -> Result<Self, String> {
         std::fs::create_dir_all(dir).map_err(|error| error.to_string())?;
         let db = Connection::open(dir.join("desktop-pet.db")).map_err(|error| error.to_string())?;
