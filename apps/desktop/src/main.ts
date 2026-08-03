@@ -6,9 +6,15 @@ import { assetScan, probeFullscreen } from "./runtime/bridge";
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
 
-const health = await assetScan();
-const unhealthy = health.find((entry) => entry.status !== "healthy");
-await new PetStage().mount(root, unhealthy ? { status: unhealthy.status } : undefined);
+try {
+  const health = await assetScan();
+  const unhealthy = health.find((entry) => entry.status !== "healthy");
+  const stage = new PetStage();
+  await stage.mount(root, unhealthy ? { status: unhealthy.status } : undefined);
+} catch (error) {
+  // keep the window usable even if the pet fails to mount
+  console.error("pet mount failed:", error);
+}
 
 let hiddenForFullscreen = false;
 window.setInterval(async () => {
