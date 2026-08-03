@@ -1,0 +1,17 @@
+# secrets
+.env
+*.key
+*.pem
+
+# python
+__pycache__/
+*.pyc
+.venv/
+venv/
+
+# runtime output (experiment artifacts may contain pet photos)
+output/
+!output/.gitkeep
+
+# rembg model cache
+.u2net/
