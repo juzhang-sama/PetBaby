@@ -1,6 +1,7 @@
 mod platform;
 mod preferences;
 mod runtime_assets;
+mod storage;
 mod windowing;
 
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
