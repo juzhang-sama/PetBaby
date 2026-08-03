@@ -29,6 +29,8 @@ class Lk888Provider:
         prompt: str,
         ref_images: list[bytes] | None = None,
         size: str = "auto",
+        retries: int = 3,
+        retry_delay: float = 10.0,
     ) -> str:
         params: dict = {
             "size": size,
@@ -43,25 +45,40 @@ class Lk888Provider:
             "prompt": prompt,
             "params": params,
         }
-        try:
-            response = httpx.post(
-                f"{self._base}/v1/media/generate",
-                headers=self._headers(),
-                json=body,
-                timeout=60,
-            )
-        except httpx.HTTPError as exc:
-            raise GenerationError("network", f"submit request failed: {exc}") from exc
-        if response.status_code != 200:
-            raise GenerationError(
-                "generation",
-                f"submit returned {response.status_code}: {response.text[:300]}",
-            )
-        data = response.json().get("data", {})
-        task_id = data.get("task_id")
-        if not task_id:
-            raise GenerationError("generation", f"no task_id in response: {response.text[:300]}")
-        return str(task_id)
+        last_error: GenerationError | None = None
+        for attempt in range(1, retries + 1):
+            try:
+                response = httpx.post(
+                    f"{self._base}/v1/media/generate",
+                    headers=self._headers(),
+                    json=body,
+                    timeout=60,
+                )
+            except httpx.HTTPError as exc:
+                last_error = GenerationError("network", f"submit request failed: {exc}")
+                if attempt < retries:
+                    time.sleep(retry_delay)
+                continue
+            if response.status_code != 200:
+                last_error = GenerationError(
+                    "generation",
+                    f"submit returned {response.status_code}: {response.text[:300]}",
+                )
+                if attempt < retries:
+                    time.sleep(retry_delay)
+                continue
+            data = response.json().get("data", {})
+            task_id = data.get("task_id")
+            if not task_id:
+                last_error = GenerationError(
+                    "generation",
+                    f"no task_id in response: {response.text[:300]}",
+                )
+                if attempt < retries:
+                    time.sleep(retry_delay)
+                continue
+            return str(task_id)
+        raise last_error  # type: ignore[misc]
 
     def poll(self, task_id: str) -> TaskState:
         try:
