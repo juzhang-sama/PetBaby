@@ -19,4 +19,11 @@ describe("RenderScheduler", () => {
     scheduler.setTier("active");
     expect(setMaxFps.mock.calls).toEqual([[24], [60]]);
   });
+
+  it("keeps the ticker running for companion so animations advance", () => {
+    const start = vi.fn();
+    const scheduler = new RenderScheduler({ start, stop: vi.fn(), setMaxFps: vi.fn(), renderOnce: vi.fn() });
+    scheduler.setTier("companion");
+    expect(start).toHaveBeenCalledTimes(1);
+  });
 });
