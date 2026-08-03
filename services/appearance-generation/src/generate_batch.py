@@ -53,6 +53,17 @@ class BatchRunner:
         with self.tasks_path.open("a", encoding="utf-8") as handle:
             handle.write(json.dumps(record, ensure_ascii=False) + "\n")
 
+    def _record_error(self, task_id: str, kind: str, detail: str) -> None:
+        errors_path = self.output_dir / "errors.jsonl"
+        record = {
+            "task_id": task_id,
+            "kind": kind,
+            "detail": detail[:500],
+            "time": time.strftime("%Y-%m-%dT%H:%M:%S"),
+        }
+        with errors_path.open("a", encoding="utf-8") as handle:
+            handle.write(json.dumps(record, ensure_ascii=False) + "\n")
+
     @staticmethod
     def _prompt_key(prompt: str, ref_sha256: str) -> str:
         return hashlib.sha256(f"{prompt}|{ref_sha256}".encode()).hexdigest()[:16]
@@ -130,8 +141,15 @@ class BatchRunner:
                     self._rewrite_tasks(finished)
                 else:
                     candidate.error = state.error or f"task ended with state={state.state}"
+                    self._record_error(
+                        task_id,
+                        "generation",
+                        candidate.error,
+                    )
             except Exception as exc:  # keep going for other candidates
                 candidate.error = str(exc)
+                kind = "network" if "poll" in str(exc).lower() else "unknown"
+                self._record_error(task_id, kind, str(exc))
             results.append(candidate)
         return results
 
