@@ -1,16 +1,17 @@
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { availableMonitors, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
-import { Application, Assets, Graphics, Sprite, Text } from "pixi.js";
+import { Application, Assets, Graphics, Text } from "pixi.js";
 import { applyHitRegion, loadPreferences, savePreferences } from "./bridge";
 import type { ProbePreferences } from "./contracts";
 import { clampRectToWorkArea, computeContainRect } from "./geometry";
 import { alphaToRegionSpans } from "./hit-mask";
+import { LayeredSprite } from "../assets/layered-sprite";
 import { RenderScheduler } from "./render-scheduler";
 
 export class PetStage {
   private readonly app = new Application();
-  private sprite!: Sprite;
-  private source!: CanvasImageSource;
+  private layered!: LayeredSprite;
+  private bodySource!: CanvasImageSource;
   private root!: HTMLElement;
   private preferences!: ProbePreferences;
   private baseScale = 1;
@@ -42,10 +43,19 @@ export class PetStage {
       this.scheduler.setTier("still");
       return;
     }
-    const texture = await Assets.load("/test-assets/pet-probe.png");
-    this.source = texture.source.resource as CanvasImageSource;
-    this.sprite = new Sprite(texture);
-    this.app.stage.addChild(this.sprite);
+    this.layered = new LayeredSprite({
+      bodyUrl: "/test-assets/layered/body.png",
+      eyeOpenUrl: "/test-assets/layered/eye-open.png",
+      eyeClosedUrl: "/test-assets/layered/eye-closed.png",
+      accentUrl: "/test-assets/layered/accent.png",
+    });
+    await this.layered.mount(
+      this.app.stage,
+      { width: this.root.clientWidth, height: this.root.clientHeight },
+      this.preferences.flipped,
+    );
+    const bodyTexture = await Assets.load("/test-assets/layered/body.png");
+    this.bodySource = bodyTexture.source.resource as CanvasImageSource;
     await this.layoutAndApplyRegion();
     this.scheduler.setTier("still");
 
@@ -73,17 +83,14 @@ export class PetStage {
   }
 
   private async layoutAndApplyRegion(): Promise<void> {
+    const bodyTexture = await Assets.load("/test-assets/layered/body.png");
     const layout = computeContainRect(
-      { width: this.sprite.texture.width, height: this.sprite.texture.height },
+      { width: bodyTexture.width, height: bodyTexture.height },
       { width: this.root.clientWidth, height: this.root.clientHeight },
     );
     this.baseScale = layout.scale;
-    this.sprite.anchor.set(0.5, 0);
-    this.sprite.position.set(this.root.clientWidth / 2, layout.y);
-    this.sprite.scale.set(
-      (this.preferences.flipped ? -1 : 1) * this.baseScale * this.preferences.scale,
-      this.baseScale * this.preferences.scale,
-    );
+    this.layered.setFlip(this.preferences.flipped);
+    this.layered.setUserScale(this.preferences.scale);
     this.app.render();
     await this.updateHitRegion();
   }
@@ -153,14 +160,15 @@ export class PetStage {
     canvas.height = this.root.clientHeight;
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("2D canvas is unavailable for hit-mask extraction");
-    const width = this.sprite.texture.width * this.baseScale * this.preferences.scale;
-    const height = this.sprite.texture.height * this.baseScale * this.preferences.scale;
+    const bodyTexture = await Assets.load("/test-assets/layered/body.png");
+    const width = bodyTexture.width * this.baseScale * this.preferences.scale;
+    const height = bodyTexture.height * this.baseScale * this.preferences.scale;
     const x = (canvas.width - width) / 2;
-    const y = this.sprite.y;
+    const y = canvas.height - height;
     context.save();
     context.translate(this.preferences.flipped ? canvas.width : 0, 0);
     context.scale(this.preferences.flipped ? -1 : 1, 1);
-    context.drawImage(this.source, x, y, width, height);
+    context.drawImage(this.bodySource, x, y, width, height);
     context.restore();
     const image = context.getImageData(0, 0, canvas.width, canvas.height);
     await applyHitRegion({
