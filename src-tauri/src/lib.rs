@@ -78,6 +78,16 @@ fn set_window_mode(
         .map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn probe_fullscreen(
+    state: tauri::State<'_, AppState>,
+) -> Result<platform::FullscreenSnapshot, String> {
+    state
+        .platform
+        .probe_fullscreen(std::process::id())
+        .map_err(|error| error.to_string())
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -136,7 +146,8 @@ pub fn run() {
             load_preferences,
             save_preferences,
             begin_drag,
-            set_window_mode
+            set_window_mode,
+            probe_fullscreen
         ])
         .setup(|app| {
             let window = app.get_webview_window("pet").ok_or("pet window missing")?;

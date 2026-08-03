@@ -1,5 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { HitRegionPayload, ProbePreferences, WindowMode } from "./contracts";
+import type { FullscreenSnapshot } from "./fullscreen";
 
 export interface HitRegionEvidence {
   spanCount: number;
@@ -25,3 +26,5 @@ export interface WindowModeEvidence {
 
 export const setWindowMode = (mode: WindowMode): Promise<WindowModeEvidence> =>
   invoke("set_window_mode", { mode });
+
+export const probeFullscreen = (): Promise<FullscreenSnapshot> => invoke("probe_fullscreen");

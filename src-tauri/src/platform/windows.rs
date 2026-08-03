@@ -13,7 +13,9 @@ use windows_sys::Win32::{
 };
 
 use crate::{
-    platform::{PlatformAdapter, PlatformError, WindowModeEvidence},
+    platform::{
+        FullscreenSnapshot, PlatformAdapter, PlatformError, ScreenRect, WindowModeEvidence,
+    },
     windowing::{RegionSpan, WindowMode},
 };
 
@@ -159,6 +161,74 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                     parent_hwnd: Some(workerw),
                 })
             }
+        }
+    }
+
+    fn probe_fullscreen(&self, own_pid: u32) -> Result<FullscreenSnapshot, PlatformError> {
+        use windows_sys::Win32::{
+            Graphics::Gdi::{
+                GetMonitorInfoW, MonitorFromWindow, MONITORINFO, MONITOR_DEFAULTTONEAREST,
+            },
+            UI::WindowsAndMessaging::{
+                GetForegroundWindow, GetWindowRect, GetWindowThreadProcessId,
+            },
+        };
+
+        unsafe {
+            let foreground = GetForegroundWindow();
+            if foreground.is_null() {
+                return Ok(FullscreenSnapshot {
+                    is_fullscreen: false,
+                    foreground_hwnd: None,
+                    monitor_rect: None,
+                    reason: "no-foreground",
+                });
+            }
+
+            let mut foreground_pid = 0u32;
+            GetWindowThreadProcessId(foreground, &mut foreground_pid);
+            if foreground_pid == own_pid {
+                return Ok(FullscreenSnapshot {
+                    is_fullscreen: false,
+                    foreground_hwnd: Some(foreground as isize),
+                    monitor_rect: None,
+                    reason: "own-window",
+                });
+            }
+
+            let mut window_rect = std::mem::zeroed();
+            if GetWindowRect(foreground, &mut window_rect) == 0 {
+                return Err(last_error("GetWindowRect"));
+            }
+            let monitor = MonitorFromWindow(foreground, MONITOR_DEFAULTTONEAREST);
+            let mut monitor_info: MONITORINFO = std::mem::zeroed();
+            monitor_info.cbSize = std::mem::size_of::<MONITORINFO>() as u32;
+            if GetMonitorInfoW(monitor, &mut monitor_info) == 0 {
+                return Err(last_error("GetMonitorInfoW"));
+            }
+
+            let monitor_rect = ScreenRect {
+                left: monitor_info.rcMonitor.left,
+                top: monitor_info.rcMonitor.top,
+                right: monitor_info.rcMonitor.right,
+                bottom: monitor_info.rcMonitor.bottom,
+            };
+            let tolerance = 2;
+            let is_fullscreen = (window_rect.left - monitor_rect.left).abs() <= tolerance
+                && (window_rect.top - monitor_rect.top).abs() <= tolerance
+                && (window_rect.right - monitor_rect.right).abs() <= tolerance
+                && (window_rect.bottom - monitor_rect.bottom).abs() <= tolerance;
+
+            Ok(FullscreenSnapshot {
+                is_fullscreen,
+                foreground_hwnd: Some(foreground as isize),
+                monitor_rect: Some(monitor_rect),
+                reason: if is_fullscreen {
+                    "foreground-covers-monitor"
+                } else {
+                    "not-fullscreen"
+                },
+            })
         }
     }
 }
