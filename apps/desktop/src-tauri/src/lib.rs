@@ -158,6 +158,25 @@ fn pet_get_active(
     Ok(session.active().cloned())
 }
 
+#[tauri::command]
+fn pet_state_load(
+    state: tauri::State<'_, pets::state::SharedStateStore>,
+    pet_id: String,
+) -> Result<Option<String>, String> {
+    let store = state.lock().map_err(|_| "state lock poisoned")?;
+    store.load(&format!("pet:{pet_id}:behavior"))
+}
+
+#[tauri::command]
+fn pet_state_save(
+    state: tauri::State<'_, pets::state::SharedStateStore>,
+    pet_id: String,
+    value: String,
+) -> Result<(), String> {
+    let store = state.lock().map_err(|_| "state lock poisoned")?;
+    store.save(&format!("pet:{pet_id}:behavior"), &value)
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -205,11 +224,12 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|error| error.to_string())?;
             let storage = Arc::new(Mutex::new(storage::Storage::open(&data_dir.join("pets"))?));
-            app.manage(
-                Arc::new(Mutex::new(pets::repository::PetRepository::new(storage)))
-                    as SharedPetRepository,
-            );
+            app.manage(Arc::new(Mutex::new(pets::repository::PetRepository::new(
+                storage.clone(),
+            ))) as SharedPetRepository);
             app.manage(Arc::new(Mutex::new(ActivePetSession::new())) as SharedActivePetSession);
+            app.manage(Arc::new(Mutex::new(pets::state::StateStore::new(storage)))
+                as pets::state::SharedStateStore);
 
             let window = app.get_webview_window("pet").ok_or("pet window missing")?;
             let hwnd = window.hwnd()?.0 as isize;
@@ -239,7 +259,9 @@ pub fn run() {
             pet_get,
             pet_delete,
             pet_set_active,
-            pet_get_active
+            pet_get_active,
+            pet_state_load,
+            pet_state_save
         ])
         .run(tauri::generate_context!())
         .expect("failed to run desktop pet runtime");

@@ -1,5 +1,6 @@
 pub mod pet;
 pub mod repository;
+pub mod state;
 
 use std::sync::{Arc, Mutex};
 
