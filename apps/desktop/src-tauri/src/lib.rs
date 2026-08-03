@@ -227,11 +227,32 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window("settings") {
                     let _ = window.show();
                     let _ = window.set_focus();
+                } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "settings",
+                    tauri::WebviewUrl::App("settings.html".into()),
+                )
+                .title("桌面宠物设置")
+                .inner_size(720.0, 520.0)
+                .build()
+                {
+                    let _ = window.set_focus();
                 }
             }
             "calibration" => {
                 if let Some(window) = app.get_webview_window("calibration") {
                     let _ = window.show();
+                    let _ = window.set_focus();
+                } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
+                    app,
+                    "calibration",
+                    tauri::WebviewUrl::App("calibration.html".into()),
+                )
+                .title("宠物校准")
+                .inner_size(420.0, 460.0)
+                .resizable(false)
+                .build()
+                {
                     let _ = window.set_focus();
                 }
             }

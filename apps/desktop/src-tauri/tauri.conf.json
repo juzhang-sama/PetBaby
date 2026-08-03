@@ -23,24 +23,6 @@
         "skipTaskbar": true,
         "focus": false,
         "resizable": true
-      },
-      {
-        "label": "settings",
-        "title": "桌面宠物设置",
-        "url": "settings.html",
-        "width": 720,
-        "height": 520,
-        "visible": false,
-        "resizable": true
-      },
-      {
-        "label": "calibration",
-        "title": "宠物校准",
-        "url": "calibration.html",
-        "width": 420,
-        "height": 460,
-        "visible": false,
-        "resizable": false
       }
     ],
     "security": { "csp": "default-src 'self'; img-src 'self' asset: blob: data:; style-src 'self' 'unsafe-inline'" }
