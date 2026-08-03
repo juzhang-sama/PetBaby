@@ -1,4 +1,4 @@
-param(
+﻿param(
   [Parameter(Mandatory=$true)][int]$RootPid,
   [ValidateSet('idle','interaction','hidden')][string]$State = 'idle',
   [int]$DurationSeconds = 300,
