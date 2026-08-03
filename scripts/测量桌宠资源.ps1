@@ -1,6 +1,6 @@
 ﻿param(
   [Parameter(Mandatory=$true)][int]$RootPid,
-  [ValidateSet('idle','interaction','hidden')][string]$State = 'idle',
+  [ValidateSet('idle','interaction','hidden','idle-m1','hidden-m1')][string]$State = 'idle',
   [int]$DurationSeconds = 300,
   [string]$OutputPath = "docs/验证记录/性能采样/$State.csv"
 )
