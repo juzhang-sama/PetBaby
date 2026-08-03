@@ -112,6 +112,15 @@ export class LayeredSprite {
     this.container.scale.set(current * scale, scale);
   }
 
+  setSquash(factor: number): void {
+    this.container.scale.y = this.baseScale * factor;
+    this.container.scale.x = (this.container.scale.x < 0 ? -1 : 1) * this.baseScale / factor;
+  }
+
+  setShift(dx: number, dy: number): void {
+    this.container.position.set(dx, dy);
+  }
+
   setCarried(carried: boolean): void {
     this.carried = carried;
     const lift = carried ? 14 : 0;

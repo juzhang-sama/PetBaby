@@ -6,6 +6,10 @@ import type { ProbePreferences } from "./contracts";
 import { clampRectToWorkArea, computeContainRect } from "./geometry";
 import { alphaToRegionSpans } from "./hit-mask";
 import { LayeredSprite } from "../assets/layered-sprite";
+import { decide } from "../behavior/decision";
+import type { PetEvent } from "../behavior/events";
+import type { PetStateSnapshot } from "../behavior/decision";
+import { PetAnimator } from "./pet-animator";
 import { RenderScheduler } from "./render-scheduler";
 
 export class PetStage {
@@ -23,6 +27,16 @@ export class PetStage {
     setMaxFps: (fps) => { this.app.ticker.maxFPS = fps; },
     renderOnce: () => this.app.render(),
   });
+  private animator!: PetAnimator;
+  private stateSnapshot: PetStateSnapshot = {
+    schemaVersion: 1,
+    petId: "probe",
+    energy: 0.7,
+    mood: 0.6,
+    bond: 0.3,
+    lastSeenAt: new Date().toISOString(),
+    lastInteractionAt: new Date().toISOString(),
+  };
 
   async mount(root: HTMLElement, degraded?: { status: string }): Promise<void> {
     this.root = root;
@@ -56,8 +70,20 @@ export class PetStage {
     );
     const bodyTexture = await Assets.load("/test-assets/layered/body.png");
     this.bodySource = bodyTexture.source.resource as CanvasImageSource;
+    this.animator = new PetAnimator({
+      setEyesOpen: (open) => this.layered.setEyesOpen(open),
+      setBreathPhase: (phase) => this.layered.setBreathPhase(phase),
+      scaleSquash: (factor) => this.layered.setSquash(factor),
+      shift: (dx, dy) => this.layered.setShift(dx, dy),
+      setAccentVisible: (visible) => this.layered.setAccentVisible(visible),
+    });
     await this.layoutAndApplyRegion();
-    this.scheduler.setTier("still");
+    this.animator.start();
+    this.scheduler.setTier("companion");
+
+    this.app.ticker.add(() => {
+      this.animator.tick(this.app.ticker.lastTime);
+    });
 
     this.app.canvas.addEventListener("pointerdown", (event) => {
       void this.onPointerDown(event);
@@ -77,6 +103,7 @@ export class PetStage {
       void this.setScale(Math.min(1.5, Math.max(0.5, this.preferences.scale + delta)));
     }, { passive: false });
     this.app.canvas.addEventListener("dblclick", () => {
+      this.dispatchEvent({ type: "double-clicked" });
       void this.setFlipped(!this.preferences.flipped);
     });
     window.addEventListener("resize", () => void this.layoutAndApplyRegion());
@@ -125,6 +152,7 @@ export class PetStage {
     if (event.button !== 0) return;
     this.scheduler.setTier("active");
     window.clearTimeout(this.activeTimer);
+    this.dispatchEvent({ type: "drag-start" });
     const petWindow = getCurrentWindow();
     const [position] = await Promise.all([petWindow.outerPosition()]);
     this.dragging = true;
@@ -150,8 +178,16 @@ export class PetStage {
     this.dragStartMouse = null;
     this.dragStartWindow = null;
     window.clearTimeout(this.activeTimer);
-    this.activeTimer = window.setTimeout(() => this.scheduler.setTier("still"), 400);
+    this.dispatchEvent(wasDragging ? { type: "drag-end" } : { type: "body-clicked" });
+    this.activeTimer = window.setTimeout(() => this.scheduler.setTier("companion"), 400);
     if (wasDragging) await this.captureWindowPlacement();
+  }
+
+  private dispatchEvent(event: PetEvent): void {
+    const intents = decide({ event, state: this.stateSnapshot, policy: { cooldowns: {} } });
+    for (const intent of intents) {
+      this.animator.setIntent(intent);
+    }
   }
 
   private async updateHitRegion(): Promise<void> {
