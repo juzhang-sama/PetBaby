@@ -65,6 +65,65 @@ fn begin_drag(window: tauri::WebviewWindow) -> Result<(), String> {
     window.start_dragging().map_err(|error| error.to_string())
 }
 
+#[tauri::command]
+fn set_window_mode(
+    window: tauri::WebviewWindow,
+    state: tauri::State<'_, AppState>,
+    mode: windowing::WindowMode,
+) -> Result<platform::WindowModeEvidence, String> {
+    let hwnd = window.hwnd().map_err(|error| error.to_string())?.0 as isize;
+    state
+        .platform
+        .set_window_mode(hwnd, mode)
+        .map_err(|error| error.to_string())
+}
+
+fn build_tray(app: &tauri::App) -> tauri::Result<()> {
+    use tauri::{
+        menu::{Menu, MenuItem},
+        tray::TrayIconBuilder,
+    };
+
+    let companion = MenuItem::with_id(app, "companion", "陪伴模式", true, None::<&str>)?;
+    let desktop = MenuItem::with_id(app, "desktop", "桌面模式（实验性）", true, None::<&str>)?;
+    let toggle = MenuItem::with_id(app, "toggle", "显示或隐藏", true, None::<&str>)?;
+    let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
+    let menu = Menu::with_items(app, &[&companion, &desktop, &toggle, &quit])?;
+    let mut builder = TrayIconBuilder::new().menu(&menu);
+    if let Some(icon) = app.default_window_icon() {
+        builder = builder.icon(icon.clone());
+    }
+    builder
+        .on_menu_event(|app, event| {
+            let Some(window) = app.get_webview_window("pet") else {
+                return;
+            };
+            match event.id().as_ref() {
+                "companion" | "desktop" => {
+                    let mode = if event.id().as_ref() == "companion" {
+                        windowing::WindowMode::Companion
+                    } else {
+                        windowing::WindowMode::Desktop
+                    };
+                    if let (Ok(hwnd), state) = (window.hwnd(), app.state::<AppState>()) {
+                        let _ = state.platform.set_window_mode(hwnd.0 as isize, mode);
+                    }
+                }
+                "toggle" => {
+                    if window.is_visible().unwrap_or(false) {
+                        let _ = window.hide();
+                    } else {
+                        let _ = window.show();
+                    }
+                }
+                "quit" => app.exit(0),
+                _ => {}
+            }
+        })
+        .build(app)?;
+    Ok(())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
@@ -76,7 +135,8 @@ pub fn run() {
             apply_hit_region,
             load_preferences,
             save_preferences,
-            begin_drag
+            begin_drag,
+            set_window_mode
         ])
         .setup(|app| {
             let window = app.get_webview_window("pet").ok_or("pet window missing")?;
@@ -86,6 +146,7 @@ pub fn run() {
                 .configure_pet_window(hwnd)
                 .map_err(|error| error.to_string())?;
             window.set_always_on_top(true)?;
+            build_tray(app)?;
             Ok(())
         })
         .run(tauri::generate_context!())

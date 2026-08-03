@@ -1,5 +1,22 @@
 use serde::{Deserialize, Serialize};
 
+#[derive(Debug, Clone, Copy, Deserialize, Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum WindowMode {
+    Companion,
+    Desktop,
+}
+
+#[cfg(test)]
+mod mode_tests {
+    use super::*;
+
+    #[test]
+    fn rejects_unknown_window_mode() {
+        assert!(serde_json::from_str::<WindowMode>("\"floating\"").is_err());
+    }
+}
+
 #[derive(Debug, Clone, Copy, Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase")]
 pub struct RegionSpan {
