@@ -1,6 +1,7 @@
 use std::{
     ffi::c_void,
     ptr::null_mut,
+    sync::atomic::{AtomicIsize, Ordering},
     sync::{Mutex, OnceLock},
 };
 
@@ -10,10 +11,10 @@ use windows_sys::Win32::{
     UI::{
         Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
         WindowsAndMessaging::{
-            GetClassNameW, GetWindowLongPtrW, IsWindowVisible, SetWindowLongPtrW, SetWindowPos,
-            ShowWindow, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST, SWP_NOACTIVATE, SWP_NOMOVE,
-            SWP_NOSIZE, SWP_SHOWWINDOW, SW_SHOWNOACTIVATE, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
-            WS_EX_TOPMOST,
+            EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowRect, IsWindowVisible,
+            SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
+            HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+            SW_SHOWNOACTIVATE, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
         },
     },
 };
@@ -84,7 +85,12 @@ impl PlatformAdapter for WindowsPlatformAdapter {
             WindowMode::Companion => {
                 uninstall_desktop_hook();
                 unsafe {
+                    let style = GetWindowLongPtrW(hwnd as HWND, GWL_STYLE);
                     let exstyle = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
+                    if style != 0 {
+                        SetWindowLongPtrW(hwnd as HWND, GWL_STYLE, style & !(WS_CHILD as isize));
+                    }
+                    let _ = SetParent(hwnd as *mut c_void, null_mut());
                     if SetWindowPos(
                         hwnd as *mut c_void,
                         HWND_TOPMOST,
@@ -92,7 +98,11 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                         0,
                         0,
                         0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        SWP_NOMOVE
+                            | SWP_NOSIZE
+                            | SWP_NOACTIVATE
+                            | SWP_FRAMECHANGED
+                            | SWP_SHOWWINDOW,
                     ) == 0
                     {
                         return Err(last_error("SetWindowPos"));
@@ -113,9 +123,16 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                 })
             }
             WindowMode::Desktop => {
+                let progman = find_progman()?;
                 install_desktop_hook(hwnd)?;
                 unsafe {
+                    let mut rect = std::mem::zeroed();
+                    if GetWindowRect(hwnd as HWND, &mut rect) == 0 {
+                        return Err(last_error("GetWindowRect"));
+                    }
+                    let style = GetWindowLongPtrW(hwnd as HWND, GWL_STYLE);
                     let exstyle = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
+                    SetWindowLongPtrW(hwnd as HWND, GWL_STYLE, style | WS_CHILD as isize);
                     if exstyle != 0 {
                         SetWindowLongPtrW(
                             hwnd as HWND,
@@ -123,14 +140,19 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                             exstyle & !(WS_EX_TOPMOST as isize),
                         );
                     }
+                    SetLastError(0);
+                    let previous = SetParent(hwnd as *mut c_void, progman as *mut c_void);
+                    if previous.is_null() && GetLastError() != 0 {
+                        return Err(last_error("SetParent"));
+                    }
                     if SetWindowPos(
                         hwnd as *mut c_void,
-                        HWND_BOTTOM,
-                        0,
-                        0,
-                        0,
-                        0,
-                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                        null_mut(),
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
                     ) == 0
                     {
                         return Err(last_error("SetWindowPos"));
@@ -139,8 +161,8 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                 Ok(WindowModeEvidence {
                     requested: mode,
                     applied: true,
-                    strategy: "bottom-no-topmost",
-                    parent_hwnd: None,
+                    strategy: "progman-child",
+                    parent_hwnd: Some(progman),
                 })
             }
         }
@@ -218,6 +240,33 @@ impl PlatformAdapter for WindowsPlatformAdapter {
 const EVENT_SYSTEM_DESKTOPSWITCH: u32 = 0x001E;
 const EVENT_SYSTEM_FOREGROUND: u32 = 0x0003;
 
+static PROGMAN_FOUND: AtomicIsize = AtomicIsize::new(0);
+
+unsafe extern "system" fn find_progman_cb(hwnd: HWND, _lparam: isize) -> i32 {
+    let mut name = [0u16; 64];
+    let len = GetClassNameW(hwnd, name.as_mut_ptr(), name.len() as i32);
+    if len > 0 && String::from_utf16_lossy(&name[..len as usize]) == "Progman" {
+        PROGMAN_FOUND.store(hwnd as isize, Ordering::SeqCst);
+        return 0;
+    }
+    1
+}
+
+fn find_progman() -> Result<isize, PlatformError> {
+    PROGMAN_FOUND.store(0, Ordering::SeqCst);
+    unsafe {
+        let _ = EnumWindows(Some(find_progman_cb), 0);
+    }
+    let found = PROGMAN_FOUND.load(Ordering::SeqCst);
+    if found == 0 {
+        return Err(PlatformError::WindowsApi {
+            operation: "EnumWindows(Progman)",
+            code: 0,
+        });
+    }
+    Ok(found)
+}
+
 struct DesktopHookState {
     hook: usize,
     pet_hwnd: isize,
@@ -265,15 +314,6 @@ unsafe extern "system" fn desktop_event_cb(
     let pet = state.pet_hwnd as HWND;
     let was_visible = IsWindowVisible(pet);
     ShowWindow(pet, SW_SHOWNOACTIVATE);
-    SetWindowPos(
-        pet,
-        HWND_BOTTOM,
-        0,
-        0,
-        0,
-        0,
-        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE,
-    );
     let now_visible = IsWindowVisible(pet);
     println!(
         "[desktop-pet] win-event event=0x{event:X} class={class_name} pet_visible_before={was_visible} after={now_visible}"
