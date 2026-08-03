@@ -1,0 +1,25 @@
+[package]
+name = "desktop-pet"
+version = "0.0.0"
+description = "Windows desktop pet M0 probe"
+edition = "2021"
+
+[lib]
+name = "desktop_pet_lib"
+crate-type = ["staticlib", "cdylib", "rlib"]
+
+[build-dependencies]
+tauri-build = "=2.6.3"
+
+[dependencies]
+serde = { version = "=1.0.229", features = ["derive"] }
+serde_json = "=1.0.151"
+tauri = { version = "=2.11.5", features = ["tray-icon"] }
+thiserror = "=2.0.19"
+windows-sys = { version = "=0.61.2", features = [
+  "Win32_Foundation",
+  "Win32_Graphics_Gdi",
+  "Win32_System_Threading",
+  "Win32_UI_Shell",
+  "Win32_UI_WindowsAndMessaging"
+] }
