@@ -71,10 +71,11 @@ class BatchRunner:
     def run(self, config: BatchConfig) -> list[Candidate]:
         photo = config.photo_path.read_bytes()
         ref_sha = hashlib.sha256(photo).hexdigest()
-        prompt = build_prompt(
-            config.subject_desc or "a pet",
-            config.traits.to_prompt_block(),
-        )
+        subject = config.subject_desc or "the pet in the reference photo"
+        traits_block = {}
+        if config.traits and config.traits.fur_colors:
+            traits_block = config.traits.to_prompt_block()
+        prompt = build_prompt(subject, traits_block)
         existing = self._load_tasks()
 
         candidates: list[Candidate] = []

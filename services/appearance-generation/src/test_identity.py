@@ -30,6 +30,7 @@ def test_invalid_species_rejected():
         LockedTraits.from_dict({"species": "bird", "fur_colors": ["x"]})
 
 
-def test_empty_fur_colors_rejected():
-    with pytest.raises(ValueError, match="fur_colors"):
-        LockedTraits.from_dict({"species": "cat", "fur_colors": []})
+def test_empty_fur_colors_allowed_for_reference_only():
+    # empty fur_colors means "rely on the reference photo" - prompt block is empty
+    traits = LockedTraits.from_dict({"species": "cat", "fur_colors": []})
+    assert traits.to_prompt_block() == {}

@@ -17,11 +17,11 @@ class LockedTraits:
     def validate(self) -> None:
         if self.species not in VALID_SPECIES:
             raise ValueError(f"species must be one of {sorted(VALID_SPECIES)}")
-        if not self.fur_colors:
-            raise ValueError("fur_colors must not be empty")
 
     def to_prompt_block(self) -> dict[str, str]:
         self.validate()
+        if not self.fur_colors:
+            return {}
         return {
             "species": self.species,
             "fur_colors": ", ".join(self.fur_colors),
