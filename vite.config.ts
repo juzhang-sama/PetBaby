@@ -8,5 +8,5 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/target/**", "**/src-tauri/gen/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
-  build: { target: "es2021", minify: "esbuild", sourcemap: true },
+  build: { target: "es2022", minify: "esbuild", sourcemap: true },
 });

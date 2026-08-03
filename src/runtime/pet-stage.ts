@@ -5,6 +5,7 @@ import { applyHitRegion, beginDrag, loadPreferences, savePreferences } from "./b
 import type { ProbePreferences } from "./contracts";
 import { clampRectToWorkArea, computeContainRect } from "./geometry";
 import { alphaToRegionSpans } from "./hit-mask";
+import { RenderScheduler } from "./render-scheduler";
 
 export class PetStage {
   private readonly app = new Application();
@@ -14,6 +15,13 @@ export class PetStage {
   private preferences!: ProbePreferences;
   private baseScale = 1;
   private saveTimer: number | undefined;
+  private activeTimer: number | undefined;
+  private readonly scheduler = new RenderScheduler({
+    start: () => this.app.start(),
+    stop: () => this.app.stop(),
+    setMaxFps: (fps) => { this.app.ticker.maxFPS = fps; },
+    renderOnce: () => this.app.render(),
+  });
 
   async mount(root: HTMLElement): Promise<void> {
     this.root = root;
@@ -34,10 +42,17 @@ export class PetStage {
     this.sprite = new Sprite(texture);
     this.app.stage.addChild(this.sprite);
     await this.layoutAndApplyRegion();
+    this.scheduler.setTier("still");
 
     this.app.canvas.addEventListener("pointerdown", (event) => {
       if (event.button !== 0) return;
+      this.scheduler.setTier("active");
+      window.clearTimeout(this.activeTimer);
       void beginDrag().then(() => this.captureWindowPlacement());
+    });
+    this.app.canvas.addEventListener("pointerup", () => {
+      window.clearTimeout(this.activeTimer);
+      this.activeTimer = window.setTimeout(() => this.scheduler.setTier("still"), 400);
     });
     this.app.canvas.addEventListener("wheel", (event) => {
       event.preventDefault();
