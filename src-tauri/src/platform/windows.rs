@@ -11,9 +11,9 @@ use windows_sys::Win32::{
     UI::{
         Accessibility::{SetWinEventHook, UnhookWinEvent, HWINEVENTHOOK},
         WindowsAndMessaging::{
-            EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowRect, IsWindowVisible,
-            SetParent, SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE,
-            HWND_TOPMOST, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+            EnumWindows, GetClassNameW, GetWindowLongPtrW, GetWindowRect, SetParent,
+            SetWindowLongPtrW, SetWindowPos, ShowWindow, GWL_EXSTYLE, GWL_STYLE, HWND_TOPMOST,
+            SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
             SW_SHOWNOACTIVATE, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
         },
     },
@@ -312,12 +312,7 @@ unsafe extern "system" fn desktop_event_cb(
     }
 
     let pet = state.pet_hwnd as HWND;
-    let was_visible = IsWindowVisible(pet);
     ShowWindow(pet, SW_SHOWNOACTIVATE);
-    let now_visible = IsWindowVisible(pet);
-    println!(
-        "[desktop-pet] win-event event=0x{event:X} class={class_name} pet_visible_before={was_visible} after={now_visible}"
-    );
 }
 
 fn install_desktop_hook(hwnd: isize) -> Result<(), PlatformError> {
@@ -346,12 +341,10 @@ fn install_desktop_hook(hwnd: isize) -> Result<(), PlatformError> {
             WINEVENT_OUTOFCONTEXT,
         );
         if hook.is_null() {
-            println!("[desktop-pet] SetWinEventHook FAILED");
             return Err(last_error("SetWinEventHook"));
         }
         state.hook = hook as usize;
         state.pet_hwnd = hwnd;
-        println!("[desktop-pet] desktop hook installed 0x{hook:?}");
     }
     Ok(())
 }
