@@ -31,7 +31,7 @@ pub trait PlatformAdapter: Send + Sync {
 }
 
 #[cfg(target_os = "windows")]
-mod windows;
+pub(crate) mod windows;
 
 #[cfg(target_os = "windows")]
 pub use windows::WindowsPlatformAdapter;

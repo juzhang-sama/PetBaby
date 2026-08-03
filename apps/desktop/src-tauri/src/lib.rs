@@ -203,11 +203,12 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
         tray::TrayIconBuilder,
     };
 
+    let mode = MenuItem::with_id(app, "mode", "陪伴模式（置顶）", false, None::<&str>)?;
     let toggle = MenuItem::with_id(app, "toggle", "显示或隐藏", true, None::<&str>)?;
     let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let calibration = MenuItem::with_id(app, "calibration", "校准", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &settings, &calibration, &quit])?;
+    let menu = Menu::with_items(app, &[&mode, &toggle, &settings, &calibration, &quit])?;
     let mut builder = TrayIconBuilder::new().menu(&menu);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
@@ -285,6 +286,7 @@ pub fn run() {
                 .platform
                 .configure_pet_window(hwnd)
                 .map_err(|error| error.to_string())?;
+            platform::windows::install_show_hook(hwnd).map_err(|error| error.to_string())?;
             window.set_always_on_top(true)?;
             build_tray(app)?;
             Ok(())
