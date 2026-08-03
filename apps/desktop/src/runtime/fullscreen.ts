@@ -11,5 +11,5 @@ export interface FullscreenSnapshot {
   isFullscreen: boolean;
   foregroundHwnd: number | null;
   monitorRect: ScreenRect | null;
-  reason: "foreground-covers-monitor" | "not-fullscreen" | "own-window" | "no-foreground";
+  reason: "foreground-covers-monitor" | "not-fullscreen" | "own-window" | "no-foreground" | "desktop-foreground";
 }

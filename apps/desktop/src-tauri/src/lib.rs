@@ -286,7 +286,6 @@ pub fn run() {
                 .platform
                 .configure_pet_window(hwnd)
                 .map_err(|error| error.to_string())?;
-            platform::windows::install_show_hook(hwnd).map_err(|error| error.to_string())?;
             window.set_always_on_top(true)?;
             build_tray(app)?;
             Ok(())
