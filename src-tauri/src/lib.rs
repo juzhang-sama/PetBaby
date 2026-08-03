@@ -116,7 +116,16 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                         windowing::WindowMode::Desktop
                     };
                     if let (Ok(hwnd), state) = (window.hwnd(), app.state::<AppState>()) {
-                        let _ = state.platform.set_window_mode(hwnd.0 as isize, mode);
+                        match state.platform.set_window_mode(hwnd.0 as isize, mode) {
+                            Ok(evidence) => println!(
+                                "[desktop-pet] mode applied: requested={:?} strategy={} parent={:?}",
+                                evidence.requested, evidence.strategy, evidence.parent_hwnd
+                            ),
+                            Err(error) => println!(
+                                "[desktop-pet] set_window_mode failed for {:?}: {error}",
+                                mode
+                            ),
+                        }
                     }
                 }
                 "toggle" => {
