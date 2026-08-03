@@ -1,4 +1,5 @@
 mod platform;
+mod preferences;
 mod windowing;
 
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
@@ -36,13 +37,47 @@ fn apply_hit_region(
     })
 }
 
+#[tauri::command]
+fn load_preferences(app: tauri::AppHandle) -> Result<preferences::ProbePreferences, String> {
+    let path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join("m0-preferences.json");
+    preferences::load(&path).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn save_preferences(
+    app: tauri::AppHandle,
+    value: preferences::ProbePreferences,
+) -> Result<(), String> {
+    let path = app
+        .path()
+        .app_config_dir()
+        .map_err(|error| error.to_string())?
+        .join("m0-preferences.json");
+    preferences::save(&path, &value).map_err(|error| error.to_string())
+}
+
+#[tauri::command]
+fn begin_drag(window: tauri::WebviewWindow) -> Result<(), String> {
+    window.start_dragging().map_err(|error| error.to_string())
+}
+
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
         .manage(AppState {
             platform: Arc::new(WindowsPlatformAdapter),
         })
-        .invoke_handler(tauri::generate_handler![probe_version, apply_hit_region])
+        .invoke_handler(tauri::generate_handler![
+            probe_version,
+            apply_hit_region,
+            load_preferences,
+            save_preferences,
+            begin_drag
+        ])
         .setup(|app| {
             let window = app.get_webview_window("pet").ok_or("pet window missing")?;
             let hwnd = window.hwnd()?.0 as isize;

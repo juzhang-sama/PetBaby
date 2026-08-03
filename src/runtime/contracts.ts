@@ -16,3 +16,8 @@ export interface HitRegionPayload {
   scaleFactor: number;
   spans: RegionSpan[];
 }
+
+export interface ProbePreferences {
+  x: number; y: number; width: number; height: number;
+  scale: number; flipped: boolean; mode: WindowMode;
+}
