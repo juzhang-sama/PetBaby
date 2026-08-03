@@ -1,15 +1,12 @@
-use std::{
-    ffi::c_void,
-    ptr::{null, null_mut},
-};
+use std::ffi::c_void;
+
 use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError, HWND},
     Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
     UI::WindowsAndMessaging::{
-        EnumWindows, FindWindowExW, FindWindowW, GetWindowLongPtrW, GetWindowRect,
-        SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, GWL_STYLE,
-        HWND_TOPMOST, SMTO_NORMAL, SWP_FRAMECHANGED, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE,
-        SWP_SHOWWINDOW, WS_CHILD, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW, WS_EX_TOPMOST,
+        GetWindowLongPtrW, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_BOTTOM, HWND_TOPMOST,
+        SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        WS_EX_TOPMOST,
     },
 };
 
@@ -20,58 +17,7 @@ use crate::{
     windowing::{RegionSpan, WindowMode},
 };
 
-const SPAWN_WORKERW_MESSAGE: u32 = 0x052C;
-
 pub struct WindowsPlatformAdapter;
-
-fn wide(value: &str) -> Vec<u16> {
-    value.encode_utf16().chain(std::iter::once(0)).collect()
-}
-
-unsafe extern "system" fn find_workerw_callback(hwnd: *mut c_void, lparam: isize) -> i32 {
-    let shell_view = wide("SHELLDLL_DefView");
-    let workerw = wide("WorkerW");
-    let view = FindWindowExW(hwnd, null_mut(), shell_view.as_ptr(), null());
-    if !view.is_null() {
-        let target = FindWindowExW(null_mut(), hwnd, workerw.as_ptr(), null());
-        if !target.is_null() {
-            *(lparam as *mut *mut c_void) = target;
-            return 0;
-        }
-    }
-    1
-}
-
-fn find_desktop_workerw() -> Result<isize, PlatformError> {
-    unsafe {
-        let progman_name = wide("Progman");
-        let progman = FindWindowW(progman_name.as_ptr(), null());
-        if progman.is_null() {
-            return Err(PlatformError::Unavailable("Progman window not found"));
-        }
-
-        let mut message_result = 0usize;
-        let sent = SendMessageTimeoutW(
-            progman,
-            SPAWN_WORKERW_MESSAGE,
-            0,
-            0,
-            SMTO_NORMAL,
-            1_000,
-            &mut message_result,
-        );
-        if sent == 0 {
-            return Err(last_error("SendMessageTimeoutW"));
-        }
-
-        let mut workerw: *mut c_void = null_mut();
-        let _ = EnumWindows(Some(find_workerw_callback), &mut workerw as *mut _ as isize);
-        if workerw.is_null() {
-            return Err(PlatformError::Unavailable("WorkerW desktop host not found"));
-        }
-        Ok(workerw as isize)
-    }
-}
 
 impl PlatformAdapter for WindowsPlatformAdapter {
     fn configure_pet_window(&self, hwnd: isize) -> Result<(), PlatformError> {
@@ -127,12 +73,7 @@ impl PlatformAdapter for WindowsPlatformAdapter {
         match mode {
             WindowMode::Companion => {
                 unsafe {
-                    let style = GetWindowLongPtrW(hwnd as HWND, GWL_STYLE);
                     let exstyle = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
-                    if style != 0 {
-                        SetWindowLongPtrW(hwnd as HWND, GWL_STYLE, style & !(WS_CHILD as isize));
-                    }
-                    let _ = SetParent(hwnd as *mut c_void, null_mut());
                     if SetWindowPos(
                         hwnd as *mut c_void,
                         HWND_TOPMOST,
@@ -140,11 +81,7 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                         0,
                         0,
                         0,
-                        SWP_NOMOVE
-                            | SWP_NOSIZE
-                            | SWP_NOACTIVATE
-                            | SWP_FRAMECHANGED
-                            | SWP_SHOWWINDOW,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
                     ) == 0
                     {
                         return Err(last_error("SetWindowPos"));
@@ -165,15 +102,8 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                 })
             }
             WindowMode::Desktop => {
-                let workerw = find_desktop_workerw()?;
                 unsafe {
-                    let mut rect = std::mem::zeroed();
-                    if GetWindowRect(hwnd as HWND, &mut rect) == 0 {
-                        return Err(last_error("GetWindowRect"));
-                    }
-                    let style = GetWindowLongPtrW(hwnd as HWND, GWL_STYLE);
                     let exstyle = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
-                    SetWindowLongPtrW(hwnd as HWND, GWL_STYLE, style | WS_CHILD as isize);
                     if exstyle != 0 {
                         SetWindowLongPtrW(
                             hwnd as HWND,
@@ -181,19 +111,14 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                             exstyle & !(WS_EX_TOPMOST as isize),
                         );
                     }
-                    SetLastError(0);
-                    let previous = SetParent(hwnd as *mut c_void, workerw as *mut c_void);
-                    if previous.is_null() && GetLastError() != 0 {
-                        return Err(last_error("SetParent"));
-                    }
                     if SetWindowPos(
                         hwnd as *mut c_void,
-                        null_mut(),
-                        rect.left,
-                        rect.top,
-                        rect.right - rect.left,
-                        rect.bottom - rect.top,
-                        SWP_NOACTIVATE | SWP_FRAMECHANGED | SWP_SHOWWINDOW,
+                        HWND_BOTTOM,
+                        0,
+                        0,
+                        0,
+                        0,
+                        SWP_NOMOVE | SWP_NOSIZE | SWP_NOACTIVATE | SWP_SHOWWINDOW,
                     ) == 0
                     {
                         return Err(last_error("SetWindowPos"));
@@ -202,8 +127,8 @@ impl PlatformAdapter for WindowsPlatformAdapter {
                 Ok(WindowModeEvidence {
                     requested: mode,
                     applied: true,
-                    strategy: "workerw-child",
-                    parent_hwnd: Some(workerw),
+                    strategy: "bottom-no-topmost",
+                    parent_hwnd: None,
                 })
             }
         }

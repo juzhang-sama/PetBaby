@@ -4,8 +4,6 @@ use crate::windowing::{RegionSpan, WindowMode};
 pub enum PlatformError {
     #[error("Windows API {operation} failed with code {code}")]
     WindowsApi { operation: &'static str, code: u32 },
-    #[error("platform capability unavailable: {0}")]
-    Unavailable(&'static str),
 }
 
 #[derive(Debug, serde::Serialize)]
