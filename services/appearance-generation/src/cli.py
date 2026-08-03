@@ -95,6 +95,55 @@ def run_experiment(args) -> None:
     print(f"evaluation -> {json_path}")
 
 
+def run_eye_closure(args) -> None:
+    """Experiment: generate an eye-closed layer for a finished candidate."""
+    from PIL import Image
+
+    from evaluate import render_evaluation_html, save_evaluation_json
+    from generate_batch import postprocess_candidate
+    from identity import LockedTraits
+    from postprocess import remove_background
+    from prompt import build_eye_closure_prompt
+
+    ref_path = Path(args.ref)
+    if not ref_path.exists():
+        print(f"ref not found: {ref_path}")
+        sys.exit(1)
+    traits = LockedTraits.from_dict(args.traits or {})
+    provider = Lk888Provider()
+
+    out_dir = Path(__file__).resolve().parent / "output" / "eye-closure" / ref_path.stem
+    out_dir.mkdir(parents=True, exist_ok=True)
+
+    # Route A: image-to-image from the cleaned candidate (uniform bg re-added)
+    image = Image.open(ref_path).convert("RGB")
+    white_bg = Image.new("RGB", image.size, (226, 226, 226))
+    white_bg.paste(image, (0, 0), image) if image.mode == "RGBA" else white_bg.paste(image)
+    buffer_path = out_dir / "ref-on-bg.png"
+    white_bg.save(buffer_path)
+
+    prompt_a = build_eye_closure_prompt("the cat in the reference image", traits.to_prompt_block())
+    print("route A: img2img eye-closure ...")
+    result_a = provider.generate(prompt_a, ref_images=[buffer_path.read_bytes()])
+    if result_a.image_bytes:
+        (out_dir / "route-a-eyes-closed-raw.png").write_bytes(result_a.image_bytes)
+        cleaned = postprocess_candidate(Image.open(out_dir / "route-a-eyes-closed-raw.png"))
+        cleaned.save(out_dir / "route-a-eyes-closed-clean.png")
+        print("route A done")
+
+    # Route B: pure prompt eye-closure (no reference)
+    prompt_b = build_eye_closure_prompt("a chibi cat", traits.to_prompt_block())
+    print("route B: prompt-only eye-closure ...")
+    result_b = provider.generate(prompt_b)
+    if result_b.image_bytes:
+        (out_dir / "route-b-eyes-closed-raw.png").write_bytes(result_b.image_bytes)
+        cleaned_b = postprocess_candidate(Image.open(out_dir / "route-b-eyes-closed-raw.png"))
+        cleaned_b.save(out_dir / "route-b-eyes-closed-clean.png")
+        print("route B done")
+
+    print(f"eye closure experiment outputs -> {out_dir}")
+
+
 def main() -> None:
     parser = argparse.ArgumentParser(description="appearance generation experiment")
     sub = parser.add_subparsers(dest="command", required=True)
@@ -105,6 +154,11 @@ def main() -> None:
     exp_parser.add_argument("--count", type=int, default=4, help="number of candidates")
     exp_parser.add_argument("--subject", default="", help="subject description")
     exp_parser.add_argument(
+        "--traits", type=Path, default=None, help="JSON file with locked traits"
+    )
+    eye_parser = sub.add_parser("eye-closure", help="eye-closure layer experiment")
+    eye_parser.add_argument("--ref", required=True, type=Path, help="candidate image path")
+    eye_parser.add_argument(
         "--traits", type=Path, default=None, help="JSON file with locked traits"
     )
     args = parser.parse_args()
@@ -118,6 +172,14 @@ def main() -> None:
             traits = _json.loads(args.traits.read_text(encoding="utf-8"))
         args.traits = traits
         run_experiment(args)
+    elif args.command == "eye-closure":
+        traits = {}
+        if args.traits and args.traits.exists():
+            import json as _json
+
+            traits = _json.loads(args.traits.read_text(encoding="utf-8"))
+        args.traits = traits
+        run_eye_closure(args)
 
 
 if __name__ == "__main__":
