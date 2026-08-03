@@ -9,7 +9,7 @@ name = "desktop_pet_lib"
 crate-type = ["staticlib", "cdylib", "rlib"]
 
 [build-dependencies]
-tauri-build = "=2.6.3"
+tauri-build = { version = "=2.6.3", features = [] }
 
 [dependencies]
 serde = { version = "=1.0.229", features = ["derive"] }
