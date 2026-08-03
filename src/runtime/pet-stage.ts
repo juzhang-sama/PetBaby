@@ -1,7 +1,7 @@
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { availableMonitors, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
 import { Application, Assets, Sprite } from "pixi.js";
-import { applyHitRegion, beginDrag, loadPreferences, savePreferences } from "./bridge";
+import { applyHitRegion, loadPreferences, savePreferences } from "./bridge";
 import type { ProbePreferences } from "./contracts";
 import { clampRectToWorkArea, computeContainRect } from "./geometry";
 import { alphaToRegionSpans } from "./hit-mask";
@@ -45,14 +45,16 @@ export class PetStage {
     this.scheduler.setTier("still");
 
     this.app.canvas.addEventListener("pointerdown", (event) => {
-      if (event.button !== 0) return;
-      this.scheduler.setTier("active");
-      window.clearTimeout(this.activeTimer);
-      void beginDrag().then(() => this.captureWindowPlacement());
+      void this.onPointerDown(event);
     });
-    this.app.canvas.addEventListener("pointerup", () => {
-      window.clearTimeout(this.activeTimer);
-      this.activeTimer = window.setTimeout(() => this.scheduler.setTier("still"), 400);
+    document.addEventListener("pointermove", (event) => {
+      void this.onPointerMove(event);
+    });
+    document.addEventListener("pointerup", () => {
+      void this.onPointerUp();
+    });
+    document.addEventListener("pointercancel", () => {
+      void this.onPointerUp();
     });
     this.app.canvas.addEventListener("wheel", (event) => {
       event.preventDefault();
@@ -79,6 +81,43 @@ export class PetStage {
     );
     this.app.render();
     await this.updateHitRegion();
+  }
+
+  private dragging = false;
+  private dragStartMouse: { x: number; y: number } | null = null;
+  private dragStartWindow: { x: number; y: number } | null = null;
+
+  private async onPointerDown(event: PointerEvent): Promise<void> {
+    if (event.button !== 0) return;
+    this.scheduler.setTier("active");
+    window.clearTimeout(this.activeTimer);
+    const petWindow = getCurrentWindow();
+    const [position] = await Promise.all([petWindow.outerPosition()]);
+    this.dragging = true;
+    this.dragStartMouse = { x: event.screenX, y: event.screenY };
+    this.dragStartWindow = { x: position.x, y: position.y };
+  }
+
+  private async onPointerMove(event: PointerEvent): Promise<void> {
+    if (!this.dragging || !this.dragStartMouse || !this.dragStartWindow) return;
+    const dpr = window.devicePixelRatio || 1;
+    const dx = (event.screenX - this.dragStartMouse.x) * dpr;
+    const dy = (event.screenY - this.dragStartMouse.y) * dpr;
+    const petWindow = getCurrentWindow();
+    await petWindow.setPosition(new PhysicalPosition(
+      Math.round(this.dragStartWindow.x + dx),
+      Math.round(this.dragStartWindow.y + dy),
+    ));
+  }
+
+  private async onPointerUp(): Promise<void> {
+    const wasDragging = this.dragging;
+    this.dragging = false;
+    this.dragStartMouse = null;
+    this.dragStartWindow = null;
+    window.clearTimeout(this.activeTimer);
+    this.activeTimer = window.setTimeout(() => this.scheduler.setTier("still"), 400);
+    if (wasDragging) await this.captureWindowPlacement();
   }
 
   private async updateHitRegion(): Promise<void> {

@@ -6,9 +6,10 @@ use windows_sys::Win32::{
     Foundation::{GetLastError, SetLastError, HWND},
     Graphics::Gdi::{CombineRgn, CreateRectRgn, DeleteObject, SetWindowRgn, RGN_OR},
     UI::WindowsAndMessaging::{
-        EnumWindows, FindWindowExW, FindWindowW, GetWindowLongPtrW, SendMessageTimeoutW, SetParent,
-        SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE,
-        SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW, WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
+        EnumWindows, FindWindowExW, FindWindowW, GetWindowLongPtrW, GetWindowRect,
+        SendMessageTimeoutW, SetParent, SetWindowLongPtrW, SetWindowPos, GWL_EXSTYLE, HWND_TOP,
+        HWND_TOPMOST, SMTO_NORMAL, SWP_NOACTIVATE, SWP_NOMOVE, SWP_NOSIZE, SWP_SHOWWINDOW,
+        WS_EX_NOACTIVATE, WS_EX_TOOLWINDOW,
     },
 };
 
@@ -149,10 +150,28 @@ impl PlatformAdapter for WindowsPlatformAdapter {
             }
             WindowMode::Desktop => {
                 let workerw = find_desktop_workerw()?;
-                unsafe { SetLastError(0) };
-                let previous = unsafe { SetParent(hwnd as *mut c_void, workerw as *mut c_void) };
-                if previous.is_null() && unsafe { GetLastError() } != 0 {
-                    return Err(last_error("SetParent"));
+                unsafe {
+                    let mut rect = std::mem::zeroed();
+                    if GetWindowRect(hwnd as HWND, &mut rect) == 0 {
+                        return Err(last_error("GetWindowRect"));
+                    }
+                    SetLastError(0);
+                    let previous = SetParent(hwnd as *mut c_void, workerw as *mut c_void);
+                    if previous.is_null() && GetLastError() != 0 {
+                        return Err(last_error("SetParent"));
+                    }
+                    if SetWindowPos(
+                        hwnd as *mut c_void,
+                        HWND_TOP,
+                        rect.left,
+                        rect.top,
+                        rect.right - rect.left,
+                        rect.bottom - rect.top,
+                        SWP_NOACTIVATE | SWP_SHOWWINDOW,
+                    ) == 0
+                    {
+                        return Err(last_error("SetWindowPos"));
+                    }
                 }
                 Ok(WindowModeEvidence {
                     requested: mode,
