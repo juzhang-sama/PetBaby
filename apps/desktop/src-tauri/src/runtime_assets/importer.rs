@@ -142,7 +142,11 @@ mod tests {
         let root = std::env::temp_dir().join(format!("desktop-pet-imp-{}-{n}", std::process::id()));
         std::fs::create_dir_all(&root).unwrap();
         let not_png = root.join("fake.png");
-        std::fs::write(&not_png, b"this is definitely not a png file content at all").unwrap();
+        std::fs::write(
+            &not_png,
+            b"this is definitely not a png file content at all",
+        )
+        .unwrap();
         let result = import_png_source("pet-x", &not_png, &root.join("out"));
         assert!(result.unwrap_err().contains("not a PNG"));
         let _ = std::fs::remove_dir_all(root);

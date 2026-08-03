@@ -156,28 +156,32 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     };
 
     let toggle = MenuItem::with_id(app, "toggle", "显示或隐藏", true, None::<&str>)?;
+    let settings = MenuItem::with_id(app, "settings", "设置", true, None::<&str>)?;
     let quit = MenuItem::with_id(app, "quit", "退出", true, None::<&str>)?;
-    let menu = Menu::with_items(app, &[&toggle, &quit])?;
+    let menu = Menu::with_items(app, &[&toggle, &settings, &quit])?;
     let mut builder = TrayIconBuilder::new().menu(&menu);
     if let Some(icon) = app.default_window_icon() {
         builder = builder.icon(icon.clone());
     }
     builder
-        .on_menu_event(|app, event| {
-            let Some(window) = app.get_webview_window("pet") else {
-                return;
-            };
-            match event.id().as_ref() {
-                "toggle" => {
+        .on_menu_event(|app, event| match event.id().as_ref() {
+            "toggle" => {
+                if let Some(window) = app.get_webview_window("pet") {
                     if window.is_visible().unwrap_or(false) {
                         let _ = window.hide();
                     } else {
                         let _ = window.show();
                     }
                 }
-                "quit" => app.exit(0),
-                _ => {}
             }
+            "settings" => {
+                if let Some(window) = app.get_webview_window("settings") {
+                    let _ = window.show();
+                    let _ = window.set_focus();
+                }
+            }
+            "quit" => app.exit(0),
+            _ => {}
         })
         .build(app)?;
     Ok(())
