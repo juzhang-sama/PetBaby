@@ -326,6 +326,30 @@ fn debug_windows(app: tauri::AppHandle) -> Vec<String> {
         .collect()
 }
 
+#[tauri::command]
+fn gen_cleanup_pet(app: tauri::AppHandle, pet_id: String) -> Result<(), String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    // remove the pet record and its job artifacts; jobs rows cascade on pet delete
+    let storage = app.state::<pets::SharedPetRepository>();
+    let repo = storage.lock().map_err(|_| "pets lock poisoned")?;
+    repo.delete(&pet_id)?;
+    drop(repo);
+
+    let jobs_root = data_dir.join("jobs");
+    if let Ok(entries) = std::fs::read_dir(&jobs_root) {
+        for entry in entries.flatten() {
+            if entry.file_name().to_string_lossy().starts_with("job-") {
+                // best effort: job dirs are small
+                let _ = std::fs::remove_dir_all(entry.path());
+            }
+        }
+    }
+    Ok(())
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -503,6 +527,7 @@ pub fn run() {
             gen_resume,
             gen_cutout_path,
             gen_cutout_b64,
+            gen_cleanup_pet,
             debug_windows
         ])
         .run(tauri::generate_context!())

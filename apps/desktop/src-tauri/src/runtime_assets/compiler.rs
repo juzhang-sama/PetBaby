@@ -81,6 +81,16 @@ pub fn compile_single_image(
     let written = std::fs::read(&manifest_path).map_err(|error| error.to_string())?;
     parse_manifest(&String::from_utf8_lossy(&written)).map_err(|error| error.to_string())?;
 
+    // intermediate cutout no longer needed: remove its job directory
+    if let Some(job_dir) = cutout_path.parent() {
+        if job_dir
+            .file_name()
+            .is_some_and(|name| name.to_string_lossy().starts_with("job-"))
+        {
+            let _ = std::fs::remove_dir_all(job_dir);
+        }
+    }
+
     Ok(CompileResult {
         manifest_path: manifest_path.to_string_lossy().to_string(),
         degraded,

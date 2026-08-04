@@ -73,12 +73,17 @@
             </div>
           </div>
           <div id="step-generating" style="display:none">
-            <p>正在生成 4 个候选（约 1-2 分钟/张）…</p>
+            <p>正在生成候选（约 1-2 分钟）…</p>
             <div class="job-grid" id="job-grid"></div>
           </div>
           <div id="step-review" style="display:none">
-            <p>选择最像你家宠物的候选（点击选中，再点完成）：</p>
+            <p>生成完成，看看效果：</p>
             <div class="candidate-grid" id="candidate-grid"></div>
+            <div class="wizard-actions" id="review-actions" style="display:none">
+              <button id="review-accept" class="primary">满意，出现在桌面</button>
+              <button id="review-retry">不满意，重新生成</button>
+              <button id="review-abandon">放弃</button>
+            </div>
           </div>
         </div>
         <div class="wizard-actions">

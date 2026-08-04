@@ -146,11 +146,13 @@ function startWizard(): void {
   flow.setSpecies(wSpecies.value as "cat" | "dog");
   photoBytes = null;
   selectedVariant = null;
+  lastJobId = null;
   photoInput.value = "";
   photoPreview.style.display = "none";
   wizardStatus.textContent = "";
   jobGrid.replaceChildren();
   candidateGrid.replaceChildren();
+  reviewActions.style.display = "none";
   btnNext.onclick = null;
   btnNext.textContent = "下一步";
   btnNext.disabled = false;
@@ -217,8 +219,8 @@ btnNext.addEventListener("click", async () => {
     return;
   }
   try {
-    await flow.submitBatch(4);
-    void trace("4 jobs submitted");
+    await flow.submitBatch(1);
+    void trace("1 job submitted");
   } catch (error) {
     wizardStatus.textContent = `提交生成任务失败: ${String(error)}`;
     void trace(`submit failed: ${String(error)}`);
@@ -245,7 +247,7 @@ async function pollJobs(): Promise<void> {
     try {
       const jobs = await genList(petId);
       renderJobs(jobs);
-      const done = jobs.length >= 4 && jobs.every((job) => job.status !== "pending" && job.status !== "running");
+      const done = jobs.length >= 1 && jobs.every((job) => job.status !== "pending" && job.status !== "running");
       if (done) {
         if (pollTimer) window.clearInterval(pollTimer);
         pollTimer = undefined;
@@ -279,53 +281,81 @@ function renderJobs(jobs: JobInfo[]): void {
 async function renderCandidates(jobs: JobInfo[]): Promise<void> {
   candidateGrid.replaceChildren();
   const successful = jobs.filter((job) => job.status === "success");
+  const failed = jobs.filter((job) => job.status === "failed");
   if (successful.length === 0) {
-    wizardStatus.textContent = "全部候选生成失败，请重试或检查网络/密钥配置。";
+    wizardStatus.textContent = failed.length > 0
+      ? `生成失败：${failed[0]?.error ?? "未知原因"}。可点击下方"重新生成"重试。`
+      : "生成失败，可点击下方「重新生成」重试。";
+    reviewActions.style.display = "";
     return;
   }
-  for (const job of successful) {
-    const card = document.createElement("div");
-    card.className = "candidate";
-    const img = document.createElement("img");
-    img.src = await invoke<string>("gen_cutout_b64", { jobId: job.jobId });
-    img.alt = "候选";
-    const label = document.createElement("div");
-    label.style.fontSize = "12px";
-    label.style.color = "#666";
-    label.textContent = job.jobId;
-    card.append(img, label);
-    card.addEventListener("click", () => {
-      selectedVariant = job.jobId;
-      for (const other of candidateGrid.children) {
-        other.classList.remove("selected");
-      }
-      card.classList.add("selected");
-    });
-    candidateGrid.append(card);
-  }
-  btnNext.textContent = "完成并出现在桌面";
-  btnNext.style.display = "";
-  btnNext.onclick = async () => {
-    if (!selectedVariant) {
-      wizardStatus.textContent = "请先选择一个候选";
-      return;
-    }
-    const cutoutPath = await getCutoutPath(selectedVariant);
-    const result = await assetCompile(petId, selectedVariant, cutoutPath);
-    await petSetActive(petId);
-    wizardStatus.textContent = `完成！${result.degraded ? "（资产为降级模式）" : ""}宠物已出现在桌面`;
-    btnNext.disabled = true;
-    window.setTimeout(() => {
-      btnNext.disabled = false;
-      btnNext.textContent = "下一步";
-      switchView("list");
-    }, 2000);
-  };
+  const job = successful[0]!;
+  const card = document.createElement("div");
+  card.className = "candidate selected";
+  const img = document.createElement("img");
+  img.src = await invoke<string>("gen_cutout_b64", { jobId: job.jobId });
+  img.alt = "候选";
+  const label = document.createElement("div");
+  label.style.fontSize = "12px";
+  label.style.color = "#666";
+  label.textContent = job.jobId;
+  card.append(img, label);
+  candidateGrid.append(card);
+  reviewActions.style.display = "";
+  lastJobId = job.jobId;
 }
 
 async function getCutoutPath(jobId: string): Promise<string> {
   return invoke<string>("gen_cutout_path", { jobId });
 }
+
+// --- single-candidate review actions ---
+const reviewActions = $<HTMLDivElement>("review-actions");
+const reviewAccept = $<HTMLButtonElement>("review-accept");
+const reviewRetry = $<HTMLButtonElement>("review-retry");
+const reviewAbandon = $<HTMLButtonElement>("review-abandon");
+let lastJobId: string | null = null;
+
+reviewAccept.addEventListener("click", async () => {
+  if (!lastJobId) return;
+  wizardStatus.textContent = "正在编译资产…";
+  try {
+    const cutoutPath = await getCutoutPath(lastJobId);
+    const result = await assetCompile(petId, lastJobId, cutoutPath);
+    await petSetActive(petId);
+    wizardStatus.textContent = `完成！${result.degraded ? "（资产为降级模式）" : ""}宠物已出现在桌面`;
+    wizardPhase = "idle";
+    window.setTimeout(() => switchView("list"), 1500);
+  } catch (error) {
+    wizardStatus.textContent = `编译失败: ${String(error)}`;
+  }
+});
+
+reviewRetry.addEventListener("click", async () => {
+  wizardStatus.textContent = "重新生成中…";
+  reviewActions.style.display = "none";
+  candidateGrid.replaceChildren();
+  wizardPhase = "generating";
+  showStep("generating");
+  try {
+    await flow.submitBatch(1);
+  } catch (error) {
+    wizardStatus.textContent = `重新生成失败: ${String(error)}`;
+    return;
+  }
+  void pollJobs();
+});
+
+reviewAbandon.addEventListener("click", async () => {
+  wizardStatus.textContent = "已放弃，正在清理…";
+  try {
+    await invoke("gen_cleanup_pet", { petId });
+  } catch (error) {
+    wizardStatus.textContent = `清理失败: ${String(error)}`;
+  }
+  wizardPhase = "idle";
+  switchView("list");
+});
 
 btnBack.addEventListener("click", () => {
   if (pollTimer) window.clearInterval(pollTimer);
