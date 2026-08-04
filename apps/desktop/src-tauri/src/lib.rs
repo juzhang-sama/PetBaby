@@ -1,3 +1,4 @@
+mod generation;
 mod pets;
 mod platform;
 mod preferences;
