@@ -44,6 +44,8 @@ const modeLabel: Record<string, string> = {
 
 async function renderList(): Promise<void> {
   const pets = await petList();
+  const health = await invoke<Array<{ petId: string; status: string }>>("asset_scan");
+  const healthyIds = new Set(health.filter((h) => h.status === "healthy").map((h) => h.petId));
   listEl.replaceChildren();
   if (pets.length === 0) {
     const empty = document.createElement("div");
@@ -57,10 +59,11 @@ async function renderList(): Promise<void> {
     const item = document.createElement("div");
     item.className = pet.petId === active ? "pet-item active" : "pet-item";
     const name = document.createElement("span");
-    name.textContent = `${speciesLabel[pet.species] ?? pet.species} · ${modeLabel[pet.identityMode] ?? pet.identityMode}`;
+    const hasAsset = healthyIds.has(pet.petId);
+    name.textContent = `${speciesLabel[pet.species] ?? pet.species} · ${modeLabel[pet.identityMode] ?? pet.identityMode}${hasAsset ? "" : "（无资产）"}`;
     const actions = document.createElement("div");
     actions.className = "actions";
-    if (pet.petId !== active) {
+    if (pet.petId !== active && hasAsset) {
       const activate = document.createElement("button");
       activate.textContent = "设为当前";
       activate.addEventListener("click", async () => {
@@ -103,6 +106,7 @@ let photoBytes: Uint8Array | null = null;
 let petId = "";
 let pollTimer: number | undefined;
 let selectedVariant: string | null = null;
+let wizardPhase: "idle" | "generating" | "review" = "idle";
 
 function showStep(step: "upload" | "generating" | "review"): void {
   stepUpload.style.display = step === "upload" ? "" : "none";
@@ -147,7 +151,24 @@ function startWizard(): void {
   wizardStatus.textContent = "";
   jobGrid.replaceChildren();
   candidateGrid.replaceChildren();
+  btnNext.onclick = null;
+  btnNext.textContent = "下一步";
+  btnNext.disabled = false;
+  wizardPhase = "idle";
   showStep("upload");
+}
+
+/** Restore the wizard view from memory when switching back to the tab. */
+function restoreWizardView(): void {
+  if (wizardPhase === "generating") {
+    showStep("generating");
+    void pollJobs();
+  } else if (wizardPhase === "review") {
+    showStep("review");
+    void genList(petId).then(renderCandidates);
+  } else {
+    startWizard();
+  }
 }
 
 photoInput.addEventListener("change", async () => {
@@ -204,6 +225,7 @@ btnNext.addEventListener("click", async () => {
     return;
   }
   wizardStatus.textContent = "";
+  wizardPhase = "generating";
   showStep("generating");
   void pollJobs();
 });
@@ -226,6 +248,8 @@ async function pollJobs(): Promise<void> {
       const done = jobs.length >= 4 && jobs.every((job) => job.status !== "pending" && job.status !== "running");
       if (done) {
         if (pollTimer) window.clearInterval(pollTimer);
+        pollTimer = undefined;
+        wizardPhase = "review";
         renderCandidates(jobs);
         showStep("review");
       }
@@ -304,13 +328,14 @@ async function getCutoutPath(jobId: string): Promise<string> {
 }
 
 btnBack.addEventListener("click", () => {
-  btnNext.onclick = null;
-  btnNext.textContent = "下一步";
+  if (pollTimer) window.clearInterval(pollTimer);
+  pollTimer = undefined;
   startWizard();
 });
 
 btnCancel.addEventListener("click", () => {
   if (pollTimer) window.clearInterval(pollTimer);
+  pollTimer = undefined;
   switchView("list");
 });
 
@@ -320,7 +345,7 @@ function switchView(view: "list" | "create"): void {
   tabList.classList.toggle("active", view === "list");
   tabCreate.classList.toggle("active", view === "create");
   if (view === "list") void renderList();
-  if (view === "create") startWizard();
+  if (view === "create") restoreWizardView();
 }
 
 tabList.addEventListener("click", () => switchView("list"));
