@@ -26,7 +26,7 @@
         "additionalBrowserArgs": "--disable-gpu"
       }
     ],
-    "security": { "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' asset: blob: data:; style-src 'self' 'unsafe-inline'" }
+    "security": { "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' pet-asset: asset: blob: data:; style-src 'self' 'unsafe-inline'" }
   },
   "bundle": { "active": false }
 }

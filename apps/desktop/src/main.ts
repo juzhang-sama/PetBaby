@@ -1,5 +1,6 @@
 import "./styles.css";
 import { getCurrentWindow } from "@tauri-apps/api/window";
+import { invoke } from "@tauri-apps/api/core";
 import { PetStage } from "./runtime/pet-stage";
 import { assetScan, probeFullscreen } from "./runtime/bridge";
 
@@ -9,10 +10,20 @@ if (!root) throw new Error("missing #app root");
 try {
   const health = await assetScan();
   const unhealthy = health.find((entry) => entry.status !== "healthy");
+
+  const activePetId = await invoke<string | null>("pet_get_active");
+  const assets = activePetId
+    ? {
+        bodyUrl: `pet-asset://localhost/${activePetId}/assets/body.png`,
+        eyeOpenUrl: `pet-asset://localhost/${activePetId}/assets/body.png`,
+        eyeClosedUrl: `pet-asset://localhost/${activePetId}/assets/body.png`,
+        accentUrl: `pet-asset://localhost/${activePetId}/assets/body.png`,
+      }
+    : undefined;
+
   const stage = new PetStage();
-  await stage.mount(root, unhealthy ? { status: unhealthy.status } : undefined);
+  await stage.mount(root, unhealthy ? { status: unhealthy.status } : undefined, assets);
 } catch (error) {
-  // keep the window usable even if the pet fails to mount
   console.error("pet mount failed:", error);
 }
 

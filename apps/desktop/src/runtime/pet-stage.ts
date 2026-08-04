@@ -28,6 +28,7 @@ export class PetStage {
     renderOnce: () => this.app.render(),
   });
   private animator!: PetAnimator;
+  private assetUrls: { bodyUrl: string } = { bodyUrl: "/test-assets/layered/body.png" };
   private stateSnapshot: PetStateSnapshot = {
     schemaVersion: 1,
     petId: "probe",
@@ -38,11 +39,16 @@ export class PetStage {
     lastInteractionAt: new Date().toISOString(),
   };
 
-  async mount(root: HTMLElement, degraded?: { status: string }): Promise<void> {
+  async mount(
+    root: HTMLElement,
+    degraded?: { status: string },
+    assets?: { bodyUrl: string; eyeOpenUrl: string; eyeClosedUrl: string; accentUrl?: string },
+  ): Promise<void> {
     this.root = root;
     this.preferences = await loadPreferences();
     const petWindow = getCurrentWindow();
     await this.restoreWindowPlacement();
+    if (assets) this.assetUrls = { bodyUrl: assets.bodyUrl };
 
     await this.app.init({
       resizeTo: root,
@@ -57,12 +63,14 @@ export class PetStage {
       this.scheduler.setTier("still");
       return;
     }
-    this.layered = new LayeredSprite({
-      bodyUrl: "/test-assets/layered/body.png",
-      eyeOpenUrl: "/test-assets/layered/eye-open.png",
-      eyeClosedUrl: "/test-assets/layered/eye-closed.png",
-      accentUrl: "/test-assets/layered/accent.png",
-    });
+    this.layered = new LayeredSprite(
+      assets ?? {
+        bodyUrl: "/test-assets/layered/body.png",
+        eyeOpenUrl: "/test-assets/layered/eye-open.png",
+        eyeClosedUrl: "/test-assets/layered/eye-closed.png",
+        accentUrl: "/test-assets/layered/accent.png",
+      },
+    );
     await this.layered.mount(
       this.app.stage,
       { width: this.root.clientWidth, height: this.root.clientHeight },
@@ -189,6 +197,7 @@ export class PetStage {
     canvas.height = this.root.clientHeight;
     const context = canvas.getContext("2d", { willReadFrequently: true });
     if (!context) throw new Error("2D canvas is unavailable for hit-mask extraction");
+    const bodyTexture = await Assets.load(this.assetUrls.bodyUrl);
     const bounds = this.layered.getBodyBounds();
     context.save();
     context.translate(this.preferences.flipped ? canvas.width : 0, 0);

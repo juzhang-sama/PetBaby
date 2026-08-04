@@ -376,6 +376,21 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
 pub fn run() {
     tauri::Builder::default()
+        .register_uri_scheme_protocol("pet-asset", |ctx, request| {
+            use tauri::http::Response;
+            let app = ctx.app_handle();
+            let data_dir = app
+                .path()
+                .app_data_dir()
+                .unwrap_or_else(|_| std::path::PathBuf::new());
+            let relative = request.uri().path().trim_start_matches('/');
+            // pet-asset://localhost/<pet_id>/assets/<file>
+            let file = data_dir.join("pets").join(relative);
+            match std::fs::read(&file) {
+                Ok(bytes) => Response::builder().status(200).body(bytes).unwrap(),
+                Err(_) => Response::builder().status(404).body(Vec::new()).unwrap(),
+            }
+        })
         .setup(|app| {
             let data_dir = app
                 .path()
