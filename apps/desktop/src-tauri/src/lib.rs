@@ -199,6 +199,45 @@ fn pet_calibration_save(
     )
 }
 
+#[tauri::command]
+fn gen_start(
+    manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
+    pet_id: String,
+    prompt: String,
+    ref_png_b64: String,
+    ref_sha256: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(ref_png_b64)
+        .map_err(|error| format!("bad base64: {error}"))?;
+    manager.start(&pet_id, &prompt, &png, &ref_sha256)
+}
+
+#[tauri::command]
+fn gen_cancel(
+    manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
+    job_id: String,
+) -> Result<(), String> {
+    manager.cancel(&job_id)
+}
+
+#[tauri::command]
+fn gen_list(
+    store: tauri::State<'_, creation::SharedCreationStore>,
+    pet_id: String,
+) -> Result<Vec<creation::JobRecord>, String> {
+    let store = store.lock().map_err(|_| "store lock poisoned")?;
+    store.job_list(&pet_id)
+}
+
+#[tauri::command]
+fn gen_resume(
+    manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
+) -> Result<usize, String> {
+    manager.resume()
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -282,6 +321,31 @@ pub fn run() {
             app.manage(Arc::new(Mutex::new(pets::state::StateStore::new(storage)))
                 as pets::state::SharedStateStore);
 
+            let creation_store = Arc::new(Mutex::new(creation::CreationStore::new(Arc::new(
+                Mutex::new(storage::Storage::open(&data_dir.join("pets"))?),
+            ))));
+            app.manage(creation_store.clone() as creation::SharedCreationStore);
+
+            let api_key = std::env::var("LK888_API_KEY").unwrap_or_else(|_| String::new());
+            let manager = generation::tasks::GenerationManager::new(
+                creation_store,
+                Arc::new(generation::lk888::Lk888Client::new(api_key)),
+                Arc::from(data_dir.join("jobs").as_path()),
+            );
+            let manager = Arc::new(manager);
+            app.manage(manager.clone() as generation::tasks::SharedGenerationManager);
+
+            // background polling thread for generation jobs
+            {
+                let manager = manager.clone();
+                std::thread::spawn(move || loop {
+                    std::thread::sleep(std::time::Duration::from_secs(5));
+                    tauri::async_runtime::block_on(async {
+                        let _ = manager.poll_all();
+                    });
+                });
+            }
+
             let window = app.get_webview_window("pet").ok_or("pet window missing")?;
             let hwnd = window.hwnd()?.0 as isize;
             app.state::<AppState>()
@@ -314,7 +378,11 @@ pub fn run() {
             pet_state_load,
             pet_state_save,
             pet_calibration_load,
-            pet_calibration_save
+            pet_calibration_save,
+            gen_start,
+            gen_cancel,
+            gen_list,
+            gen_resume
         ])
         .run(tauri::generate_context!())
         .expect("failed to run desktop pet runtime");

@@ -3,15 +3,12 @@ pub mod profiles;
 use crate::storage::Storage;
 use std::sync::{Arc, Mutex};
 
-#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 pub type SharedCreationStore = Arc<Mutex<CreationStore>>;
 
-#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 pub struct CreationStore {
     storage: Arc<Mutex<Storage>>,
 }
 
-#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 impl CreationStore {
     pub fn new(storage: Arc<Mutex<Storage>>) -> Self {
         Self { storage }
@@ -121,7 +118,6 @@ impl CreationStore {
     }
 }
 
-#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobRecord {

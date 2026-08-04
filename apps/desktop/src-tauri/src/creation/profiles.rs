@@ -1,6 +1,5 @@
 use serde::{Deserialize, Serialize};
 
-#[expect(dead_code)] // used by CreationStore and M4 Task 5
 pub fn now_iso() -> String {
     use std::time::{SystemTime, UNIX_EPOCH};
     let secs = SystemTime::now()
@@ -12,7 +11,7 @@ pub fn now_iso() -> String {
 
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
-#[expect(dead_code)] // persisted by the creation flow in M4 Task 5
+#[expect(dead_code)] // created by the M4 Task 5 creation flow
 pub struct IdentityProfile {
     pub profile_id: String,
     pub pet_id: String,
@@ -24,9 +23,9 @@ pub struct IdentityProfile {
     pub created_at: String,
 }
 
-#[expect(dead_code)] // created by the candidate flow in M4 Task 5
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
+#[expect(dead_code)] // created by the M4 Task 5 candidate flow
 pub struct AppearanceVariant {
     pub variant_id: String,
     pub pet_id: String,

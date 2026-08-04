@@ -2,12 +2,9 @@
 use reqwest::StatusCode;
 use std::time::Duration;
 
-#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 const DEFAULT_BASE: &str = "https://api.lk888.ai";
-#[expect(dead_code)]
 const DEFAULT_MODEL: &str = "gpt-image-2";
 
-#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 #[derive(Debug, thiserror::Error)]
 pub enum GenError {
     #[error("network error: {0}")]
@@ -18,12 +15,13 @@ pub enum GenError {
     RateLimit(String),
     #[error("generation error: {0}")]
     Generation(String),
+    #[expect(dead_code)] // reserved for the polling loop
     #[error("timeout: {0}")]
     Timeout(String),
 }
 
-#[expect(dead_code)] // constructed by the job manager in M4 Task 4
 #[derive(Debug, Clone)]
+#[expect(dead_code)] // task_id kept for diagnostics in the polling loop
 pub struct TaskState {
     pub task_id: String,
     pub state: String,
@@ -32,7 +30,6 @@ pub struct TaskState {
     pub error: Option<String>,
 }
 
-#[expect(dead_code)] // constructed by the job manager in M4 Task 4
 pub struct Lk888Client {
     key: String,
     base: String,
@@ -40,7 +37,6 @@ pub struct Lk888Client {
     client: reqwest::Client,
 }
 
-#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 impl Lk888Client {
     pub fn new(key: String) -> Self {
         Self {
@@ -54,6 +50,7 @@ impl Lk888Client {
         }
     }
 
+    #[expect(dead_code)] // used by unit tests with a mock server
     pub fn new_with(key: String, base: String, model: String) -> Self {
         Self {
             key,

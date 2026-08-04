@@ -1,14 +1,13 @@
 use image::{DynamicImage, Rgba, RgbaImage};
 
 #[derive(Debug, thiserror::Error)]
-#[expect(dead_code)] // consumed by the pipeline in M4 Task 6
 pub enum CutoutError {
     #[error("image too small: {0}x{1}")]
     TooSmall(u32, u32),
 }
 
 #[derive(Debug, Clone, Copy)]
-#[expect(dead_code)] // consumed by the pipeline in M4 Task 6
+#[expect(dead_code)] // consumed by the M4 Task 6 pipeline
 pub struct QualityReport {
     pub opaque_ratio: f32,
     pub transparent_ratio: f32,
@@ -24,13 +23,11 @@ impl QualityReport {
     }
 }
 
-#[expect(dead_code)] // internal helper
 pub fn estimate_background(rgb: &[u8], width: u32, height: u32) -> [u8; 3] {
     let border = border_samples(rgb, width, height);
     median_color(&border)
 }
 
-#[expect(dead_code)]
 pub fn is_uniform_background(rgb: &[u8], width: u32, height: u32, bg: [u8; 3], tol: u8) -> bool {
     let samples = border_samples(rgb, width, height);
     samples.iter().all(|p| {
@@ -38,7 +35,6 @@ pub fn is_uniform_background(rgb: &[u8], width: u32, height: u32, bg: [u8; 3], t
     })
 }
 
-#[expect(dead_code)]
 fn border_samples(rgb: &[u8], width: u32, height: u32) -> Vec<[u8; 3]> {
     let depth = (height / 20).max(1);
     let mut samples = Vec::new();
@@ -65,7 +61,6 @@ fn median_color(samples: &[[u8; 3]]) -> [u8; 3] {
     [mid(&reds), mid(&greens), mid(&blues)]
 }
 
-#[expect(dead_code)]
 pub fn chroma_remove(
     rgb: &[u8],
     width: u32,
@@ -97,7 +92,6 @@ pub fn chroma_remove(
     Ok(out)
 }
 
-#[expect(dead_code)]
 pub fn quality_report(rgba: &RgbaImage) -> QualityReport {
     let (width, height) = rgba.dimensions();
     let total = width * height;
@@ -161,7 +155,6 @@ pub fn quality_report(rgba: &RgbaImage) -> QualityReport {
     }
 }
 
-#[expect(dead_code)] // consumed by the pipeline in M4 Task 6
 pub fn remove_background(img: &DynamicImage) -> (RgbaImage, QualityReport) {
     let rgb_img = img.to_rgb8();
     let (width, height) = rgb_img.dimensions();
