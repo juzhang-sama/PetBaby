@@ -306,6 +306,21 @@ fn gen_cutout_b64(app: tauri::AppHandle, job_id: String) -> Result<String, Strin
     ))
 }
 
+#[tauri::command]
+fn debug_windows(app: tauri::AppHandle) -> Vec<String> {
+    app.webview_windows()
+        .keys()
+        .map(|label| {
+            let window = app.get_webview_window(label);
+            let visible = window
+                .as_ref()
+                .and_then(|w| w.is_visible().ok())
+                .unwrap_or(false);
+            format!("{label} visible={visible}")
+        })
+        .collect()
+}
+
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -348,6 +363,8 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     .build()
                     {
                         Ok(window) => {
+                            let _ = window.center();
+                            let _ = window.show();
                             let _ = window.set_focus();
                             println!("[desktop-pet] settings window created");
                         }
@@ -477,7 +494,8 @@ pub fn run() {
             gen_list,
             gen_resume,
             gen_cutout_path,
-            gen_cutout_b64
+            gen_cutout_b64,
+            debug_windows
         ])
         .run(tauri::generate_context!())
         .expect("failed to run desktop pet runtime");
