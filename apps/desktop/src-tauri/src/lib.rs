@@ -454,9 +454,9 @@ pub fn run() {
                 let manager = manager.clone();
                 std::thread::spawn(move || loop {
                     std::thread::sleep(std::time::Duration::from_secs(5));
-                    tauri::async_runtime::block_on(async {
-                        let _ = manager.poll_all();
-                    });
+                    // poll_all uses its own temporary runtime internally; do not
+                    // wrap in async_runtime::block_on (nested runtime panic)
+                    let _ = manager.poll_all();
                 });
             }
 
