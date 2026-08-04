@@ -220,4 +220,29 @@ mod tests {
         assert_eq!(running[0].task_id.as_deref(), Some("t1"));
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn job_creation_with_separate_connection_obeys_foreign_key() {
+        // simulates lib.rs setup: pet repository and creation store use
+        // two independent Storage connections to the same database file
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!("desktop-pet-fk-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let storage_a = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        let repo = crate::pets::repository::PetRepository::new(storage_a);
+        let pet = repo
+            .create(
+                crate::pets::pet::Species::Cat,
+                crate::pets::pet::IdentityMode::RealPet,
+            )
+            .unwrap();
+
+        let storage_b = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        let store = CreationStore::new(storage_b);
+        store
+            .create_job("j1", &pet.pet_id, "p", "h", Some("t1"))
+            .expect("job creation must succeed across connections");
+        let _ = std::fs::remove_dir_all(root);
+    }
 }

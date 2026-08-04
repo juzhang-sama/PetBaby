@@ -16,24 +16,18 @@ export interface CreationStore {
 }
 
 class TauriStore implements CreationStore {
-  private readonly petId: string;
-
-  constructor(petId: string) {
-    this.petId = petId;
-  }
-
-  async genStart(_petId: string, prompt: string, refPngB64: string): Promise<string> {
+  async genStart(petId: string, prompt: string, refPngB64: string): Promise<string> {
     return invoke("gen_start", {
-      petId: this.petId,
+      petId,
       prompt,
       refPngB64,
       refSha256: "sha-placeholder",
     });
   }
 
-  async genList(_petId: string): Promise<JobUpdate[]> {
+  async genList(petId: string): Promise<JobUpdate[]> {
     const jobs = await invoke<Array<Record<string, unknown>>>("gen_list", {
-      petId: this.petId,
+      petId,
     });
     return jobs.map((job) => ({
       jobId: String(job.jobId),
@@ -46,14 +40,15 @@ class TauriStore implements CreationStore {
     // variant acceptance is recorded during compile in M4 Task 6
   }
 
-  async compile(_petId: string): Promise<{ manifestPath: string; degraded: boolean }> {
-    return invoke("asset_compile", { petId: this.petId });
+  async compile(petId: string): Promise<{ manifestPath: string; degraded: boolean }> {
+    return invoke("asset_compile", { petId });
   }
 }
 
 export class CreationFlow {
   step: CreationStep = "upload";
   private species = "cat";
+  private petId = "pet-1";
   private photoBytes: Uint8Array | null = null;
   private jobIds: string[] = [];
   private selectedVariant: string | null = null;
@@ -61,7 +56,11 @@ export class CreationFlow {
   private readonly store: CreationStore;
 
   constructor(store?: CreationStore) {
-    this.store = store ?? new TauriStore("pet-1");
+    this.store = store ?? new TauriStore();
+  }
+
+  setPetId(petId: string): void {
+    this.petId = petId;
   }
 
   setSpecies(species: "cat" | "dog"): void {
@@ -85,14 +84,14 @@ export class CreationFlow {
     const b64 = bytesToBase64(this.photoBytes);
     const prompt = buildPrompt(this.species);
     for (let i = 0; i < count; i += 1) {
-      const jobId = await this.store.genStart("pet-1", prompt, b64);
+      const jobId = await this.store.genStart(this.petId, prompt, b64);
       this.jobIds.push(jobId);
     }
     this.step = "generating";
   }
 
   async poll(): Promise<boolean> {
-    const jobs = await this.store.genList("pet-1");
+    const jobs = await this.store.genList(this.petId);
     const pending = jobs.filter((job) => job.status === "pending" || job.status === "running");
     if (pending.length === 0 && jobs.length > 0) {
       this.step = "review";
@@ -108,7 +107,7 @@ export class CreationFlow {
 
   async compile(): Promise<{ manifestPath: string; degraded: boolean }> {
     if (!this.selectedVariant) throw new Error("no variant selected");
-    const result = await this.store.compile("pet-1");
+    const result = await this.store.compile(this.petId);
     this.compiled = true;
     this.step = "confirm";
     return result;

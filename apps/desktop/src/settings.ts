@@ -188,12 +188,8 @@ btnNext.addEventListener("click", async () => {
   }
   try {
     flow.setPhotoBytes(photoBytes);
-    const pet = await invoke<PetSummary>("pet_create", {
-      species: wSpecies.value,
-      identityMode: "realPet",
-    });
-    petId = pet.petId;
-    void trace(`pet created: ${petId}`);
+    flow.setPetId(await createPetForWizard());
+    void trace("pet created");
   } catch (error) {
     wizardStatus.textContent = `创建宠物失败: ${String(error)}`;
     void trace(`pet create failed: ${String(error)}`);
@@ -211,6 +207,15 @@ btnNext.addEventListener("click", async () => {
   showStep("generating");
   void pollJobs();
 });
+
+async function createPetForWizard(): Promise<string> {
+  const pet = await invoke<PetSummary>("pet_create", {
+    species: wSpecies.value,
+    identityMode: "realPet",
+  });
+  petId = pet.petId;
+  return pet.petId;
+}
 
 async function pollJobs(): Promise<void> {
   if (pollTimer) window.clearInterval(pollTimer);
