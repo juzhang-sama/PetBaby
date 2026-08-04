@@ -161,6 +161,7 @@ pub fn quality_report(rgba: &RgbaImage) -> QualityReport {
     }
 }
 
+#[expect(dead_code)] // consumed by the pipeline in M4 Task 6
 pub fn remove_background(img: &DynamicImage) -> (RgbaImage, QualityReport) {
     let rgb_img = img.to_rgb8();
     let (width, height) = rgb_img.dimensions();
