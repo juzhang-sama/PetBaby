@@ -200,6 +200,25 @@ fn pet_state_save(
 }
 
 #[tauri::command]
+fn app_setting_get(
+    state: tauri::State<'_, pets::state::SharedStateStore>,
+    key: String,
+) -> Result<Option<String>, String> {
+    let store = state.lock().map_err(|_| "state lock poisoned")?;
+    store.load(&format!("app:{key}"))
+}
+
+#[tauri::command]
+fn app_setting_set(
+    state: tauri::State<'_, pets::state::SharedStateStore>,
+    key: String,
+    value: String,
+) -> Result<(), String> {
+    let store = state.lock().map_err(|_| "state lock poisoned")?;
+    store.save(&format!("app:{key}"), &value)
+}
+
+#[tauri::command]
 fn pet_calibration_load(
     state: tauri::State<'_, pets::state::SharedStateStore>,
 ) -> Result<Option<String>, String> {
@@ -256,6 +275,35 @@ fn gen_resume(
     manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
 ) -> Result<usize, String> {
     manager.resume()
+}
+
+#[tauri::command]
+fn gen_cutout_path(app: tauri::AppHandle, job_id: String) -> Result<String, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let cutout = data_dir.join("jobs").join(&job_id).join("cutout.png");
+    if cutout.exists() {
+        Ok(cutout.to_string_lossy().to_string())
+    } else {
+        Err("cutout not ready yet".into())
+    }
+}
+
+#[tauri::command]
+fn gen_cutout_b64(app: tauri::AppHandle, job_id: String) -> Result<String, String> {
+    use base64::Engine;
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let cutout = data_dir.join("jobs").join(&job_id).join("cutout.png");
+    let bytes = std::fs::read(&cutout).map_err(|error| error.to_string())?;
+    Ok(format!(
+        "data:image/png;base64,{}",
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    ))
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -338,18 +386,17 @@ pub fn run() {
                 storage.clone(),
             ))) as SharedPetRepository);
             app.manage(Arc::new(Mutex::new(ActivePetSession::new())) as SharedActivePetSession);
-            app.manage(Arc::new(Mutex::new(pets::state::StateStore::new(storage)))
-                as pets::state::SharedStateStore);
+            let state_store = Arc::new(Mutex::new(pets::state::StateStore::new(storage)));
+            app.manage(state_store.clone() as pets::state::SharedStateStore);
 
             let creation_store = Arc::new(Mutex::new(creation::CreationStore::new(Arc::new(
                 Mutex::new(storage::Storage::open(&data_dir.join("pets"))?),
             ))));
             app.manage(creation_store.clone() as creation::SharedCreationStore);
 
-            let api_key = std::env::var("LK888_API_KEY").unwrap_or_else(|_| String::new());
             let manager = generation::tasks::GenerationManager::new(
                 creation_store,
-                Arc::new(generation::lk888::Lk888Client::new(api_key)),
+                state_store,
                 Arc::from(data_dir.join("jobs").as_path()),
             );
             let manager = Arc::new(manager);
@@ -398,12 +445,16 @@ pub fn run() {
             pet_get_active,
             pet_state_load,
             pet_state_save,
+            app_setting_get,
+            app_setting_set,
             pet_calibration_load,
             pet_calibration_save,
             gen_start,
             gen_cancel,
             gen_list,
-            gen_resume
+            gen_resume,
+            gen_cutout_path,
+            gen_cutout_b64
         ])
         .run(tauri::generate_context!())
         .expect("failed to run desktop pet runtime");

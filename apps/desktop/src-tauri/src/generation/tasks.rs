@@ -9,21 +9,33 @@ pub type SharedGenerationManager = Arc<GenerationManager>;
 
 pub struct GenerationManager {
     store: Arc<Mutex<CreationStore>>,
-    client: Arc<Lk888Client>,
+    state_store: Arc<Mutex<crate::pets::state::StateStore>>,
     jobs_dir: Arc<Path>,
 }
 
 impl GenerationManager {
     pub fn new(
         store: Arc<Mutex<CreationStore>>,
-        client: Arc<Lk888Client>,
+        state_store: Arc<Mutex<crate::pets::state::StateStore>>,
         jobs_dir: Arc<Path>,
     ) -> Self {
         Self {
             store,
-            client,
+            state_store,
             jobs_dir,
         }
+    }
+
+    fn client_for(&self) -> Result<Lk888Client, String> {
+        let state = self.state_store.lock().map_err(|_| "state lock poisoned")?;
+        let key = state
+            .load("app:lk888_api_key")?
+            .or_else(|| std::env::var("LK888_API_KEY").ok())
+            .unwrap_or_default();
+        if key.is_empty() {
+            return Err("请在设置页填入 lk888 API Key".into());
+        }
+        Ok(Lk888Client::new(key))
     }
 
     pub fn start(
@@ -34,9 +46,9 @@ impl GenerationManager {
         ref_sha256: &str,
     ) -> Result<String, String> {
         let job_id = format!("job-{}", now_iso());
-        let task_id =
-            tauri::async_runtime::block_on(self.client.submit(prompt, Some(ref_png), "auto"))
-                .map_err(|error| format!("submit failed: {error}"))?;
+        let client = self.client_for()?;
+        let task_id = tauri::async_runtime::block_on(client.submit(prompt, Some(ref_png), "auto"))
+            .map_err(|error| format!("submit failed: {error}"))?;
         let store = self.store.lock().map_err(|_| "store lock poisoned")?;
         store.create_job(&job_id, pet_id, prompt, ref_sha256, Some(&task_id))?;
         Ok(job_id)
@@ -57,7 +69,8 @@ impl GenerationManager {
             let Some(task_id) = job.task_id.clone() else {
                 continue;
             };
-            let state = match tauri::async_runtime::block_on(self.client.poll(&task_id)) {
+            let client = self.client_for()?;
+            let state = match tauri::async_runtime::block_on(client.poll(&task_id)) {
                 Ok(state) => state,
                 Err(error) => {
                     let store = self.store.lock().map_err(|_| "store lock poisoned")?;
@@ -81,7 +94,7 @@ impl GenerationManager {
                     finished.push(job.job_id);
                     continue;
                 };
-                match tauri::async_runtime::block_on(self.client.download(&url)) {
+                match tauri::async_runtime::block_on(client.download(&url)) {
                     Ok(bytes) => {
                         self.persist_result(&job.job_id, &bytes);
                         store.update_job_status(&job.job_id, "success", Some(&url), None)?;

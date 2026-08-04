@@ -41,7 +41,7 @@ describe("CreationFlow", () => {
     flow.setPhotoBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
     await flow.submitBatch(4);
     expect(store.started.length).toBe(4);
-    expect(store.started[0].petId).toBe("pet-1");
+    expect(store.started[0]!.petId).toBe("pet-1");
     expect(flow.step).toBe("generating");
   });
 

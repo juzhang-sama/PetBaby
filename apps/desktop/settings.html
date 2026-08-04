@@ -7,35 +7,87 @@
     <style>
       body { font-family: system-ui, sans-serif; margin: 24px; background: #f5f6f8; color: #222; }
       h1 { font-size: 18px; }
+      .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
+      .tab { padding: 6px 14px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
+      .tab.active { background: #4a90d9; color: #fff; border-color: #4a90d9; }
       .pet-list { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
       .pet-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
       .pet-item.active { border-color: #4a90d9; background: #eef5fd; }
       button { padding: 6px 14px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
       button.primary { background: #4a90d9; color: #fff; border-color: #4a90d9; }
+      button:disabled { opacity: 0.5; cursor: not-allowed; }
       .actions { display: flex; gap: 8px; margin-left: auto; }
       .empty { color: #888; }
-      #status { margin-top: 12px; font-size: 13px; color: #666; }
+      #status, #wizard-status { margin-top: 12px; font-size: 13px; color: #666; }
+      .wizard { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; max-width: 720px; }
+      .wizard-step { margin: 12px 0; }
+      .wizard-actions { display: flex; gap: 8px; margin-top: 16px; }
+      .privacy-note { font-size: 12px; color: #a33; background: #fdecec; border: 1px solid #f5c6c6; border-radius: 6px; padding: 8px; margin: 10px 0; }
+      .job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
+      .job-card { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; font-size: 13px; }
+      .job-card.success { border-color: #7ac47a; background: #f0faf0; }
+      .job-card.failed { border-color: #e08080; background: #fdf0f0; }
+      .candidate-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+      .candidate { background: #fff; border: 2px solid #ddd; border-radius: 8px; padding: 8px; cursor: pointer; }
+      .candidate.selected { border-color: #4a90d9; }
+      .candidate img { width: 100%; border-radius: 6px; background: linear-gradient(45deg,#eee 25%,#fff 25%,#fff 50%,#eee 50%,#eee 75%,#fff 75%); background-size: 16px 16px; }
+      input[type="file"] { margin: 8px 0; }
+      #photo-preview { max-width: 240px; border-radius: 8px; display: none; }
     </style>
   </head>
   <body>
     <h1>桌面宠物设置</h1>
-    <div>
-      <label>种类：
-        <select id="species">
-          <option value="cat">猫</option>
-          <option value="dog">狗</option>
-        </select>
-      </label>
-      <label>创建方式：
-        <select id="mode">
-          <option value="real_pet">真实宠物</option>
-          <option value="adopted">直接领养</option>
-        </select>
-      </label>
-      <button id="create" class="primary">新建宠物</button>
+    <div class="tabs">
+      <button id="tab-list" class="tab active">我的宠物</button>
+      <button id="tab-create" class="tab">创建宠物</button>
     </div>
-    <div class="pet-list" id="list"></div>
-    <div id="status"></div>
+
+    <div id="view-list">
+      <div class="pet-list" id="list"></div>
+      <div id="status"></div>
+    </div>
+
+    <div id="view-create" style="display:none">
+      <div class="wizard">
+        <h2 id="wizard-title">创建新宠物</h2>
+        <div class="wizard-step">
+          <label>生成 API Key（lk888.ai）：<input type="password" id="api-key" placeholder="sk-..." style="width:280px" /></label>
+          <button id="save-key">保存 Key</button>
+          <div id="key-status" style="font-size:12px;color:#666"></div>
+        </div>
+        <div class="wizard-step" id="wizard-step">
+          <div id="step-upload">
+            <label>种类：
+              <select id="w-species">
+                <option value="cat">猫</option>
+                <option value="dog">狗</option>
+              </select>
+            </label>
+            <div><input type="file" id="photo-input" accept="image/*" /></div>
+            <img id="photo-preview" alt="预览" />
+            <div class="privacy-note">
+              隐私提示：照片将上传到第三方生成平台（gpt-image-2）用于生成卡通形象，
+              平台侧生成结果默认保留；本地仅保存你的宠物资产。取消可随时进行。
+            </div>
+          </div>
+          <div id="step-generating" style="display:none">
+            <p>正在生成 4 个候选（约 1-2 分钟/张）…</p>
+            <div class="job-grid" id="job-grid"></div>
+            <div id="wizard-status"></div>
+          </div>
+          <div id="step-review" style="display:none">
+            <p>选择最像你家宠物的候选（点击选中，再点完成）：</p>
+            <div class="candidate-grid" id="candidate-grid"></div>
+          </div>
+        </div>
+        <div class="wizard-actions">
+          <button id="wizard-back" style="display:none">上一步</button>
+          <button id="wizard-next" class="primary">下一步</button>
+          <button id="wizard-cancel" style="display:none">取消</button>
+        </div>
+      </div>
+    </div>
+
     <script type="module" src="/src/settings.ts"></script>
   </body>
 </html>
