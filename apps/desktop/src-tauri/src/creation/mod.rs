@@ -11,6 +11,7 @@ pub struct CreationStore {
     storage: Arc<Mutex<Storage>>,
 }
 
+#[expect(dead_code)] // consumed by the job manager in M4 Task 4
 impl CreationStore {
     pub fn new(storage: Arc<Mutex<Storage>>) -> Self {
         Self { storage }
