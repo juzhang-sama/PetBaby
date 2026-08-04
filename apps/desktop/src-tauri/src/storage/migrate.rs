@@ -23,6 +23,40 @@ pub const MIGRATIONS: &[&str] = &[
       value TEXT NOT NULL
     );
     "#,
+    // v2: creation domain (profiles, generation jobs, appearance variants)
+    r#"
+    CREATE TABLE identity_profiles (
+      profile_id TEXT PRIMARY KEY,
+      pet_id TEXT NOT NULL REFERENCES pets(pet_id) ON DELETE CASCADE,
+      schema_version INTEGER NOT NULL,
+      species TEXT NOT NULL,
+      identity_mode TEXT NOT NULL,
+      locked_traits TEXT NOT NULL,
+      ref_asset_id TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE generation_jobs (
+      job_id TEXT PRIMARY KEY,
+      pet_id TEXT NOT NULL REFERENCES pets(pet_id) ON DELETE CASCADE,
+      prompt TEXT NOT NULL,
+      ref_sha256 TEXT NOT NULL,
+      task_id TEXT,
+      status TEXT NOT NULL,
+      result_url TEXT,
+      error TEXT,
+      created_at TEXT NOT NULL
+    );
+    CREATE TABLE appearance_variants (
+      variant_id TEXT PRIMARY KEY,
+      pet_id TEXT NOT NULL REFERENCES pets(pet_id) ON DELETE CASCADE,
+      job_id TEXT REFERENCES generation_jobs(job_id),
+      image_path TEXT NOT NULL,
+      cutout_path TEXT,
+      quality TEXT NOT NULL,
+      accepted INTEGER NOT NULL DEFAULT 0,
+      created_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub fn apply(db: &Connection) -> Result<(), String> {
