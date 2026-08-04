@@ -24,11 +24,13 @@ impl QualityReport {
     }
 }
 
+#[expect(dead_code)] // internal helper
 pub fn estimate_background(rgb: &[u8], width: u32, height: u32) -> [u8; 3] {
     let border = border_samples(rgb, width, height);
     median_color(&border)
 }
 
+#[expect(dead_code)]
 pub fn is_uniform_background(rgb: &[u8], width: u32, height: u32, bg: [u8; 3], tol: u8) -> bool {
     let samples = border_samples(rgb, width, height);
     samples.iter().all(|p| {
@@ -36,6 +38,7 @@ pub fn is_uniform_background(rgb: &[u8], width: u32, height: u32, bg: [u8; 3], t
     })
 }
 
+#[expect(dead_code)]
 fn border_samples(rgb: &[u8], width: u32, height: u32) -> Vec<[u8; 3]> {
     let depth = (height / 20).max(1);
     let mut samples = Vec::new();
