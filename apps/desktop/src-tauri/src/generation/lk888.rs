@@ -118,7 +118,14 @@ impl Lk888Client {
                         if let Ok(parsed) = serde_json::from_str::<serde_json::Value>(&text) {
                             if let Some(task_id) = parsed.get("data").and_then(|d| d.get("task_id"))
                             {
-                                return Ok(task_id.as_str().unwrap_or_default().to_string());
+                                // the platform returns task_id as a number
+                                let id = task_id
+                                    .as_str()
+                                    .map(str::to_string)
+                                    .or_else(|| task_id.as_i64().map(|n| n.to_string()));
+                                if let Some(id) = id {
+                                    return Ok(id);
+                                }
                             }
                         }
                         last_error = Some(GenError::Generation(format!(
@@ -220,7 +227,7 @@ mod tests {
             .and(path("/v1/media/generate"))
             .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
                 "code": 200,
-                "data": { "task_id": "task-1" }
+                "data": { "task_id": 93159178 }
             })))
             .mount(&server)
             .await;
@@ -228,7 +235,7 @@ mod tests {
         let client = Lk888Client::new_with("k".into(), server.uri(), "gpt-image-2".into());
         let png = [0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A];
         let task = client.submit("a cat", Some(&png), "auto").await.unwrap();
-        assert_eq!(task, "task-1");
+        assert_eq!(task, "93159178");
 
         let received = server.received_requests().await.unwrap();
         assert_eq!(received.len(), 1);
