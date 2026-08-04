@@ -174,7 +174,7 @@ btnNext.addEventListener("click", async () => {
     flow.setPhotoBytes(photoBytes);
     const pet = await invoke<PetSummary>("pet_create", {
       species: wSpecies.value,
-      identityMode: "real_pet",
+      identityMode: "realPet",
     });
     petId = pet.petId;
   } catch (error) {
