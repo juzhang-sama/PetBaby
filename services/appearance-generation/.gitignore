@@ -13,5 +13,9 @@ venv/
 output/
 !output/.gitkeep
 
+# real pet photos
+samples/
+!samples/README.md
+
 # rembg model cache
 .u2net/
