@@ -113,6 +113,26 @@ fn asset_scan(app: tauri::AppHandle) -> Result<Vec<runtime_assets::loader::Asset
 }
 
 #[tauri::command]
+fn asset_compile(
+    app: tauri::AppHandle,
+    pet_id: String,
+    variant_id: String,
+    cutout_path: String,
+) -> Result<runtime_assets::compiler::CompileResult, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let dest = data_dir.join("pets").join(&pet_id).join("assets");
+    runtime_assets::compiler::compile_single_image(
+        &pet_id,
+        &variant_id,
+        std::path::Path::new(&cutout_path),
+        &dest,
+    )
+}
+
+#[tauri::command]
 fn pet_list(state: tauri::State<'_, SharedPetRepository>) -> Result<Vec<PetSummary>, String> {
     let repo = state.lock().map_err(|_| "pets lock poisoned")?;
     repo.list()
@@ -369,6 +389,7 @@ pub fn run() {
             parse_manifest,
             asset_import,
             asset_scan,
+            asset_compile,
             pet_list,
             pet_create,
             pet_get,
