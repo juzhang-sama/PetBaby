@@ -164,9 +164,14 @@ btnNext.addEventListener("click", async () => {
     wizardStatus.textContent = "请先选择宠物照片";
     return;
   }
-  flow.setPhotoBytes(photoBytes);
-  // create a pet record for this wizard session
+  const savedKey = apiKeyInput.value.trim();
+  if (!savedKey) {
+    wizardStatus.textContent = "请先在上方填写并保存 API Key";
+    return;
+  }
+  wizardStatus.textContent = "准备中…";
   try {
+    flow.setPhotoBytes(photoBytes);
     const pet = await invoke<PetSummary>("pet_create", {
       species: wSpecies.value,
       identityMode: "real_pet",
@@ -176,7 +181,13 @@ btnNext.addEventListener("click", async () => {
     wizardStatus.textContent = `创建宠物失败: ${String(error)}`;
     return;
   }
-  await flow.submitBatch(4);
+  try {
+    await flow.submitBatch(4);
+  } catch (error) {
+    wizardStatus.textContent = `提交生成任务失败: ${String(error)}`;
+    return;
+  }
+  wizardStatus.textContent = "";
   showStep("generating");
   void pollJobs();
 });
