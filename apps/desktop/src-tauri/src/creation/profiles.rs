@@ -24,6 +24,7 @@ pub struct IdentityProfile {
     pub created_at: String,
 }
 
+#[expect(dead_code)] // created by the candidate flow in M4 Task 5
 #[derive(Debug, Clone, Serialize, Deserialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct AppearanceVariant {
