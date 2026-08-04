@@ -65,6 +65,7 @@ fn median_color(samples: &[[u8; 3]]) -> [u8; 3] {
     [mid(&reds), mid(&greens), mid(&blues)]
 }
 
+#[expect(dead_code)]
 pub fn chroma_remove(
     rgb: &[u8],
     width: u32,
@@ -96,6 +97,7 @@ pub fn chroma_remove(
     Ok(out)
 }
 
+#[expect(dead_code)]
 pub fn quality_report(rgba: &RgbaImage) -> QualityReport {
     let (width, height) = rgba.dimensions();
     let total = width * height;
