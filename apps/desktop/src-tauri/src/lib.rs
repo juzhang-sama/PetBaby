@@ -337,16 +337,24 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 if let Some(window) = app.get_webview_window("settings") {
                     let _ = window.show();
                     let _ = window.set_focus();
-                } else if let Ok(window) = tauri::WebviewWindowBuilder::new(
-                    app,
-                    "settings",
-                    tauri::WebviewUrl::App("settings.html".into()),
-                )
-                .title("桌面宠物设置")
-                .inner_size(720.0, 520.0)
-                .build()
-                {
-                    let _ = window.set_focus();
+                } else {
+                    match tauri::WebviewWindowBuilder::new(
+                        app,
+                        "settings",
+                        tauri::WebviewUrl::App("settings.html".into()),
+                    )
+                    .title("桌面宠物设置")
+                    .inner_size(720.0, 520.0)
+                    .build()
+                    {
+                        Ok(window) => {
+                            let _ = window.set_focus();
+                            println!("[desktop-pet] settings window created");
+                        }
+                        Err(error) => {
+                            println!("[desktop-pet] settings window FAILED: {error}");
+                        }
+                    }
                 }
             }
             "calibration" => {
