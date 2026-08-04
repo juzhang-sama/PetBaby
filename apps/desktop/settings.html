@@ -21,6 +21,7 @@
       #status, #wizard-status { margin-top: 12px; font-size: 13px; color: #666; }
       .wizard { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; max-width: 720px; }
       .wizard-step { margin: 12px 0; }
+      .wizard-status { font-size: 13px; color: #a33; margin: 8px 0; min-height: 18px; }
       .wizard-actions { display: flex; gap: 8px; margin-top: 16px; }
       .privacy-note { font-size: 12px; color: #a33; background: #fdecec; border: 1px solid #f5c6c6; border-radius: 6px; padding: 8px; margin: 10px 0; }
       .job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
@@ -50,6 +51,7 @@
     <div id="view-create" style="display:none">
       <div class="wizard">
         <h2 id="wizard-title">创建新宠物</h2>
+        <div id="wizard-status" class="wizard-status"></div>
         <div class="wizard-step">
           <label>生成 API Key（lk888.ai）：<input type="password" id="api-key" placeholder="sk-..." style="width:280px" /></label>
           <button id="save-key">保存 Key</button>
@@ -73,7 +75,6 @@
           <div id="step-generating" style="display:none">
             <p>正在生成 4 个候选（约 1-2 分钟/张）…</p>
             <div class="job-grid" id="job-grid"></div>
-            <div id="wizard-status"></div>
           </div>
           <div id="step-review" style="display:none">
             <p>选择最像你家宠物的候选（点击选中，再点完成）：</p>
