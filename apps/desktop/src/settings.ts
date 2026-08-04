@@ -160,16 +160,32 @@ photoInput.addEventListener("change", async () => {
 });
 
 btnNext.addEventListener("click", async () => {
+  const trace = async (message: string) => {
+    void invoke("frontend_ping", { message: `settings: ${message}` });
+  };
+  void trace("next clicked");
   if (!photoBytes) {
     wizardStatus.textContent = "请先选择宠物照片";
+    void trace("no photo");
     return;
   }
-  const savedKey = apiKeyInput.value.trim();
-  if (!savedKey) {
+  const typedKey = apiKeyInput.value.trim();
+  if (!typedKey) {
     wizardStatus.textContent = "请先在上方填写并保存 API Key";
+    void trace("no key");
     return;
   }
   wizardStatus.textContent = "准备中…";
+  try {
+    // auto-save the key so the backend can use it
+    await invoke("app_setting_set", { key: "lk888_api_key", value: typedKey });
+    keyStatus.textContent = "Key 已自动保存";
+    void trace("key saved");
+  } catch (error) {
+    wizardStatus.textContent = `保存 Key 失败: ${String(error)}`;
+    void trace(`key save failed: ${String(error)}`);
+    return;
+  }
   try {
     flow.setPhotoBytes(photoBytes);
     const pet = await invoke<PetSummary>("pet_create", {
@@ -177,14 +193,18 @@ btnNext.addEventListener("click", async () => {
       identityMode: "realPet",
     });
     petId = pet.petId;
+    void trace(`pet created: ${petId}`);
   } catch (error) {
     wizardStatus.textContent = `创建宠物失败: ${String(error)}`;
+    void trace(`pet create failed: ${String(error)}`);
     return;
   }
   try {
     await flow.submitBatch(4);
+    void trace("4 jobs submitted");
   } catch (error) {
     wizardStatus.textContent = `提交生成任务失败: ${String(error)}`;
+    void trace(`submit failed: ${String(error)}`);
     return;
   }
   wizardStatus.textContent = "";

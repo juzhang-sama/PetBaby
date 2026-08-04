@@ -24,6 +24,11 @@ fn probe_version() -> &'static str {
 }
 
 #[tauri::command]
+fn frontend_ping(message: String) {
+    println!("[frontend] {message}");
+}
+
+#[tauri::command]
 fn apply_hit_region(
     window: tauri::WebviewWindow,
     state: tauri::State<'_, AppState>,
@@ -470,6 +475,7 @@ pub fn run() {
         })
         .invoke_handler(tauri::generate_handler![
             probe_version,
+            frontend_ping,
             apply_hit_region,
             load_preferences,
             save_preferences,
