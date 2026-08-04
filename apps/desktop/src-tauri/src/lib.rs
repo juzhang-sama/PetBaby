@@ -360,6 +360,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                     )
                     .title("桌面宠物设置")
                     .inner_size(720.0, 520.0)
+                    .additional_browser_args("--disable-gpu")
                     .build()
                     {
                         Ok(window) => {
@@ -386,6 +387,7 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
                 .title("宠物校准")
                 .inner_size(420.0, 460.0)
                 .resizable(false)
+                .additional_browser_args("--disable-gpu")
                 .build()
                 {
                     let _ = window.set_focus();
