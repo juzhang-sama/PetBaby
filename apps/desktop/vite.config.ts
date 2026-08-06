@@ -3,6 +3,9 @@ import { existsSync } from "node:fs";
 import { join } from "node:path";
 
 const cubismFramework = join(process.cwd(), ".vendor/live2d-cubism-sdk/Framework/src");
+const cubismRuntime = existsSync(cubismFramework)
+  ? join(process.cwd(), "../../scripts/live2d/cubism-runtime.ts")
+  : join(process.cwd(), "src/runtime-live2d/cubism-runtime-unavailable.ts");
 
 export default defineConfig({
   clearScreen: false,
@@ -13,7 +16,10 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: { target: "es2022", minify: "esbuild", sourcemap: true },
-  ...(existsSync(cubismFramework)
-    ? { resolve: { alias: { "@cubism-framework": cubismFramework } } }
-    : {}),
+  resolve: {
+    alias: {
+      "@cubism-runtime": cubismRuntime,
+      ...(existsSync(cubismFramework) ? { "@cubism-framework": cubismFramework } : {}),
+    },
+  },
 });

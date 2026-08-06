@@ -39,26 +39,95 @@ describe("Live2D probe evaluation", () => {
   });
 
   it("renders through the Cubism adapter and samples alpha", async () => {
+    const calls: string[] = [];
     const update = vi.fn();
-    const draw = vi.fn();
+    const draw = vi.fn(() => calls.push("draw"));
     const destroy = vi.fn();
     const adapter = { initialize: vi.fn(async () => {}), loadModel: vi.fn(async () => {}), resize: vi.fn(), update, draw, destroy };
-    const gl = { drawingBufferWidth: 1, drawingBufferHeight: 1, RGBA: 1, UNSIGNED_BYTE: 2, viewport: vi.fn(), clearColor: vi.fn(), clear: vi.fn(), readPixels: vi.fn((_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, pixels: Uint8Array) => { pixels[3] = 255; }), isContextLost: () => false, COLOR_BUFFER_BIT: 4 };
-    const canvas = { width: 0, height: 0, dataset: {} as DOMStringMap, getContext: vi.fn(() => gl), addEventListener: vi.fn() } as unknown as HTMLCanvasElement;
-    const root = { replaceChildren: vi.fn() } as unknown as HTMLElement;
-    const result = await mountLive2DProbe(root, { adapter, canvas });
+    const gl = { drawingBufferWidth: 1, drawingBufferHeight: 1, RGBA: 1, UNSIGNED_BYTE: 2, viewport: vi.fn(), clearColor: vi.fn(), clear: vi.fn(() => calls.push("clear")), readPixels: vi.fn((_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, pixels: Uint8Array) => { calls.push("sample"); pixels[3] = 255; }), isContextLost: () => false, COLOR_BUFFER_BIT: 4 };
+    let nextFrame: FrameRequestCallback | undefined;
+    const canvas = { width: 0, height: 0, style: {} as CSSStyleDeclaration, dataset: {} as DOMStringMap, getContext: vi.fn(() => gl), addEventListener: vi.fn() } as unknown as HTMLCanvasElement;
+    const root = { clientWidth: 420, clientHeight: 520, replaceChildren: vi.fn() } as unknown as HTMLElement;
+    const applyHitRegion = vi.fn(async () => ({ spanCount: 1, applied: true, strategy: "test", scaleFactor: 1.5 }));
+    const result = await mountLive2DProbe(root, {
+      adapter,
+      canvas,
+      devicePixelRatio: 1.5,
+      applyHitRegion,
+      requestFrame: (callback) => { nextFrame = callback; return 1; },
+    });
     expect(result).toEqual({ ok: true });
+    expect(calls).toEqual(["clear", "draw", "sample"]);
     expect(adapter.initialize).toHaveBeenCalled();
     expect(adapter.loadModel).toHaveBeenCalledWith("/live2d/Wanko/Wanko.model3.json");
+    expect(adapter.resize).toHaveBeenCalledWith(420, 520, 1.5);
+    expect(applyHitRegion).toHaveBeenCalledWith(expect.objectContaining({
+      canvasWidth: 420,
+      canvasHeight: 520,
+      scaleFactor: 1.5,
+      spans: expect.any(Array),
+    }));
     expect(update).toHaveBeenCalled();
     expect(draw).toHaveBeenCalled();
-    adapter.destroy();
-    expect(destroy).toHaveBeenCalled();
+    expect(nextFrame).toBeTypeOf("function");
+    nextFrame?.(32);
+    expect(update).toHaveBeenCalledTimes(2);
+    expect(draw).toHaveBeenCalledTimes(2);
+  });
+
+  it("fits the probe canvas to the host viewport", async () => {
+    const adapter = { initialize: vi.fn(async () => {}), loadModel: vi.fn(async () => {}), resize: vi.fn(), update: vi.fn(), draw: vi.fn(), destroy: vi.fn() };
+    const gl = { drawingBufferWidth: 2, drawingBufferHeight: 2, RGBA: 1, UNSIGNED_BYTE: 2, viewport: vi.fn(), clearColor: vi.fn(), clear: vi.fn(), readPixels: vi.fn((_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, pixels: Uint8Array) => { for (let i = 3; i < pixels.length; i += 4) pixels[i] = 255; }), isContextLost: () => false, COLOR_BUFFER_BIT: 4 };
+    const canvas = { width: 0, height: 0, style: {} as CSSStyleDeclaration, dataset: {} as DOMStringMap, getContext: vi.fn(() => gl), addEventListener: vi.fn() } as unknown as HTMLCanvasElement;
+    const root = { clientWidth: 420, clientHeight: 520, replaceChildren: vi.fn() } as unknown as HTMLElement;
+    let nextFrame: FrameRequestCallback | undefined;
+    await mountLive2DProbe(root, {
+      adapter,
+      canvas,
+      devicePixelRatio: 2,
+      requestFrame: (callback) => { nextFrame = callback; return 1; },
+      applyHitRegion: vi.fn(async () => ({ spanCount: 1, applied: true, strategy: "test", scaleFactor: 2 })),
+    });
+    expect(canvas.width).toBe(840);
+    expect(canvas.height).toBe(1040);
+    expect(canvas.style.width).toBe("100%");
+    expect(canvas.style.height).toBe("100%");
+    expect(nextFrame).toBeTypeOf("function");
+  });
+
+  it("stops the animation loop when WebGL context is lost", async () => {
+    let lostHandler: ((event: Event) => void) | undefined;
+    let nextFrame: FrameRequestCallback | undefined;
+    const adapter = { initialize: vi.fn(async () => {}), loadModel: vi.fn(async () => {}), resize: vi.fn(), update: vi.fn(), draw: vi.fn(), destroy: vi.fn() };
+    const gl = { drawingBufferWidth: 1, drawingBufferHeight: 1, RGBA: 1, UNSIGNED_BYTE: 2, viewport: vi.fn(), clearColor: vi.fn(), clear: vi.fn(), readPixels: vi.fn((_x: number, _y: number, _w: number, _h: number, _f: number, _t: number, pixels: Uint8Array) => { pixels[3] = 255; }), isContextLost: vi.fn(() => false), COLOR_BUFFER_BIT: 4 };
+    const canvas = { width: 0, height: 0, style: {} as CSSStyleDeclaration, dataset: {} as DOMStringMap, getContext: vi.fn(() => gl), addEventListener: vi.fn((type: string, handler: EventListenerOrEventListenerObject) => { if (type === "webglcontextlost") lostHandler = handler as (event: Event) => void; }) } as unknown as HTMLCanvasElement;
+    const root = { clientWidth: 420, clientHeight: 520, replaceChildren: vi.fn() } as unknown as HTMLElement;
+    const cancelFrame = vi.fn();
+    await mountLive2DProbe(root, { adapter, canvas, cancelFrame, applyHitRegion: vi.fn(async () => ({ spanCount: 1 })), requestFrame: (callback) => { nextFrame = callback; return 7; } });
+    gl.isContextLost.mockReturnValue(true);
+    const event = { preventDefault: vi.fn() } as unknown as Event;
+    lostHandler?.(event);
+    expect(event.preventDefault).toHaveBeenCalledOnce();
+    expect(adapter.destroy).toHaveBeenCalledOnce();
+    expect(cancelFrame).toHaveBeenCalledWith(7);
+    nextFrame?.(32);
+    expect(adapter.update).toHaveBeenCalledOnce();
+    expect(adapter.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("creates the configured adapter when none is injected", async () => {
+    const adapter = { initialize: vi.fn(async () => { throw new Error("configured adapter reached"); }), loadModel: vi.fn(), resize: vi.fn(), update: vi.fn(), draw: vi.fn(), destroy: vi.fn() };
+    const createAdapter = vi.fn(async () => adapter);
+    const canvas = { width: 0, height: 0, style: {} as CSSStyleDeclaration, dataset: {} as DOMStringMap, getContext: vi.fn(() => ({ isContextLost: () => false })), addEventListener: vi.fn() } as unknown as HTMLCanvasElement;
+    const root = { replaceChildren: vi.fn() } as unknown as HTMLElement;
+    const result = await mountLive2DProbe(root, { canvas, createAdapter });
+    expect(createAdapter).toHaveBeenCalledOnce();
+    expect(result).toEqual({ ok: false, reason: "adapter-error", message: "configured adapter reached" });
   });
 
   it("returns a diagnostic failure when Cubism initialization fails", async () => {
     const adapter = { initialize: vi.fn(async () => { throw new Error("Core missing"); }), loadModel: vi.fn(), resize: vi.fn(), update: vi.fn(), draw: vi.fn(), destroy: vi.fn() };
-    const canvas = { width: 0, height: 0, dataset: {} as DOMStringMap, getContext: vi.fn(() => ({ isContextLost: () => false })), addEventListener: vi.fn() } as unknown as HTMLCanvasElement;
+    const canvas = { width: 0, height: 0, style: {} as CSSStyleDeclaration, dataset: {} as DOMStringMap, getContext: vi.fn(() => ({ isContextLost: () => false })), addEventListener: vi.fn() } as unknown as HTMLCanvasElement;
     const root = { replaceChildren: vi.fn() } as unknown as HTMLElement;
     const result = await mountLive2DProbe(root, { adapter, canvas });
     expect(result).toEqual({ ok: false, reason: "adapter-error", message: "Core missing" });
