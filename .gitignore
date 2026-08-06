@@ -3,3 +3,4 @@ dist/
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 *.log
+apps/desktop/.vendor/live2d-cubism-sdk/

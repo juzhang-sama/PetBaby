@@ -1,4 +1,8 @@
 import { defineConfig } from "vite";
+import { existsSync } from "node:fs";
+import { join } from "node:path";
+
+const cubismFramework = join(process.cwd(), ".vendor/live2d-cubism-sdk/Framework/src");
 
 export default defineConfig({
   clearScreen: false,
@@ -9,4 +13,7 @@ export default defineConfig({
   },
   envPrefix: ["VITE_", "TAURI_"],
   build: { target: "es2022", minify: "esbuild", sourcemap: true },
+  ...(existsSync(cubismFramework)
+    ? { resolve: { alias: { "@cubism-framework": cubismFramework } } }
+    : {}),
 });

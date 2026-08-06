@@ -9,7 +9,8 @@
     "typecheck": "tsc --noEmit",
     "test": "vitest run",
     "test:watch": "vitest",
-    "tauri": "tauri"
+    "tauri": "tauri",
+    "prepare:cubism": "powershell -NoProfile -ExecutionPolicy Bypass -File ../../scripts/准备CubismSDK.ps1"
   },
   "dependencies": {
     "@tauri-apps/api": "2.11.1",
