@@ -10,8 +10,10 @@ if ([string]::IsNullOrWhiteSpace($CubismSdkRoot)) {
 $source = (Resolve-Path -LiteralPath $CubismSdkRoot -ErrorAction Stop).Path
 $core = Join-Path $source "Core/live2dcubismcore.min.js"
 $framework = Join-Path $source "Framework/src"
+$frameworkEntry = Join-Path $framework "live2dcubismframework.ts"
 if (-not (Test-Path -LiteralPath $core -PathType Leaf)) { Write-Error "SDK is missing Core/live2dcubismcore.min.js: $core" }
 if (-not (Test-Path -LiteralPath $framework -PathType Container)) { Write-Error "SDK is missing Framework/src: $framework" }
+if (-not (Test-Path -LiteralPath $frameworkEntry -PathType Leaf)) { Write-Error "SDK is missing Framework/src/live2dcubismframework.ts: $frameworkEntry" }
 New-Item -ItemType Directory -Force -Path $vendorRoot | Out-Null
 Copy-Item -LiteralPath (Join-Path $source "Core") -Destination $vendorRoot -Recurse -Force
 Copy-Item -LiteralPath (Join-Path $source "Framework") -Destination $vendorRoot -Recurse -Force

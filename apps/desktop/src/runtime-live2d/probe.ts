@@ -1,4 +1,3 @@
-
 export interface ProbeSample {
   webgl: boolean;
   nonTransparentPixels: number;
@@ -9,10 +8,14 @@ export type ProbeResult =
   | { ok: true }
   | { ok: false; reason: "webgl-unavailable" | "context-lost" | "blank-frame" };
 
+export function isLive2DProbeMode(search: string): boolean {
+  return new URLSearchParams(search).get("live2dProbe") === "1";
+}
+
 export function evaluateProbe(input: ProbeSample): ProbeResult {
   if (!input.webgl) return { ok: false, reason: "webgl-unavailable" };
   if (input.contextLost) return { ok: false, reason: "context-lost" };
-  if (input.nonTransparentPixels === 0) return { ok: false, reason: "blank-frame" };
+  if (input.nonTransparentPixels <= 0) return { ok: false, reason: "blank-frame" };
   return { ok: true };
 }
 
