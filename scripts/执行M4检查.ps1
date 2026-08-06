@@ -9,5 +9,6 @@ cargo clippy --manifest-path src-tauri/Cargo.toml -- -D warnings
 npm run tauri build -- --debug
 Pop-Location
 python -m pytest (Join-Path $PSScriptRoot '..\services\appearance-generation') -q
+python -m pytest (Join-Path $PSScriptRoot '..\services\saas-backend') -q
 git -C (Join-Path $PSScriptRoot '..') diff --check
 Write-Output 'M4 automated checks passed.'

@@ -32,3 +32,10 @@ it("leaves an oversized leftover position alone when minimum visibility holds", 
     64,
   )).toEqual({ x: 702, y: 509, width: 1936, height: 1096 });
 });
+
+it("clamps a bottom-off-screen window fully into the work area", () => {
+  const rect = { x: 1166, y: 700, width: 420, height: 520 };
+  const clamped = clampRectToWorkArea(rect, { x: 0, y: 0, width: 1920, height: 1080 }, Math.max(rect.width, rect.height));
+  expect(clamped.y + rect.height).toBeLessThanOrEqual(1080);
+  expect(clamped.x).toBeGreaterThanOrEqual(0);
+});

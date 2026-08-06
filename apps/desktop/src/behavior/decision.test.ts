@@ -34,6 +34,45 @@ describe("decide", () => {
     expect(intents).toContainEqual({ type: "landed" });
   });
 
+  it("maps a thrown drag-end to falling", () => {
+    const intents = decide({
+      event: { type: "drag-end", velocity: { x: 400, y: -300 } },
+      state: baseState,
+      policy: emptyPolicy,
+    });
+    expect(intents).toContainEqual({ type: "falling" });
+  });
+
+  it("maps a landed event to the landed intent", () => {
+    const intents = decide({ event: { type: "landed" }, state: baseState, policy: emptyPolicy });
+    expect(intents).toContainEqual({ type: "landed" });
+  });
+
+  it("maps petted to a curious reaction", () => {
+    const intents = decide({ event: { type: "petted" }, state: baseState, policy: emptyPolicy });
+    expect(intents).toContainEqual({ type: "react-curious" });
+  });
+
+  it("maps fed and played to happy reactions", () => {
+    const fed = decide({ event: { type: "fed" }, state: baseState, policy: emptyPolicy });
+    const played = decide({ event: { type: "played" }, state: baseState, policy: emptyPolicy });
+    expect(fed).toContainEqual({ type: "react-happy" });
+    expect(played).toContainEqual({ type: "react-happy" });
+  });
+
+  it("suppresses interactions within their own cooldowns", () => {
+    const policy = {
+      cooldowns: {
+        pet: Number.MAX_SAFE_INTEGER,
+        feed: Number.MAX_SAFE_INTEGER,
+        play: Number.MAX_SAFE_INTEGER,
+      },
+    };
+    expect(decide({ event: { type: "petted" }, state: baseState, policy })).not.toContainEqual({ type: "react-curious" });
+    expect(decide({ event: { type: "fed" }, state: baseState, policy })).not.toContainEqual({ type: "react-happy" });
+    expect(decide({ event: { type: "played" }, state: baseState, policy })).not.toContainEqual({ type: "react-happy" });
+  });
+
   it("emits a look intent after an idle period", () => {
     const intents = decide({ event: { type: "idle-tick", elapsedMs: 45_000 }, state: baseState, policy: emptyPolicy });
     expect(intents.some((intent) => intent.type === "look")).toBe(true);

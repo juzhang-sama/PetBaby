@@ -27,15 +27,28 @@ describe("evolveState", () => {
   });
 
   it("raises mood on interaction but caps at 1", () => {
-    const next = evolveState(base, new Date("2026-08-03T00:00:10.000Z"), 0, true);
+    const next = evolveState(base, new Date("2026-08-03T00:00:10.000Z"), 0, "pet");
     expect(next.mood).toBeGreaterThan(base.mood);
-    const saturated = evolveState({ ...base, mood: 0.99 }, new Date("2026-08-03T00:00:20.000Z"), 0, true);
+    const saturated = evolveState({ ...base, mood: 0.99 }, new Date("2026-08-03T00:00:20.000Z"), 0, "pet");
     expect(saturated.mood).toBeLessThanOrEqual(1);
   });
 
   it("raises bond slowly on interaction", () => {
-    const next = evolveState(base, new Date("2026-08-03T00:00:10.000Z"), 0, true);
+    const next = evolveState(base, new Date("2026-08-03T00:00:10.000Z"), 0, "pet");
     expect(next.bond).toBeGreaterThan(base.bond);
+  });
+
+  it("feed restores energy but does not raise mood", () => {
+    const lowEnergy = { ...base, energy: 0.2 };
+    const next = evolveState(lowEnergy, new Date("2026-08-03T00:00:10.000Z"), 0, "feed");
+    expect(next.energy).toBeGreaterThan(lowEnergy.energy);
+    expect(next.mood).toBe(lowEnergy.mood);
+  });
+
+  it("play raises mood more than petting", () => {
+    const pet = evolveState(base, new Date("2026-08-03T00:00:10.000Z"), 0, "pet");
+    const play = evolveState(base, new Date("2026-08-03T00:00:10.000Z"), 0, "play");
+    expect(play.mood).toBeGreaterThan(pet.mood);
   });
 
   it("never punishes absence: energy floor is above zero for realistic gaps", () => {

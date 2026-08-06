@@ -52,7 +52,29 @@ export function decide(input: DecisionInput): BehaviorIntent[] {
       }
       break;
     case "drag-end":
+      if (event.velocity) {
+        intents.push({ type: "falling" });
+      } else {
+        intents.push({ type: "landed" });
+      }
+      break;
+    case "landed":
       intents.push({ type: "landed" });
+      break;
+    case "petted":
+      if (!withinCooldown(policy, "pet", Date.now())) {
+        intents.push({ type: "react-curious" });
+      }
+      break;
+    case "fed":
+      if (!withinCooldown(policy, "feed", Date.now())) {
+        intents.push({ type: "react-happy" });
+      }
+      break;
+    case "played":
+      if (!withinCooldown(policy, "play", Date.now())) {
+        intents.push({ type: "react-happy" });
+      }
       break;
     case "pet-shown":
       intents.push({ type: "awake" });

@@ -22,11 +22,12 @@
         "alwaysOnTop": true,
         "skipTaskbar": true,
         "focus": false,
+        "focusable": false,
         "resizable": true,
         "additionalBrowserArgs": "--disable-gpu"
       }
     ],
-    "security": { "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' pet-asset: asset: blob: data:; style-src 'self' 'unsafe-inline'" }
+    "security": { "csp": "default-src 'self'; script-src 'self' 'unsafe-inline' 'unsafe-eval' blob:; worker-src blob:; connect-src ipc: http://ipc.localhost http://127.0.0.1:* http://localhost:* https: data: blob:; img-src 'self' pet-asset: asset: blob: data:; style-src 'self' 'unsafe-inline'" }
   },
   "bundle": { "active": false }
 }

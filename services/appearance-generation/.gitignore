@@ -19,3 +19,6 @@ samples/
 
 # rembg model cache
 .u2net/
+
+# local ONNX segment-anything models
+models/

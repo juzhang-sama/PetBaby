@@ -123,7 +123,7 @@ export function buildPrompt(species: string): string {
     `Create a cute chibi cartoon style with a round face, unified soft outlines, ` +
     `big expressive eyes, short rounded body, sitting upright. Subject: a ${species}. ` +
     `Front view, facing the viewer directly, full body visible, ` +
-    `plain uniform light grey background, no text, no watermark. ` +
+    `plain pure white background, no shadow, no gradient, no text, no watermark. ` +
     `High fidelity to the reference: keep the exact fur colors, markings, ear shape, ` +
     `eye color and face proportions so the owner can recognise the pet. ` +
     `Faithful face details: keep eye shape, eye colour and highlights, nose, whiskers, ` +

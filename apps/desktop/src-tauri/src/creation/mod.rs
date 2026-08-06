@@ -21,19 +21,21 @@ impl CreationStore {
         prompt: &str,
         ref_sha256: &str,
         task_id: Option<&str>,
+        kind: &str,
     ) -> Result<(), String> {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         db.execute(
             "INSERT INTO generation_jobs
-             (job_id, pet_id, prompt, ref_sha256, task_id, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+             (job_id, pet_id, prompt, ref_sha256, task_id, status, created_at, kind)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6, ?7)",
             rusqlite::params![
                 job_id,
                 pet_id,
                 prompt,
                 ref_sha256,
                 task_id,
-                crate::creation::profiles::now_iso()
+                crate::creation::profiles::now_iso(),
+                kind
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -61,7 +63,7 @@ impl CreationStore {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT job_id, pet_id, prompt, ref_sha256, task_id, status, result_url, error, created_at
+                "SELECT job_id, pet_id, prompt, ref_sha256, task_id, status, result_url, error, created_at, kind
                  FROM generation_jobs WHERE status IN ('pending','running')",
             )
             .map_err(|error| error.to_string())?;
@@ -77,6 +79,7 @@ impl CreationStore {
                     result_url: row.get(6)?,
                     error: row.get(7)?,
                     created_at: row.get(8)?,
+                    kind: row.get(9)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -91,7 +94,7 @@ impl CreationStore {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT job_id, pet_id, prompt, ref_sha256, task_id, status, result_url, error, created_at
+                "SELECT job_id, pet_id, prompt, ref_sha256, task_id, status, result_url, error, created_at, kind
                  FROM generation_jobs WHERE pet_id = ?1 ORDER BY created_at",
             )
             .map_err(|error| error.to_string())?;
@@ -107,6 +110,7 @@ impl CreationStore {
                     result_url: row.get(6)?,
                     error: row.get(7)?,
                     created_at: row.get(8)?,
+                    kind: row.get(9)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -130,6 +134,7 @@ pub struct JobRecord {
     pub result_url: Option<String>,
     pub error: Option<String>,
     pub created_at: String,
+    pub kind: String,
 }
 
 #[cfg(test)]
@@ -161,7 +166,7 @@ mod tests {
     fn job_round_trip_and_status_transitions() {
         let (store, root, pet_id) = temp_store();
         store
-            .create_job("j1", &pet_id, "prompt", "abc123", Some("t1"))
+            .create_job("j1", &pet_id, "prompt", "abc123", Some("t1"), "main")
             .unwrap();
         let running = store.running_jobs().unwrap();
         assert_eq!(running.len(), 1);
@@ -196,9 +201,11 @@ mod tests {
                 crate::pets::pet::IdentityMode::Adopted,
             )
             .unwrap();
-        store.create_job("j1", &pet_id, "p", "h", None).unwrap();
         store
-            .create_job("j2", &pet2.pet_id, "p", "h", None)
+            .create_job("j1", &pet_id, "p", "h", None, "main")
+            .unwrap();
+        store
+            .create_job("j2", &pet2.pet_id, "p", "h", None, "main")
             .unwrap();
         assert_eq!(store.job_list(&pet_id).unwrap().len(), 1);
         assert_eq!(store.job_list(&pet2.pet_id).unwrap().len(), 1);
@@ -211,7 +218,7 @@ mod tests {
         let now = now_iso();
         assert!(!now.is_empty());
         store
-            .create_job("j1", &pet_id, "p", "h", Some("t1"))
+            .create_job("j1", &pet_id, "p", "h", Some("t1"), "eye-closed")
             .unwrap();
         let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
         let store2 = CreationStore::new(storage);
@@ -241,7 +248,7 @@ mod tests {
         let storage_b = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
         let store = CreationStore::new(storage_b);
         store
-            .create_job("j1", &pet.pet_id, "p", "h", Some("t1"))
+            .create_job("j1", &pet.pet_id, "p", "h", Some("t1"), "main")
             .expect("job creation must succeed across connections");
         let _ = std::fs::remove_dir_all(root);
     }

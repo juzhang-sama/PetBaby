@@ -6,6 +6,8 @@ sys.path.insert(0, str(Path(__file__).resolve().parent))
 
 from prompt import (  # noqa: E402
     STYLE_CONSTRAINTS,
+    STYLE_3D_CONSTRAINTS,
+    STYLE_3D_ID,
     build_eye_closure_prompt,
     build_prompt,
 )
@@ -38,6 +40,32 @@ def test_prompt_includes_all_constraint_fragments():
     for constraint in STYLE_CONSTRAINTS:
         core = constraint.rstrip(".")
         assert core.split(":")[0].split(" (")[0] in prompt
+
+
+def test_3d_style_prompt_uses_3d_block_and_constraints():
+    prompt = build_prompt("an orange cat", {"fur_colors": "orange"}, style=STYLE_3D_ID)
+    for fragment in ["3D rendered", "clay-like fur", "front view", "light grey background"]:
+        assert fragment in prompt, f"missing: {fragment}"
+    for constraint in STYLE_3D_CONSTRAINTS:
+        core = constraint.rstrip(".")
+        assert core.split(":")[0].split(" (")[0] in prompt
+
+
+def test_3d_style_still_keeps_identity_traits():
+    prompt = build_prompt(
+        "an orange cat",
+        {"fur_colors": "orange tabby", "eye_color": "green"},
+        style=STYLE_3D_ID,
+    )
+    assert "orange tabby" in prompt
+    assert "green" in prompt
+
+
+def test_unknown_style_rejected():
+    import pytest
+
+    with pytest.raises(ValueError):
+        build_prompt("a cat", {}, style="unknown-style")
 
 
 def test_eye_closure_prompt_requests_closed_eyes():

@@ -33,7 +33,8 @@ impl PetRepository {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT pet_id, species, identity_mode, created_at FROM pets ORDER BY created_at",
+                "SELECT pet_id, species, identity_mode, name, gender, age, source, breed, created_at
+                 FROM pets ORDER BY created_at",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -45,16 +46,27 @@ impl PetRepository {
                     species,
                     mode,
                     row.get::<_, String>(3)?,
+                    row.get::<_, String>(4)?,
+                    row.get::<_, String>(5)?,
+                    row.get::<_, String>(6)?,
+                    row.get::<_, String>(7)?,
+                    row.get::<_, String>(8)?,
                 ))
             })
             .map_err(|error| error.to_string())?;
         let mut summaries = Vec::new();
         for row in rows {
-            let (pet_id, species, mode, created_at) = row.map_err(|error| error.to_string())?;
+            let (pet_id, species, mode, name, gender, age, source, breed, created_at) =
+                row.map_err(|error| error.to_string())?;
             summaries.push(PetSummary {
                 pet_id,
                 species: parse_species(&species),
                 identity_mode: parse_mode(&mode),
+                name,
+                gender,
+                age,
+                source,
+                breed,
                 created_at,
             });
         }
@@ -66,8 +78,8 @@ impl PetRepository {
         let pet_id = new_id("pet");
         let now = now_iso();
         db.execute(
-            "INSERT INTO pets (pet_id, schema_version, species, identity_mode, created_at, updated_at)
-             VALUES (?1, 1, ?2, ?3, ?4, ?4)",
+            "INSERT INTO pets (pet_id, schema_version, species, identity_mode, name, gender, age, source, breed, created_at, updated_at)
+             VALUES (?1, 1, ?2, ?3, '', '', '', '', '', ?4, ?4)",
             rusqlite::params![
                 pet_id,
                 format!("{species:?}").to_lowercase(),
@@ -81,6 +93,11 @@ impl PetRepository {
             schema_version: 1,
             species,
             identity_mode: mode,
+            name: String::new(),
+            gender: String::new(),
+            age: String::new(),
+            source: String::new(),
+            breed: String::new(),
             created_at: now.clone(),
             updated_at: now,
         })
@@ -90,7 +107,7 @@ impl PetRepository {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT pet_id, schema_version, species, identity_mode, created_at, updated_at
+                "SELECT pet_id, schema_version, species, identity_mode, name, gender, age, source, breed, created_at, updated_at
                  FROM pets WHERE pet_id = ?1",
             )
             .map_err(|error| error.to_string())?;
@@ -103,8 +120,13 @@ impl PetRepository {
                     schema_version: row.get(1)?,
                     species: parse_species(&species),
                     identity_mode: parse_mode(&mode),
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    name: row.get(4)?,
+                    gender: row.get(5)?,
+                    age: row.get(6)?,
+                    source: row.get(7)?,
+                    breed: row.get(8)?,
+                    created_at: row.get(9)?,
+                    updated_at: row.get(10)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -126,6 +148,32 @@ impl PetRepository {
             return Err(format!("pet not found: {pet_id}"));
         }
         Ok(())
+    }
+
+    pub fn update_profile(
+        &self,
+        pet_id: &str,
+        name: &str,
+        gender: &str,
+        age: &str,
+        source: &str,
+        breed: &str,
+    ) -> Result<Pet, String> {
+        {
+            let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+            let affected = db
+                .execute(
+                    "UPDATE pets SET name = ?1, gender = ?2, age = ?3, source = ?4, breed = ?5, updated_at = ?6
+                     WHERE pet_id = ?7",
+                    rusqlite::params![name, gender, age, source, breed, now_iso(), pet_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if affected == 0 {
+                return Err(format!("pet not found: {pet_id}"));
+            }
+        }
+        self.get(pet_id)?
+            .ok_or_else(|| format!("pet not found: {pet_id}"))
     }
 }
 
@@ -191,6 +239,24 @@ mod tests {
         repo.delete(&pet.pet_id).unwrap();
         assert!(repo.get(&pet.pet_id).unwrap().is_none());
         assert!(repo.delete(&pet.pet_id).is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn update_profile_saves_and_returns_pet() {
+        let (repo, root) = temp_repo();
+        let pet = repo.create(Species::Cat, IdentityMode::Adopted).unwrap();
+        let updated = repo
+            .update_profile(&pet.pet_id, "奶油", "母", "2岁", "直接领养", "橘猫")
+            .unwrap();
+        assert_eq!(updated.name, "奶油");
+        assert_eq!(updated.gender, "母");
+        assert_eq!(updated.age, "2岁");
+        assert_eq!(updated.source, "直接领养");
+        assert_eq!(updated.breed, "橘猫");
+        let listed = repo.list().unwrap();
+        assert_eq!(listed[0].name, "奶油");
+        assert_eq!(listed[0].breed, "橘猫");
         let _ = std::fs::remove_dir_all(root);
     }
 }

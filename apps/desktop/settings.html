@@ -5,39 +5,332 @@
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>桌面宠物设置</title>
     <style>
-      body { font-family: system-ui, sans-serif; margin: 24px; background: #f5f6f8; color: #222; }
-      h1 { font-size: 18px; }
+      :root {
+        --color-background: #fff7ed;
+        --color-card: #ffffff;
+        --color-primary: #f97316;
+        --color-on-primary: #0f172a;
+        --color-secondary: #fb923c;
+        --color-accent: #2563eb;
+        --color-foreground: #9a3412;
+        --color-text: #431407;
+        --color-muted: #f1f0f0;
+        --color-border: #fed7aa;
+        --color-destructive: #dc2626;
+        --radius-card: 24px;
+        --radius-inner: 18px;
+        --radius-button: 14px;
+        --shadow-card: 0 10px 30px rgba(154, 52, 18, 0.10);
+        --shadow-card-hover: 0 16px 40px rgba(154, 52, 18, 0.16);
+      }
+      * { box-sizing: border-box; }
+      body {
+        font-family: "Segoe UI", "Microsoft YaHei", "PingFang SC", system-ui, sans-serif;
+        margin: 24px;
+        background: var(--color-background);
+        color: var(--color-text);
+      }
+      h1 { font-size: 18px; margin: 0 0 16px; }
+      h2 { font-size: 20px; margin: 0 0 4px; color: var(--color-text); }
       .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-      .tab { padding: 6px 14px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
-      .tab.active { background: #4a90d9; color: #fff; border-color: #4a90d9; }
-      .pet-list { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
-      .pet-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
-      .pet-item.active { border-color: #4a90d9; background: #eef5fd; }
-      button { padding: 6px 14px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
-      button.primary { background: #4a90d9; color: #fff; border-color: #4a90d9; }
+      .tab {
+        padding: 8px 18px;
+        border-radius: 999px;
+        border: 1px solid var(--color-border);
+        background: var(--color-card);
+        cursor: pointer;
+        font-size: 14px;
+        color: var(--color-foreground);
+        transition: background 180ms ease, color 180ms ease, transform 150ms ease;
+      }
+      .tab.active { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); }
+      .tab:active { transform: scale(0.97); }
+
+      .page { animation: page-in 220ms ease; }
+      @keyframes page-in { from { opacity: 0; transform: translateY(6px); } to { opacity: 1; transform: none; } }
+
+      .page-sub { color: var(--color-foreground); margin: 0 0 18px; font-size: 14px; }
+      .entry-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fit, minmax(210px, 1fr));
+        gap: 16px;
+      }
+      .entry-card {
+        display: flex;
+        flex-direction: column;
+        align-items: flex-start;
+        gap: 10px;
+        padding: 22px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-card);
+        background: var(--color-card);
+        box-shadow: var(--shadow-card);
+        cursor: pointer;
+        text-align: left;
+        transition: transform 180ms ease, box-shadow 180ms ease;
+      }
+      .entry-card:hover { transform: translateY(-3px); box-shadow: var(--shadow-card-hover); }
+      .entry-card:active { transform: scale(0.98); }
+      .entry-icon {
+        width: 44px;
+        height: 44px;
+        display: grid;
+        place-items: center;
+        border-radius: 14px;
+        background: #ffedd5;
+        color: var(--color-primary);
+      }
+      .entry-title { font-size: 17px; font-weight: 700; color: var(--color-text); }
+      .entry-desc { font-size: 13px; color: var(--color-foreground); line-height: 1.5; min-height: 38px; }
+      .entry-cta {
+        margin-top: auto;
+        padding: 8px 16px;
+        border-radius: 999px;
+        background: var(--color-primary);
+        color: var(--color-on-primary);
+        font-size: 13px;
+        font-weight: 600;
+      }
+
+      .link-btn {
+        margin-top: 18px;
+        border: none;
+        background: none;
+        color: var(--color-foreground);
+        font-size: 13px;
+        cursor: pointer;
+        text-decoration: underline;
+        padding: 4px;
+      }
+      .connection {
+        margin-top: 10px;
+        padding: 14px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-inner);
+        background: var(--color-card);
+        display: flex;
+        flex-direction: column;
+        gap: 10px;
+        max-width: 460px;
+      }
+      .connection label { display: flex; flex-direction: column; gap: 4px; font-size: 13px; color: var(--color-foreground); }
+      .connection input { padding: 8px 10px; border: 1px solid var(--color-border); border-radius: 10px; font-size: 14px; }
+      #url-status { font-size: 12px; color: var(--color-foreground); }
+
+      .back-btn {
+        border: none;
+        background: none;
+        color: var(--color-foreground);
+        font-size: 14px;
+        cursor: pointer;
+        padding: 4px 0;
+        margin-bottom: 12px;
+      }
+      .back-btn:hover { color: var(--color-text); }
+      .flow-card {
+        padding: 20px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-card);
+        background: var(--color-card);
+        box-shadow: var(--shadow-card);
+        max-width: 560px;
+        display: flex;
+        flex-direction: column;
+        gap: 16px;
+      }
+      .flow-card label { display: flex; flex-direction: column; gap: 6px; font-size: 14px; color: var(--color-text); font-weight: 600; }
+      .flow-card select {
+        padding: 9px 12px;
+        border: 1px solid var(--color-border);
+        border-radius: 12px;
+        font-size: 14px;
+        background: #fff;
+      }
+      .upload-zone {
+        display: flex;
+        flex-direction: column;
+        align-items: center;
+        gap: 10px;
+        padding: 18px;
+        border: 2px dashed var(--color-border);
+        border-radius: var(--radius-inner);
+        background: #fffaf3;
+      }
+      .photo-previews { display: flex; flex-wrap: wrap; gap: 10px; justify-content: center; }
+      .photo-thumb {
+        width: 96px;
+        height: 96px;
+        object-fit: cover;
+        border-radius: 14px;
+        border: 2px solid var(--color-border);
+      }
+      .upload-hint { font-size: 12px; color: var(--color-foreground); text-align: center; }
+      .privacy-note {
+        font-size: 12px;
+        color: var(--color-destructive);
+        background: #fdecec;
+        border: 1px solid #f5c6c6;
+        border-radius: 12px;
+        padding: 10px;
+        line-height: 1.6;
+      }
+
+      .trait-group { display: flex; flex-direction: column; gap: 8px; }
+      .trait-label { font-size: 13px; font-weight: 600; color: var(--color-text); }
+      .seg { display: flex; flex-wrap: wrap; gap: 8px; }
+      .seg-btn {
+        padding: 8px 14px;
+        border: 1px solid var(--color-border);
+        border-radius: 999px;
+        background: #fffaf3;
+        color: var(--color-foreground);
+        font-size: 13px;
+        cursor: pointer;
+        transition: background 160ms ease, color 160ms ease, transform 150ms ease;
+      }
+      .seg-btn.selected { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); font-weight: 600; }
+      .seg-btn:active { transform: scale(0.96); }
+
+      .pet-card-grid, .candidate-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 14px;
+      }
+      .pet-card, .candidate {
+        padding: 14px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-inner);
+        background: var(--color-card);
+        box-shadow: var(--shadow-card);
+        display: flex;
+        flex-direction: column;
+        gap: 8px;
+        align-items: center;
+      }
+      .pet-card img, .candidate img {
+        width: 100%;
+        border-radius: 14px;
+        background: linear-gradient(45deg,#f5ede4 25%,#fff 25%,#fff 50%,#f5ede4 50%,#f5ede4 75%,#fff 75%);
+        background-size: 16px 16px;
+      }
+      .pet-card .pet-name { font-size: 14px; font-weight: 600; color: var(--color-text); }
+
+      button.primary {
+        padding: 10px 20px;
+        border: none;
+        border-radius: var(--radius-button);
+        background: var(--color-primary);
+        color: var(--color-on-primary);
+        font-size: 14px;
+        font-weight: 600;
+        cursor: pointer;
+        transition: transform 150ms ease, filter 150ms ease;
+      }
+      button.primary:hover { filter: brightness(1.05); }
+      button.primary:active { transform: scale(0.97); }
+      button.secondary {
+        padding: 10px 20px;
+        border: 1px solid var(--color-border);
+        border-radius: var(--radius-button);
+        background: #fffaf3;
+        color: var(--color-foreground);
+        font-size: 14px;
+        cursor: pointer;
+      }
       button:disabled { opacity: 0.5; cursor: not-allowed; }
-      .actions { display: flex; gap: 8px; margin-left: auto; }
-      .empty { color: #888; }
-      #status, #wizard-status { margin-top: 12px; font-size: 13px; color: #666; }
-      .wizard { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; max-width: 720px; }
-      .wizard-step { margin: 12px 0; }
-      .wizard-status { font-size: 13px; color: #a33; margin: 8px 0; min-height: 18px; }
-      .wizard-actions { display: flex; gap: 8px; margin-top: 16px; }
-      .privacy-note { font-size: 12px; color: #a33; background: #fdecec; border: 1px solid #f5c6c6; border-radius: 6px; padding: 8px; margin: 10px 0; }
-      .job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-      .job-card { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; font-size: 13px; }
+      .wizard-actions { display: flex; gap: 10px; margin-top: 16px; flex-wrap: wrap; }
+      .job-grid {
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(180px, 1fr));
+        gap: 10px;
+      }
+      .job-card {
+        background: var(--color-card);
+        border: 1px solid var(--color-border);
+        border-radius: 14px;
+        padding: 12px;
+        font-size: 13px;
+        color: var(--color-foreground);
+      }
       .job-card.success { border-color: #7ac47a; background: #f0faf0; }
       .job-card.failed { border-color: #e08080; background: #fdf0f0; }
-      .candidate-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-      .candidate { background: #fff; border: 2px solid #ddd; border-radius: 8px; padding: 8px; cursor: pointer; }
-      .candidate.selected { border-color: #4a90d9; }
-      .candidate img { width: 100%; border-radius: 6px; background: linear-gradient(45deg,#eee 25%,#fff 25%,#fff 50%,#eee 50%,#eee 75%,#fff 75%); background-size: 16px 16px; }
-      input[type="file"] { margin: 8px 0; }
-      #photo-preview { max-width: 240px; border-radius: 8px; display: none; }
+      .candidate .job-id { font-size: 12px; color: var(--color-foreground); }
+      .candidate.selected { border-color: var(--color-primary); box-shadow: 0 0 0 2px var(--color-primary); }
+      .candidate .pick-btn {
+        padding: 7px 14px;
+        border: 1px solid var(--color-border);
+        border-radius: 999px;
+        background: #fffaf3;
+        color: var(--color-foreground);
+        font-size: 13px;
+        cursor: pointer;
+      }
+      .candidate.selected .pick-btn { background: var(--color-primary); color: var(--color-on-primary); border-color: var(--color-primary); font-weight: 600; }
+      .wizard-status { font-size: 13px; color: var(--color-destructive); margin: 12px 0; min-height: 18px; }
+
+      .pet-list { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
+      .pet-item {
+        display: flex;
+        flex-wrap: wrap;
+        align-items: center;
+        gap: 12px;
+        padding: 12px 16px;
+        background: var(--color-card);
+        border: 1px solid var(--color-border);
+        border-radius: 16px;
+      }
+      .pet-item.active { border-color: var(--color-primary); background: #ffedd5; }
+      .actions { display: flex; gap: 8px; margin-left: auto; }
+      .actions button { padding: 7px 14px; border: 1px solid var(--color-border); border-radius: 999px; background: #fff; cursor: pointer; font-size: 13px; }
+      .actions button.primary { border: none; }
+      .pet-edit {
+        flex-basis: 100%;
+        display: grid;
+        grid-template-columns: repeat(auto-fill, minmax(120px, 1fr));
+        gap: 10px;
+        padding: 12px 0 4px;
+        border-top: 1px dashed var(--color-border);
+      }
+      .pet-edit label {
+        display: flex;
+        flex-direction: column;
+        gap: 4px;
+        font-size: 12px;
+        color: var(--color-foreground);
+      }
+      .pet-edit input, .pet-edit select {
+        padding: 7px 9px;
+        border: 1px solid var(--color-border);
+        border-radius: 10px;
+        font-size: 13px;
+      }
+      .pet-edit .edit-actions { grid-column: 1 / -1; display: flex; gap: 8px; }
+      .pet-edit .edit-actions button { padding: 7px 14px; border-radius: 999px; border: 1px solid var(--color-border); background: #fff; cursor: pointer; font-size: 13px; }
+      .pet-edit .edit-actions button.primary { border: none; }
+      .empty { color: var(--color-foreground); }
+      #status { margin-top: 12px; font-size: 13px; color: var(--color-foreground); }
+      .dots { display: inline-flex; gap: 2px; margin-left: 3px; vertical-align: middle; }
+      .dots i {
+        width: 4px;
+        height: 4px;
+        border-radius: 50%;
+        background: currentColor;
+        display: inline-block;
+        animation: dot-pulse 1.2s ease-in-out infinite;
+      }
+      .dots i:nth-child(2) { animation-delay: 0.2s; }
+      .dots i:nth-child(3) { animation-delay: 0.4s; }
+      @keyframes dot-pulse {
+        0%, 100% { opacity: 0.25; transform: translateY(0); }
+        50% { opacity: 1; transform: translateY(-2px); }
+      }
+      @media (prefers-reduced-motion: reduce) {
+        * { animation: none !important; transition: none !important; }
+      }
     </style>
   </head>
   <body>
-    <h1>桌面宠物设置</h1>
+    <h1>桌面宠物</h1>
     <div class="tabs">
       <button id="tab-list" class="tab active">我的宠物</button>
       <button id="tab-create" class="tab">创建宠物</button>
@@ -49,49 +342,151 @@
     </div>
 
     <div id="view-create" style="display:none">
-      <div class="wizard">
-        <h2 id="wizard-title">创建新宠物</h2>
-        <div id="wizard-status" class="wizard-status"></div>
-        <div class="wizard-step">
-          <label>生成 API Key（lk888.ai）：<input type="password" id="api-key" placeholder="sk-..." style="width:280px" /></label>
-          <button id="save-key">保存 Key</button>
-          <div id="key-status" style="font-size:12px;color:#666"></div>
+      <div id="wizard-status" class="wizard-status"></div>
+
+      <section id="create-entry" class="page">
+        <h2>你想怎么迎接新伙伴？</h2>
+        <p class="page-sub">选择一种方式，开始和你的新伙伴见面。</p>
+        <div class="entry-grid">
+          <button class="entry-card" id="card-clone">
+            <span class="entry-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M14.5 4h-5L7 7H4a2 2 0 0 0-2 2v9a2 2 0 0 0 2 2h16a2 2 0 0 0 2-2V9a2 2 0 0 0-2-2h-3l-2.5-3z"/><circle cx="12" cy="13" r="3"/></svg>
+            </span>
+            <span class="entry-title">照片克隆</span>
+            <span class="entry-desc">上传照片，生成最像它的卡通分身</span>
+            <span class="entry-cta">上传照片</span>
+          </button>
+          <button class="entry-card" id="card-adopt">
+            <span class="entry-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M19 14c1.49-1.46 3-3.21 3-5.5A5.5 5.5 0 0 0 16.5 3c-1.76 0-3 .5-4.5 2-1.5-1.5-2.74-2-4.5-2A5.5 5.5 0 0 0 2 8.5c0 2.3 1.5 4.05 3 5.5l7 7Z"/></svg>
+            </span>
+            <span class="entry-title">直接领养</span>
+            <span class="entry-desc">从内置伙伴里挑一只，马上陪你</span>
+            <span class="entry-cta">看看有哪些伙伴</span>
+          </button>
+          <button class="entry-card" id="card-guided">
+            <span class="entry-icon">
+              <svg width="24" height="24" viewBox="0 0 24 24" fill="none" stroke="currentColor" stroke-width="2" stroke-linecap="round" stroke-linejoin="round"><path d="M10.5 8.5 4 15l5 5 6.5-6.5"/><path d="m19 5 2 2-2 2-2-2 2-2z"/><path d="m14 10 2 2"/></svg>
+            </span>
+            <span class="entry-title">引导式创造</span>
+            <span class="entry-desc">选部位，拼出独一无二的它</span>
+            <span class="entry-cta">开始拼装</span>
+          </button>
         </div>
-        <div class="wizard-step" id="wizard-step">
-          <div id="step-upload">
-            <label>种类：
-              <select id="w-species">
-                <option value="cat">猫</option>
-                <option value="dog">狗</option>
-              </select>
-            </label>
-            <div><input type="file" id="photo-input" accept="image/*" /></div>
-            <img id="photo-preview" alt="预览" />
-            <div class="privacy-note">
-              隐私提示：照片将上传到第三方生成平台（gpt-image-2）用于生成卡通形象，
-              平台侧生成结果默认保留；本地仅保存你的宠物资产。取消可随时进行。
+        <button id="open-connection" class="link-btn">连接设置</button>
+        <div id="connection-panel" class="connection" hidden>
+          <label>生成服务地址
+            <input type="text" id="saas-url" placeholder="http://127.0.0.1:8787" />
+          </label>
+          <label>服务访问令牌（可选）
+            <input type="password" id="saas-token" placeholder="后端未配置则留空" />
+          </label>
+          <div><button id="save-url" class="primary">保存</button></div>
+          <div id="url-status"></div>
+        </div>
+      </section>
+
+      <section id="view-clone" class="page" hidden>
+        <button class="back-btn" id="back-clone">← 返回</button>
+        <h2>照片克隆</h2>
+        <div class="flow-card">
+          <label>种类
+            <select id="clone-species">
+              <option value="cat">猫</option>
+              <option value="dog">狗</option>
+            </select>
+          </label>
+          <div class="trait-group">
+            <span class="trait-label">形象风格</span>
+            <div class="seg" id="clone-style">
+              <button type="button" data-style="cartoon" class="seg-btn selected">2D 卡通</button>
+              <button type="button" data-style="3d" class="seg-btn">3D 渲染</button>
             </div>
           </div>
-          <div id="step-generating" style="display:none">
-            <p>正在生成候选（约 1-2 分钟）…</p>
-            <div class="job-grid" id="job-grid"></div>
-          </div>
-          <div id="step-review" style="display:none">
-            <p>生成完成，看看效果：</p>
-            <div class="candidate-grid" id="candidate-grid"></div>
-            <div class="wizard-actions" id="review-actions" style="display:none">
-              <button id="review-accept" class="primary">满意，出现在桌面</button>
-              <button id="review-retry">不满意，重新生成</button>
-              <button id="review-abandon">放弃</button>
+          <div class="trait-group">
+            <span class="trait-label">候选数量</span>
+            <div class="seg" id="clone-count">
+              <button type="button" data-count="2" class="seg-btn selected">2 张</button>
+              <button type="button" data-count="3" class="seg-btn">3 张</button>
             </div>
           </div>
+          <label>名字（可选）
+            <input type="text" id="clone-name" placeholder="给你的新伙伴起个名字" />
+          </label>
+          <div class="upload-zone">
+            <input type="file" id="photo-input" accept="image/*" multiple />
+            <div class="photo-previews" id="photo-previews"></div>
+            <div class="upload-hint">可上传 1-3 张：正面、侧面、全身各一张，脸部越清晰越像。</div>
+          </div>
+          <div class="privacy-note">
+            隐私提示：照片将上传到你配置的生成服务（自有 SaaS 后端），由服务端调用生成平台；本地不持有第三方 API Key。
+          </div>
+          <button id="clone-next" class="primary">下一步</button>
         </div>
-        <div class="wizard-actions">
-          <button id="wizard-back" style="display:none">上一步</button>
-          <button id="wizard-next" class="primary">下一步</button>
-          <button id="wizard-cancel" style="display:none">取消</button>
+      </section>
+
+      <section id="view-adopt" class="page" hidden>
+        <button class="back-btn" id="back-adopt">← 返回</button>
+        <h2>直接领养</h2>
+        <p class="page-sub">挑一位顺眼的伙伴，领养后马上出现在桌面。</p>
+        <div class="flow-card" style="margin-bottom: 16px">
+          <label>名字（可选）
+            <input type="text" id="adopt-name" placeholder="给它起个名字（可稍后再改）" />
+          </label>
         </div>
-      </div>
+        <div class="pet-card-grid" id="adopt-grid"></div>
+      </section>
+
+      <section id="view-guided" class="page" hidden>
+        <button class="back-btn" id="back-guided">← 返回</button>
+        <h2>引导式创造</h2>
+        <div class="flow-card">
+          <label>种类
+            <select id="guided-species">
+              <option value="cat">猫</option>
+              <option value="dog">狗</option>
+            </select>
+          </label>
+          <label>名字（可选）
+            <input type="text" id="guided-name" placeholder="给你的新伙伴起个名字" />
+          </label>
+          <div class="trait-group">
+            <span class="trait-label">形象风格</span>
+            <div class="seg" id="guided-style">
+              <button type="button" data-style="cartoon" class="seg-btn selected">2D 卡通</button>
+              <button type="button" data-style="3d" class="seg-btn">3D 渲染</button>
+            </div>
+          </div>
+          <div class="trait-group">
+            <span class="trait-label">候选数量</span>
+            <div class="seg" id="guided-count">
+              <button type="button" data-count="2" class="seg-btn selected">2 张</button>
+              <button type="button" data-count="3" class="seg-btn">3 张</button>
+            </div>
+          </div>
+          <div id="guided-traits"></div>
+          <button id="guided-generate" class="primary">按此形象生成</button>
+        </div>
+      </section>
+
+      <section id="step-generating" class="page" hidden>
+        <button class="back-btn" id="back-generating">← 返回</button>
+        <h2>正在生成</h2>
+        <p class="page-sub">正在生成候选（约 1-2 分钟）…</p>
+        <div class="job-grid" id="job-grid"></div>
+      </section>
+
+      <section id="step-review" class="page" hidden>
+        <button class="back-btn" id="back-review">← 返回</button>
+        <h2>候选预览</h2>
+        <p class="page-sub">生成完成，挑一张最像的，点「满意」上桌面：</p>
+        <div class="candidate-grid" id="candidate-grid"></div>
+        <div class="wizard-actions" id="review-actions" hidden>
+          <button id="review-accept" class="primary">满意，出现在桌面</button>
+          <button id="review-retry" class="secondary">不满意，重新生成</button>
+          <button id="review-abandon" class="secondary">放弃</button>
+        </div>
+      </section>
     </div>
 
     <script type="module" src="/src/settings.ts"></script>

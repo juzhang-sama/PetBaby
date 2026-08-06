@@ -1,5 +1,5 @@
 use crate::runtime_assets::manifest::{
-    parse_manifest, ManifestAnimation, ManifestFileEntry, RuntimeAssetManifestV1,
+    main_part, parse_manifest, ManifestAnimation, ManifestFileEntry, RuntimeAssetManifestV1,
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -93,6 +93,8 @@ pub fn import_png_source(
             blink_ms_min: 3000,
             blink_ms_max: 8000,
         },
+        parts: Some(vec![main_part(&file_name)]),
+        mesh_features: None,
     };
     let manifest_path = dest_dir.join("manifest.json");
     std::fs::write(
@@ -183,6 +185,11 @@ mod tests {
         assert_eq!(parsed.files[0].role, "main");
         assert_eq!(parsed.files[0].sha256, imported.sha256);
         assert_eq!(parsed.animation.idle_fps, 12);
+        let parts = parsed.parts.expect("imported manifest must declare parts");
+        assert_eq!(parts.len(), 1);
+        assert_eq!(parts[0].role, "main");
+        assert_eq!(parts[0].pivot.x, 0.5);
+        assert_eq!(parts[0].anchor.y, 1.0);
         let _ = std::fs::remove_dir_all(root);
     }
 }

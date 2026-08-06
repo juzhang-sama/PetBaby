@@ -1,4 +1,4 @@
-﻿use rusqlite::Connection;
+use rusqlite::Connection;
 
 pub const MIGRATIONS: &[&str] = &[
     // v1: pets, variants and state tables
@@ -56,6 +56,18 @@ pub const MIGRATIONS: &[&str] = &[
       accepted INTEGER NOT NULL DEFAULT 0,
       created_at TEXT NOT NULL
     );
+    "#,
+    // v3: generation job kind (main candidate vs eye-closed layer edit)
+    r#"
+    ALTER TABLE generation_jobs ADD COLUMN kind TEXT NOT NULL DEFAULT 'main';
+    "#,
+    // v4: editable pet profile (name, gender, age, source, breed)
+    r#"
+    ALTER TABLE pets ADD COLUMN name TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pets ADD COLUMN gender TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pets ADD COLUMN age TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pets ADD COLUMN source TEXT NOT NULL DEFAULT '';
+    ALTER TABLE pets ADD COLUMN breed TEXT NOT NULL DEFAULT '';
     "#,
 ];
 
@@ -119,6 +131,26 @@ mod tests {
             .query_row("PRAGMA user_version", [], |row| row.get(0))
             .unwrap();
         assert_eq!(version, MIGRATIONS.len() as i64);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pets_table_has_profile_columns() {
+        let (db, root) = temp_db();
+        apply(&db).unwrap();
+        let columns: Vec<String> = db
+            .prepare("PRAGMA table_info(pets)")
+            .unwrap()
+            .query_map([], |row| row.get(1))
+            .unwrap()
+            .map(|row| row.unwrap())
+            .collect();
+        for column in ["name", "gender", "age", "source", "breed"] {
+            assert!(
+                columns.iter().any(|c| c == column),
+                "missing column {column}"
+            );
+        }
         let _ = std::fs::remove_dir_all(root);
     }
 }

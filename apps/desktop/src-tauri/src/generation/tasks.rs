@@ -44,13 +44,14 @@ impl GenerationManager {
         prompt: &str,
         ref_png: &[u8],
         ref_sha256: &str,
+        kind: &str,
     ) -> Result<String, String> {
         let job_id = format!("job-{}", now_iso());
         let client = self.client_for()?;
         let task_id = tauri::async_runtime::block_on(client.submit(prompt, Some(ref_png), "auto"))
             .map_err(|error| format!("submit failed: {error}"))?;
         let store = self.store.lock().map_err(|_| "store lock poisoned")?;
-        store.create_job(&job_id, pet_id, prompt, ref_sha256, Some(&task_id))?;
+        store.create_job(&job_id, pet_id, prompt, ref_sha256, Some(&task_id), kind)?;
         Ok(job_id)
     }
 
@@ -64,12 +65,27 @@ impl GenerationManager {
             let store = self.store.lock().map_err(|_| "store lock poisoned")?;
             store.running_jobs()?
         };
+        if running.is_empty() {
+            return Ok(Vec::new());
+        }
+        let client = match self.client_for() {
+            Ok(client) => client,
+            Err(error) => {
+                // without a key the jobs can never complete: fail them visibly
+                // instead of leaving them pending forever
+                if let Ok(store) = self.store.lock() {
+                    for job in &running {
+                        let _ = store.update_job_status(&job.job_id, "failed", None, Some(&error));
+                    }
+                }
+                return Ok(running.iter().map(|job| job.job_id.clone()).collect());
+            }
+        };
         let mut finished = Vec::new();
         for job in running {
             let Some(task_id) = job.task_id.clone() else {
                 continue;
             };
-            let client = self.client_for()?;
             let state = match tauri::async_runtime::block_on(client.poll(&task_id)) {
                 Ok(state) => state,
                 Err(error) => {
@@ -85,6 +101,12 @@ impl GenerationManager {
                 }
             };
             if !state.is_final {
+                // surface progress: pending -> running once the platform
+                // confirms the task is being processed
+                if job.status != "running" {
+                    let store = self.store.lock().map_err(|_| "store lock poisoned")?;
+                    store.update_job_status(&job.job_id, "running", None, None)?;
+                }
                 continue;
             }
             let store = self.store.lock().map_err(|_| "store lock poisoned")?;
@@ -133,9 +155,73 @@ impl GenerationManager {
         let raw_path = dir.join("raw.png");
         std::fs::write(&raw_path, bytes).ok()?;
         let image = image::load_from_memory(bytes).ok()?;
-        let (rgba, _report) = cutout::remove_background(&image);
+        // quality gate: acceptable cutout stays transparent; otherwise the
+        // opaque raw image is used so the compiler marks the asset degraded
+        let result = cutout::remove_background_guarded(&image);
         let cutout_path = dir.join("cutout.png");
-        rgba.save(&cutout_path).ok()?;
+        result.save(&cutout_path).ok()?;
         Some(cutout_path)
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pets::state::StateStore;
+    use crate::storage::Storage;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn temp_manager() -> (GenerationManager, std::path::PathBuf, String) {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("desktop-pet-tasks-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+
+        let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        let repo = crate::pets::repository::PetRepository::new(storage.clone());
+        let pet = repo
+            .create(
+                crate::pets::pet::Species::Cat,
+                crate::pets::pet::IdentityMode::RealPet,
+            )
+            .unwrap();
+
+        let creation_store = Arc::new(Mutex::new(CreationStore::new(Arc::new(Mutex::new(
+            Storage::open(&root).unwrap(),
+        )))));
+        let state_store = Arc::new(Mutex::new(StateStore::new(storage)));
+        let manager = GenerationManager::new(
+            creation_store,
+            state_store,
+            Arc::from(root.join("jobs").as_path()),
+        );
+        (manager, root, pet.pet_id)
+    }
+
+    #[test]
+    fn poll_all_marks_running_jobs_failed_when_api_key_missing() {
+        // without an API key the jobs cannot be polled; they must fail visibly
+        // instead of staying in "pending" forever
+        let (manager, root, pet_id) = temp_manager();
+        {
+            let store = manager.store.lock().unwrap();
+            store
+                .create_job("job-test", &pet_id, "prompt", "sha", Some("task-1"), "main")
+                .unwrap();
+        }
+
+        let finished = manager.poll_all().unwrap();
+        assert_eq!(finished, vec!["job-test".to_string()]);
+
+        let store = manager.store.lock().unwrap();
+        let jobs = store.job_list(&pet_id).unwrap();
+        assert_eq!(jobs[0].status, "failed");
+        assert!(jobs[0]
+            .error
+            .as_deref()
+            .is_some_and(|error| error.contains("API Key")));
+        let _ = std::fs::remove_dir_all(root);
     }
 }

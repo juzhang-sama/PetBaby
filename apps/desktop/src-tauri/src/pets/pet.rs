@@ -23,6 +23,11 @@ pub struct Pet {
     pub schema_version: i32,
     pub species: Species,
     pub identity_mode: IdentityMode,
+    pub name: String,
+    pub gender: String,
+    pub age: String,
+    pub source: String,
+    pub breed: String,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -33,6 +38,11 @@ pub struct PetSummary {
     pub pet_id: String,
     pub species: Species,
     pub identity_mode: IdentityMode,
+    pub name: String,
+    pub gender: String,
+    pub age: String,
+    pub source: String,
+    pub breed: String,
     pub created_at: String,
 }
 

@@ -1,4 +1,6 @@
 import type { BehaviorIntent } from "../behavior/intents";
+import { AnimStateMachine, type AnimStateDef } from "./anim-machine";
+import { createPetClips, type PetClips } from "./pet-clips";
 
 export interface AnimatorDriver {
   setEyesOpen(open: boolean): void;
@@ -6,13 +8,15 @@ export interface AnimatorDriver {
   scaleSquash(factor: number): void;
   shift(dx: number, dy: number): void;
   setAccentVisible(visible: boolean): void;
+  setTilt(angleDeg: number): void;
+  setHeadTurn?(amount: number): void;
 }
 
-export type AnimatorMode = "idle" | "interact" | "carried";
+export type AnimatorMode = "idle" | "interact" | "carried" | "falling" | "strolling";
 
 const BREATH_PERIOD_MS = 4_000;
 const BLINK_CLOSED_MS = 160;
-const BOUNCE_MS = 500;
+const LOOK_TILT_DEG = 6;
 
 export function breathPhaseAt(t: number): number {
   return ((t % BREATH_PERIOD_MS) / BREATH_PERIOD_MS) % 1;
@@ -33,17 +37,38 @@ export class BlinkScheduler {
   }
 }
 
+/**
+ * Timeline-driven pet animator. Continuous motion is expressed as keyframe
+ * clips played by an AnimStateMachine; discrete events (blink, sleep) are
+ * layered on top. Every channel finally flows through AnimatorDriver.
+ */
 export class PetAnimator {
   private running = false;
   private lastTick = 0;
   private mode: AnimatorMode = "idle";
-  private blinkScheduler = new BlinkScheduler(3_000, 8_000);
+  private sleeping = false;
+  private readonly clips: PetClips;
+  private readonly machine: AnimStateMachine;
+  private readonly blinkScheduler = new BlinkScheduler(3_000, 8_000);
   private nextBlinkAt = 0;
   private blinkingUntil = 0;
-  private bounceUntil = 0;
-  private bounceActive = false;
 
-  constructor(private readonly driver: AnimatorDriver) {}
+  constructor(private readonly driver: AnimatorDriver) {
+    this.clips = createPetClips();
+    const states: AnimStateDef[] = [
+      { id: "idle", clip: this.clips.idle },
+      { id: "sleep", clip: this.clips.sleep },
+      { id: "look-left", clip: this.clips["look-left"], followUp: "idle" },
+      { id: "look-right", clip: this.clips["look-right"], followUp: "idle" },
+      { id: "react-happy", clip: this.clips["react-happy"], followUp: "idle" },
+      { id: "react-curious", clip: this.clips["react-curious"], followUp: "idle" },
+      { id: "carried", clip: this.clips.carried },
+      { id: "landed", clip: this.clips.landed, followUp: "idle" },
+      { id: "falling", clip: this.clips.falling },
+      { id: "stroll", clip: this.clips.stroll },
+    ];
+    this.machine = new AnimStateMachine(states, "idle");
+  }
 
   start(): void {
     this.running = true;
@@ -55,48 +80,59 @@ export class PetAnimator {
 
   setMode(mode: AnimatorMode): void {
     this.mode = mode;
-    if (mode === "carried") {
+    if (mode === "carried" || mode === "falling") {
       this.driver.setEyesOpen(true);
+      this.machine.play(mode, this.lastTick);
+    } else if (mode === "strolling") {
+      this.machine.play("stroll", this.lastTick);
+    } else if (mode === "idle") {
+      this.machine.play("idle", this.lastTick);
     }
   }
 
   setIntent(intent: BehaviorIntent): void {
-    if (intent.type === "react-happy") {
-      this.startBounce();
-      this.driver.setAccentVisible(true);
-    } else if (intent.type === "react-curious") {
-      this.driver.shift(0, -6);
-      this.driver.setAccentVisible(true);
-      this.scheduleShiftReset(400);
-    } else if (intent.type === "carried") {
-      this.setMode("carried");
-    } else if (intent.type === "landed") {
-      this.setMode("idle");
-      this.startBounce();
-    } else if (intent.type === "sleep") {
-      this.setMode("idle");
-      this.driver.setEyesOpen(false);
-    } else if (intent.type === "awake") {
-      this.driver.setEyesOpen(true);
+    switch (intent.type) {
+      case "react-happy":
+        this.machine.play("react-happy", this.lastTick);
+        break;
+      case "react-curious":
+        this.machine.play("react-curious", this.lastTick);
+        break;
+      case "look":
+        this.machine.play(
+          intent.target === "left" ? "look-left"
+            : intent.target === "right" ? "look-right"
+              : "idle",
+          this.lastTick,
+        );
+        break;
+      case "carried":
+        this.setMode("carried");
+        break;
+      case "falling":
+        this.setMode("falling");
+        break;
+      case "stroll":
+        this.setMode("strolling");
+        break;
+      case "landed":
+        this.mode = "idle";
+        this.machine.play("landed", this.lastTick);
+        break;
+      case "sleep":
+        this.sleeping = true;
+        this.mode = "idle";
+        this.machine.play("sleep", this.lastTick);
+        break;
+      case "awake":
+        this.sleeping = false;
+        this.machine.play("idle", this.lastTick);
+        break;
+      case "blink":
+        this.forceBlink();
+        break;
     }
   }
-
-  private startBounce(): void {
-    this.bounceUntil = this.lastTick + BOUNCE_MS;
-    this.bounceActive = true;
-  }
-
-  private resetShift(): void {
-    this.driver.shift(0, 0);
-    this.driver.setAccentVisible(false);
-  }
-
-  private scheduleShiftReset(delayMs: number): void {
-    // best effort: reset on the next tick after the delay
-    this.shiftResetAt = this.lastTick + delayMs;
-  }
-
-  private shiftResetAt = 0;
 
   forceBlink(): void {
     this.blinkingUntil = this.lastTick + BLINK_CLOSED_MS;
@@ -104,42 +140,47 @@ export class PetAnimator {
 
   tick(now: number): void {
     if (!this.running) return;
-    const elapsed = this.lastTick === 0 ? 0 : now - this.lastTick;
     this.lastTick = now;
+    this.machine.update(now);
+    const params = this.machine.params();
 
-    if (this.mode !== "carried") {
-      const phase = breathPhaseAt(now);
-      this.driver.setBreathPhase(phase);
+    // breathing stops while carried or falling
+    if (this.mode !== "carried" && this.mode !== "falling") {
+      this.driver.setBreathPhase(params.breath);
     }
 
-    // blink scheduling
-    if (this.mode !== "carried") {
-      this.nextBlinkAt = this.blinkScheduler.nextAt(now);
-      const eyesOpen = now > this.blinkingUntil;
-      this.driver.setEyesOpen(eyesOpen);
-      if (now >= this.nextBlinkAt && now > this.blinkingUntil) {
-        this.forceBlink();
-      }
+    // body tilt and head turn follow the look channel; carried/falling use
+    // their own wobble clips instead
+    const lookX = params.lookX;
+    if (this.mode === "carried" || this.mode === "falling") {
+      this.driver.setTilt(params.tilt);
     } else {
+      this.driver.setTilt(lookX * LOOK_TILT_DEG);
+    }
+    this.driver.setHeadTurn?.(lookX);
+
+    if (params.squash !== 1) {
+      this.driver.scaleSquash(params.squash);
+    }
+    this.driver.shift(params.shiftX, params.shiftY);
+    this.driver.setAccentVisible(params.accent > 0.5);
+
+    if (this.sleeping) {
+      this.driver.setEyesOpen(false);
+      return;
+    }
+    if (this.mode === "carried" || this.mode === "falling") {
       this.driver.setEyesOpen(true);
+      return;
     }
 
-    // bounce feedback
-    if (this.bounceActive && this.mode !== "carried") {
-      if (now < this.bounceUntil) {
-        const progress = 1 - (this.bounceUntil - now) / BOUNCE_MS;
-        const squash = 1 + Math.sin(progress * Math.PI) * 0.06;
-        this.driver.scaleSquash(squash);
-        this.driver.shift(0, -Math.sin(progress * Math.PI) * 10);
-      } else {
-        this.bounceActive = false;
-        this.resetShift();
-      }
-    }
-
-    if (this.shiftResetAt > 0 && now >= this.shiftResetAt) {
-      this.shiftResetAt = 0;
-      this.resetShift();
+    // blink scheduling: capture due-ness BEFORE nextAt() re-schedules
+    const blinkDue = this.nextBlinkAt !== 0 && now >= this.nextBlinkAt;
+    this.nextBlinkAt = this.blinkScheduler.nextAt(now);
+    const eyesOpen = now > this.blinkingUntil;
+    this.driver.setEyesOpen(eyesOpen);
+    if (blinkDue && now > this.blinkingUntil) {
+      this.forceBlink();
     }
   }
 }

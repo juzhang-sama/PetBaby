@@ -1,0 +1,6 @@
+{
+  "pets": [
+    { "id": "cat-1", "name": "奶油橘猫（占位）", "species": "cat", "preview": "/builtin-pets/cat-1.png" },
+    { "id": "dog-1", "name": "奶茶柯基（占位）", "species": "dog", "preview": "/builtin-pets/dog-1.png" }
+  ]
+}
