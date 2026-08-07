@@ -33,7 +33,7 @@ export interface RuntimeAssetManifestV2 {
 export function normalizeAssetPath(input: string): string {
   if (typeof input !== "string" || input.length === 0) throw new Error("asset path must not be empty");
   const normalized = input.replaceAll("\\", "/");
-  if (normalized.startsWith("/") || /^[A-Za-z]:\//.test(normalized)) throw new Error(`absolute asset path is not allowed: ${input}`);
+  if (normalized.startsWith("/") || normalized.includes(":")) throw new Error(`absolute asset path is not allowed: ${input}`);
   const parts = normalized.split("/");
   if (parts.some((part) => part.length === 0 || part === "." || part === "..")) throw new Error(`unsafe asset path: ${input}`);
   return parts.join("/");
@@ -60,6 +60,7 @@ export function parseLive2DManifest(json: unknown): RuntimeAssetManifestV2 {
   validateExtension(previewImage);
   const filesValue = value.files;
   if (!Array.isArray(filesValue) || filesValue.length === 0) throw new Error("manifest must declare files");
+  const seenPaths = new Set<string>();
   const files = filesValue.map((entry) => {
     if (typeof entry !== "object" || entry === null) throw new Error("invalid file entry");
     const file = entry as Record<string, unknown>;
@@ -68,6 +69,8 @@ export function parseLive2DManifest(json: unknown): RuntimeAssetManifestV2 {
     const sha256 = requiredString(file, "sha256");
     validateExtension(relativePath);
     if (!SHA256_HEX.test(sha256)) throw new Error("invalid file entry: sha256 must be 64 hex chars");
+    if (seenPaths.has(relativePath)) throw new Error(`duplicate asset path: ${relativePath}`);
+    seenPaths.add(relativePath);
     return { role, relativePath, sha256: sha256.toLowerCase() };
   });
   if (!files.some((file) => file.relativePath === modelEntry)) throw new Error("modelEntry is not listed in files");
@@ -78,9 +81,16 @@ export function parseLive2DManifest(json: unknown): RuntimeAssetManifestV2 {
   const known = { motions: new Set(["idle", "look-left", "look-right", "react-happy", "react-curious", "sleep", "wake", "carried", "landed"]), expressions: new Set(["neutral", "happy", "curious", "sleepy", "sad", "angry"]), hitAreas: new Set(["head", "body"]), parameters: new Set(["eyeOpen", "eyeBallX", "eyeBallY", "angleX", "angleY", "bodyBreath", "mouthOpen"]) };
   for (const [group, allowed] of Object.entries(known)) for (const key of Object.keys((semantics[group] as object))) if (!allowed.has(key)) throw new Error(`unknown semantics.${group}.${key}`);
   for (const [key, mapping] of Object.entries(semantics.motions as Record<string, unknown>)) {
-    if (typeof mapping !== "object" || mapping === null || typeof (mapping as Record<string, unknown>).group !== "string") throw new Error(`invalid semantics.motions.${key}`);
+    const motion = mapping as Record<string, unknown>;
+    if (
+      typeof mapping !== "object"
+      || mapping === null
+      || typeof motion.group !== "string"
+      || motion.group.length === 0
+      || (motion.index !== undefined && (!Number.isInteger(motion.index) || (motion.index as number) < 0))
+    ) throw new Error(`invalid semantics.motions.${key}`);
   }
-  for (const group of ["expressions", "hitAreas", "parameters"] as const) for (const [key, mapping] of Object.entries(semantics[group] as Record<string, unknown>)) if (typeof mapping !== "string") throw new Error(`invalid semantics.${group}.${key}`);
+  for (const group of ["expressions", "hitAreas", "parameters"] as const) for (const [key, mapping] of Object.entries(semantics[group] as Record<string, unknown>)) if (typeof mapping !== "string" || mapping.length === 0) throw new Error(`invalid semantics.${group}.${key}`);
   const license = value.license;
   if (typeof license !== "object" || license === null) throw new Error("missing or invalid license");
   const licenseValue = license as Record<string, unknown>;

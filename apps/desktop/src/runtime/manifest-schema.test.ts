@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseManifest, parseManifestV1, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
+import { parseManifestV1, parseRuntimeAssetManifest, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
 
 describe("parseManifestV1", () => {
   it("accepts a valid manifest", () => {
@@ -59,8 +59,15 @@ describe("parseManifestV1", () => {
     })).toThrow(/PNG/i);
   });
 
+  it("rejects unsafe v1 asset paths", () => {
+    expect(() => parseManifestV1({
+      schemaVersion: 1, assetType: "single-image", petId: "p", variantId: "v", styleId: "s", view: "front", pose: "sitting",
+      files: [{ role: "main", relativePath: "../pet.png", sha256: "ab".repeat(32) }], animation: { idleFps: 1, blinkMsMin: 1, blinkMsMax: 2 },
+    })).toThrow(/asset path/i);
+  });
+
   it("dispatches schema v2 manifests", () => {
-    expect(parseManifest({
+    expect(parseRuntimeAssetManifest({
       schemaVersion: 2, renderer: "live2d-v1", petId: "p", variantId: "v",
       modelEntry: "model.model3.json", previewImage: "preview.png",
       files: [

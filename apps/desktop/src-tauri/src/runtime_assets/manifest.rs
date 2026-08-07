@@ -1,4 +1,5 @@
 use serde::{Deserialize, Serialize};
+use std::collections::HashSet;
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -97,12 +98,19 @@ fn validate_files(files: &[ManifestFileEntry], v1: bool) -> Result<(), String> {
     if files.is_empty() {
         return Err("manifest must declare at least one file".into());
     }
+    let mut seen_paths = HashSet::new();
     for file in files {
+        if file.role.is_empty() {
+            return Err("invalid file entry: role must not be empty".into());
+        }
         if !SHA256_HEX(&file.sha256) {
             return Err("invalid file entry: sha256 must be 64 hex chars".into());
         }
-        validate_relative_path(&file.relative_path)?;
-        let lower = file.relative_path.to_ascii_lowercase();
+        let normalized = normalize_relative_path(&file.relative_path)?;
+        if !seen_paths.insert(normalized.clone()) {
+            return Err(format!("duplicate asset path: {normalized}"));
+        }
+        let lower = normalized.to_ascii_lowercase();
         if v1 && !lower.ends_with(".png") {
             return Err("v1 manifests only support PNG fallback assets".into());
         }
@@ -128,6 +136,7 @@ pub fn parse_manifest_v1(json: &str) -> Result<RuntimeAssetManifestV1, String> {
     validate_files(&manifest.files, true)?;
     for file in &mut manifest.files {
         file.relative_path = normalize_relative_path(&file.relative_path)?;
+        file.sha256.make_ascii_lowercase();
     }
     Ok(manifest)
 }
@@ -158,6 +167,7 @@ pub fn parse_manifest(json: &str) -> Result<RuntimeAssetManifest, String> {
     manifest.preview_image = normalize_relative_path(&manifest.preview_image)?;
     for file in &mut manifest.files {
         file.relative_path = normalize_relative_path(&file.relative_path)?;
+        file.sha256.make_ascii_lowercase();
     }
     for path in [&manifest.model_entry, &manifest.preview_image] {
         validate_relative_path(path)?;
@@ -181,6 +191,15 @@ pub fn parse_manifest(json: &str) -> Result<RuntimeAssetManifest, String> {
         .any(|file| file.relative_path == manifest.preview_image)
     {
         return Err("previewImage is not listed in files".into());
+    }
+    for (field, value) in [
+        ("license.id", &manifest.license.id),
+        ("license.author", &manifest.license.author),
+        ("license.source", &manifest.license.source),
+    ] {
+        if value.is_empty() {
+            return Err(format!("missing or invalid {field}"));
+        }
     }
     validate_semantics(&manifest.semantics)?;
     Ok(RuntimeAssetManifest::V2(manifest))
@@ -231,10 +250,14 @@ fn validate_semantics(value: &serde_json::Value) -> Result<(), String> {
                 return Err(format!("unknown semantics.{group}.{key}"));
             }
             if group == "motions" {
-                if mapping.get("group").and_then(|v| v.as_str()).is_none() {
+                let motion_group = mapping.get("group").and_then(|v| v.as_str());
+                let index_valid = mapping
+                    .get("index")
+                    .is_none_or(|index| index.as_u64().is_some());
+                if motion_group.is_none_or(str::is_empty) || !index_valid {
                     return Err(format!("invalid semantics.{group}.{key}"));
                 }
-            } else if !mapping.is_string() {
+            } else if mapping.as_str().is_none_or(str::is_empty) {
                 return Err(format!("invalid semantics.{group}.{key}"));
             }
         }
@@ -247,6 +270,9 @@ mod tests {
     use super::*;
     fn valid_json() -> &'static str {
         r#"{"schemaVersion":1,"assetType":"single-image","petId":"pet-1","variantId":"variant-1","styleId":"signature-cartoon-v1","view":"front","pose":"sitting","files":[{"role":"main","relativePath":"pet.png","sha256":"abababababababababababababababababababababababababababababababab"}],"animation":{"idleFps":12,"blinkMsMin":3000,"blinkMsMax":8000}}"#
+    }
+    fn valid_v2_json() -> &'static str {
+        r#"{"schemaVersion":2,"renderer":"live2d-v1","petId":"pet","variantId":"v","modelEntry":"model.model3.json","previewImage":"preview.png","files":[{"role":"model","relativePath":"model.model3.json","sha256":"abababababababababababababababababababababababababababababababab"},{"role":"preview","relativePath":"preview.png","sha256":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"}],"semantics":{"motions":{},"expressions":{},"hitAreas":{},"parameters":{}},"license":{"id":"test","author":"test","source":"test","commercialUse":true,"redistributable":false}}"#
     }
     #[test]
     fn parses_valid_manifest() {
@@ -276,17 +302,67 @@ mod tests {
     }
     #[test]
     fn parses_valid_v2_manifest() {
-        let json = r#"{"schemaVersion":2,"renderer":"live2d-v1","petId":"pet","variantId":"v","modelEntry":"model.model3.json","previewImage":"preview.png","files":[{"role":"model","relativePath":"model.model3.json","sha256":"abababababababababababababababababababababababababababababababab"},{"role":"preview","relativePath":"preview.png","sha256":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"}],"semantics":{"motions":{},"expressions":{},"hitAreas":{},"parameters":{}},"license":{"id":"test","author":"test","source":"test","commercialUse":true,"redistributable":false}}"#;
         assert!(matches!(
-            parse_manifest(json).unwrap(),
+            parse_manifest(valid_v2_json()).unwrap(),
             RuntimeAssetManifest::V2(_)
         ));
     }
     #[test]
     fn rejects_v2_traversal() {
-        let json = r#"{"schemaVersion":2,"renderer":"live2d-v1","petId":"pet","variantId":"v","modelEntry":"../model.model3.json","previewImage":"preview.png","files":[{"role":"model","relativePath":"../model.model3.json","sha256":"abababababababababababababababababababababababababababababababab"},{"role":"preview","relativePath":"preview.png","sha256":"cdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcdcd"}],"semantics":{"motions":{},"expressions":{},"hitAreas":{},"parameters":{}},"license":{"id":"test","author":"test","source":"test","commercialUse":true,"redistributable":false}}"#;
-        assert!(parse_manifest(json)
+        let json = valid_v2_json().replace("model.model3.json", "../model.model3.json");
+        assert!(parse_manifest(&json)
             .unwrap_err()
             .contains("unsafe asset path"));
+    }
+
+    #[test]
+    fn normalizes_uppercase_sha256() {
+        let uppercase = "AB".repeat(32);
+        let json = valid_json().replace(
+            "abababababababababababababababababababababababababababababababab",
+            &uppercase,
+        );
+        let RuntimeAssetManifest::V1(manifest) = parse_manifest(&json).unwrap() else {
+            panic!("expected v1 manifest");
+        };
+        assert_eq!(
+            manifest.files[0].sha256,
+            "abababababababababababababababababababababababababababababababab"
+        );
+    }
+
+    #[test]
+    fn rejects_empty_license_strings() {
+        let json = valid_v2_json().replace("\"author\":\"test\"", "\"author\":\"\"");
+        assert!(parse_manifest(&json)
+            .unwrap_err()
+            .contains("license.author"));
+    }
+
+    #[test]
+    fn rejects_invalid_semantic_mapping() {
+        let json = valid_v2_json().replace("\"motions\":{}", "\"motions\":{\"idle\":\"Idle\"}");
+        assert!(parse_manifest(&json)
+            .unwrap_err()
+            .contains("semantics.motions.idle"));
+
+        let bad_index = valid_v2_json().replace(
+            "\"motions\":{}",
+            "\"motions\":{\"idle\":{\"group\":\"Idle\",\"index\":\"0\"}}",
+        );
+        assert!(parse_manifest(&bad_index)
+            .unwrap_err()
+            .contains("semantics.motions.idle"));
+    }
+
+    #[test]
+    fn rejects_empty_roles_and_duplicate_paths() {
+        let empty_role = valid_v2_json().replace("\"role\":\"model\"", "\"role\":\"\"");
+        assert!(parse_manifest(&empty_role).unwrap_err().contains("role"));
+
+        let duplicate = valid_v2_json().replace("preview.png", "model.model3.json");
+        assert!(parse_manifest(&duplicate)
+            .unwrap_err()
+            .contains("duplicate asset path"));
     }
 }
