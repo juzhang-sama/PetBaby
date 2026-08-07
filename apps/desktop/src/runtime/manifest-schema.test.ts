@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { parseManifestV1, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
+import { parseManifest, parseManifestV1, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
 
 describe("parseManifestV1", () => {
   it("accepts a valid manifest", () => {
@@ -50,5 +50,24 @@ describe("parseManifestV1", () => {
 
   it("pins the schema version constant", () => {
     expect(MANIFEST_SCHEMA_VERSION).toBe(1);
+  });
+
+  it("keeps v1 limited to static PNG fallback", () => {
+    expect(() => parseManifestV1({
+      schemaVersion: 1, assetType: "single-image", petId: "p", variantId: "v", styleId: "s", view: "front", pose: "sitting",
+      files: [{ role: "main", relativePath: "pet.model3.json", sha256: "ab".repeat(32) }], animation: { idleFps: 1, blinkMsMin: 1, blinkMsMax: 2 },
+    })).toThrow(/PNG/i);
+  });
+
+  it("dispatches schema v2 manifests", () => {
+    expect(parseManifest({
+      schemaVersion: 2, renderer: "live2d-v1", petId: "p", variantId: "v",
+      modelEntry: "model.model3.json", previewImage: "preview.png",
+      files: [
+        { role: "model", relativePath: "model.model3.json", sha256: "ab".repeat(32) },
+        { role: "preview", relativePath: "preview.png", sha256: "ab".repeat(32) },
+      ], semantics: { motions: {}, expressions: {}, hitAreas: {}, parameters: {} },
+      license: { id: "test", author: "test", source: "test", commercialUse: true, redistributable: false },
+    }).schemaVersion).toBe(2);
   });
 });

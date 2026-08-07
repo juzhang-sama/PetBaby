@@ -1,4 +1,6 @@
-use crate::runtime_assets::manifest::parse_manifest;
+use crate::runtime_assets::manifest::{
+    parse_manifest, validate_relative_path, RuntimeAssetManifest,
+};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -64,8 +66,16 @@ pub fn scan_assets(pets_dir: &Path) -> Vec<AssetHealth> {
             });
             continue;
         };
+        let files = match &manifest {
+            RuntimeAssetManifest::V1(value) => &value.files,
+            RuntimeAssetManifest::V2(value) => &value.files,
+        };
         let mut healthy = true;
-        for file in &manifest.files {
+        for file in files {
+            if validate_relative_path(&file.relative_path).is_err() {
+                healthy = false;
+                break;
+            }
             let file_path = pet_dir.join("assets").join(&file.relative_path);
             let Ok(bytes) = std::fs::read(&file_path) else {
                 healthy = false;

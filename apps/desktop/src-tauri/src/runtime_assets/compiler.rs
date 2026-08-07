@@ -1,5 +1,5 @@
 use crate::runtime_assets::manifest::{
-    parse_manifest, ManifestAnimation, ManifestFileEntry, RuntimeAssetManifestV1,
+    parse_manifest_v1, ManifestAnimation, ManifestFileEntry, RuntimeAssetManifestV1,
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -79,7 +79,7 @@ pub fn compile_single_image(
 
     // validate the round trip
     let written = std::fs::read(&manifest_path).map_err(|error| error.to_string())?;
-    parse_manifest(&String::from_utf8_lossy(&written)).map_err(|error| error.to_string())?;
+    parse_manifest_v1(&String::from_utf8_lossy(&written)).map_err(|error| error.to_string())?;
 
     // intermediate cutout no longer needed: remove its job directory
     if let Some(job_dir) = cutout_path.parent() {
@@ -129,7 +129,7 @@ mod tests {
         assert!(!result.degraded);
         assert!(dest.join("body.png").exists());
         let manifest = std::fs::read_to_string(dest.join("manifest.json")).unwrap();
-        let parsed = parse_manifest(&manifest).unwrap();
+        let parsed = parse_manifest_v1(&manifest).unwrap();
         assert_eq!(parsed.pet_id, "pet-1");
         assert_eq!(parsed.files[0].role, "main");
         assert_eq!(parsed.files[0].sha256.len(), 64);

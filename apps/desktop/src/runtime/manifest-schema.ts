@@ -1,4 +1,5 @@
 export const MANIFEST_SCHEMA_VERSION = 1 as const;
+import { parseLive2DManifest, type RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
 
 export interface ManifestFileEntry {
   role: string;
@@ -50,6 +51,7 @@ export function parseManifestV1(json: unknown): RuntimeAssetManifestV1 {
     ) {
       throw new Error("invalid file entry: sha256 must be 64 hex chars");
     }
+    if (!file.relativePath.toLowerCase().endsWith(".png")) throw new Error("v1 manifests only support PNG fallback assets");
   }
   const animation = value.animation as Record<string, unknown>;
   if (
@@ -75,4 +77,9 @@ export function parseManifestV1(json: unknown): RuntimeAssetManifestV1 {
       blinkMsMax: animation.blinkMsMax as number,
     },
   };
+}
+
+export function parseManifest(json: unknown): RuntimeAssetManifestV1 | RuntimeAssetManifestV2 {
+  if (typeof json !== "object" || json === null) throw new Error("manifest must be an object");
+  return (json as Record<string, unknown>).schemaVersion === 2 ? parseLive2DManifest(json) : parseManifestV1(json);
 }

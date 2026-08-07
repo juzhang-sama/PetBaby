@@ -88,9 +88,7 @@ fn probe_fullscreen(
 }
 
 #[tauri::command]
-fn parse_manifest(
-    json: String,
-) -> Result<runtime_assets::manifest::RuntimeAssetManifestV1, String> {
+fn parse_manifest(json: String) -> Result<runtime_assets::manifest::RuntimeAssetManifest, String> {
     runtime_assets::manifest::parse_manifest(&json)
 }
 
@@ -115,6 +113,65 @@ fn asset_scan(app: tauri::AppHandle) -> Result<Vec<runtime_assets::loader::Asset
         .app_data_dir()
         .map_err(|error| error.to_string())?;
     Ok(runtime_assets::loader::scan_assets(&data_dir.join("pets")))
+}
+
+#[tauri::command]
+fn asset_manifest(
+    app: tauri::AppHandle,
+    pet_id: String,
+) -> Result<runtime_assets::manifest::RuntimeAssetManifest, String> {
+    validate_pet_asset_id(&pet_id)?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("pets")
+        .join(&pet_id)
+        .join("assets");
+    let json =
+        std::fs::read_to_string(root.join("manifest.json")).map_err(|error| error.to_string())?;
+    runtime_assets::manifest::parse_manifest(&json)
+}
+
+#[tauri::command]
+fn asset_file_b64(
+    app: tauri::AppHandle,
+    pet_id: String,
+    relative_path: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    validate_pet_asset_id(&pet_id)?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("pets")
+        .join(&pet_id)
+        .join("assets");
+    let json =
+        std::fs::read_to_string(root.join("manifest.json")).map_err(|error| error.to_string())?;
+    let manifest = runtime_assets::manifest::parse_manifest(&json)?;
+    let files = match &manifest {
+        runtime_assets::manifest::RuntimeAssetManifest::V1(value) => &value.files,
+        runtime_assets::manifest::RuntimeAssetManifest::V2(value) => &value.files,
+    };
+    let normalized = runtime_assets::manifest::normalize_relative_path(&relative_path)?;
+    if !files.iter().any(|file| file.relative_path == normalized) {
+        return Err("asset file is not declared in manifest".into());
+    }
+    let bytes = std::fs::read(root.join(normalized)).map_err(|error| error.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+fn validate_pet_asset_id(pet_id: &str) -> Result<(), String> {
+    if pet_id.is_empty()
+        || !pet_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("invalid petId".into());
+    }
+    Ok(())
 }
 
 #[tauri::command]
@@ -508,6 +565,8 @@ pub fn run() {
             parse_manifest,
             asset_import,
             asset_scan,
+            asset_manifest,
+            asset_file_b64,
             asset_compile,
             pet_list,
             pet_create,

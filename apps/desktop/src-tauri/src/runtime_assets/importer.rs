@@ -1,5 +1,5 @@
 use crate::runtime_assets::manifest::{
-    parse_manifest, ManifestAnimation, ManifestFileEntry, RuntimeAssetManifestV1,
+    parse_manifest_v1, ManifestAnimation, ManifestFileEntry, RuntimeAssetManifestV1,
 };
 use sha2::{Digest, Sha256};
 use std::path::Path;
@@ -103,7 +103,7 @@ pub fn import_png_source(
 
     // validate the round trip
     let written = std::fs::read(&manifest_path).map_err(|error| error.to_string())?;
-    parse_manifest(&String::from_utf8_lossy(&written)).map_err(|error| error.to_string())?;
+    parse_manifest_v1(&String::from_utf8_lossy(&written)).map_err(|error| error.to_string())?;
 
     Ok(ImportedAsset {
         manifest_path: manifest_path.to_string_lossy().to_string(),
@@ -178,7 +178,7 @@ mod tests {
         assert_eq!(imported.sha256.len(), 64);
 
         let manifest = std::fs::read(out.join("manifest.json")).unwrap();
-        let parsed = parse_manifest(&String::from_utf8_lossy(&manifest)).unwrap();
+        let parsed = parse_manifest_v1(&String::from_utf8_lossy(&manifest)).unwrap();
         assert_eq!(parsed.pet_id, "pet-x");
         assert_eq!(parsed.files[0].role, "main");
         assert_eq!(parsed.files[0].sha256, imported.sha256);
