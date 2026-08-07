@@ -3,22 +3,31 @@ import { CubismFramework, LogLevel } from "@cubism-framework/live2dcubismframewo
 import type { CubismIdHandle } from "@cubism-framework/id/cubismid";
 import { CubismMatrix44 } from "@cubism-framework/math/cubismmatrix44";
 import { CubismUserModel } from "@cubism-framework/model/cubismusermodel";
+import type { ACubismMotion } from "@cubism-framework/motion/acubismmotion";
 import type { CubismMotion } from "@cubism-framework/motion/cubismmotion";
 import { CubismShaderManager_WebGL } from "@cubism-framework/rendering/cubismshader_webgl";
-import type { CubismAdapter } from "../../apps/desktop/src/runtime-live2d/cubism-adapter";
+import { resolveCubismResourceUrl } from "../../apps/desktop/src/runtime-live2d/cubism-adapter";
+import type {
+  CubismControlAdapter,
+  CubismMotionOptions,
+} from "../../apps/desktop/src/runtime-live2d/cubism-model-loader";
+
+let frameworkUsers = 0;
 
 class ProbeModel extends CubismUserModel {
   private readonly textures: WebGLTexture[] = [];
   private readonly eyeBlinkIds: CubismIdHandle[] = [];
   private readonly lipSyncIds: CubismIdHandle[] = [];
-  private idleMotion: CubismMotion | null = null;
+  private readonly motions = new Map<string, CubismMotion>();
+  private readonly expressions = new Map<string, ACubismMotion>();
+  private readonly hitAreas = new Map<string, CubismIdHandle>();
+  private viewProjection = new CubismMatrix44();
 
   async load(modelUrl: string, gl: WebGLRenderingContext | WebGL2RenderingContext, canvas: HTMLCanvasElement): Promise<void> {
     const modelSettings = await fetchBuffer(modelUrl, "model3.json");
     const setting = new CubismModelSettingJson(modelSettings, modelSettings.byteLength);
-    const baseUrl = modelUrl.slice(0, modelUrl.lastIndexOf("/") + 1);
-
-    const moc = await fetchBuffer(`${baseUrl}${setting.getModelFileName()}`, "moc3");
+    const resolveResource = (resourceUrl: string) => resolveCubismResourceUrl(modelUrl, resourceUrl);
+    const moc = await fetchBuffer(resolveResource(setting.getModelFileName()), "moc3");
     this.loadModel(moc);
     const layout = new Map<string, number>();
     setting.getLayoutMap(layout);
@@ -33,7 +42,7 @@ class ProbeModel extends CubismUserModel {
 
     gl.pixelStorei(gl.UNPACK_PREMULTIPLY_ALPHA_WEBGL, 1);
     for (let index = 0; index < setting.getTextureCount(); index += 1) {
-      const image = await loadImage(`${baseUrl}${setting.getTextureFileName(index)}`);
+      const image = await loadImage(resolveResource(setting.getTextureFileName(index)));
       const texture = gl.createTexture();
       if (!texture) throw new Error("Cubism 纹理创建失败");
       gl.bindTexture(gl.TEXTURE_2D, texture);
@@ -46,39 +55,129 @@ class ProbeModel extends CubismUserModel {
       this.textures.push(texture);
     }
 
-    if (setting.getMotionCount("Idle") > 0) {
-      const motionFile = setting.getMotionFileName("Idle", 0);
-      const motionBuffer = await fetchBuffer(`${baseUrl}${motionFile}`, "idle motion");
-      this.idleMotion = this.loadMotion(
-        motionBuffer,
-        motionBuffer.byteLength,
-        "Idle_0",
-        undefined,
-        undefined,
-        setting,
-        "Idle",
-        0,
-      );
-      for (let index = 0; index < setting.getEyeBlinkParameterCount(); index += 1) {
-        this.eyeBlinkIds.push(setting.getEyeBlinkParameterId(index));
+    for (let index = 0; index < setting.getEyeBlinkParameterCount(); index += 1) {
+      this.eyeBlinkIds.push(setting.getEyeBlinkParameterId(index));
+    }
+    for (let index = 0; index < setting.getLipSyncParameterCount(); index += 1) {
+      this.lipSyncIds.push(setting.getLipSyncParameterId(index));
+    }
+    for (let groupIndex = 0; groupIndex < setting.getMotionGroupCount(); groupIndex += 1) {
+      const group = setting.getMotionGroupName(groupIndex);
+      for (let index = 0; index < setting.getMotionCount(group); index += 1) {
+        const motionBuffer = await fetchBuffer(
+          resolveResource(setting.getMotionFileName(group, index)),
+          `motion ${group}[${index}]`,
+        );
+        const motion = this.loadMotion(
+          motionBuffer,
+          motionBuffer.byteLength,
+          `${group}_${index}`,
+          undefined,
+          undefined,
+          setting,
+          group,
+          index,
+        );
+        motion.setEffectIds(this.eyeBlinkIds, this.lipSyncIds);
+        this.motions.set(`${group}:${index}`, motion);
       }
-      for (let index = 0; index < setting.getLipSyncParameterCount(); index += 1) {
-        this.lipSyncIds.push(setting.getLipSyncParameterId(index));
-      }
-      this.idleMotion?.setEffectIds(this.eyeBlinkIds, this.lipSyncIds);
+    }
+    for (let index = 0; index < setting.getExpressionCount(); index += 1) {
+      const name = setting.getExpressionName(index);
+      const buffer = await fetchBuffer(resolveResource(setting.getExpressionFileName(index)), `expression ${name}`);
+      this.expressions.set(name, this.loadExpression(buffer, buffer.byteLength, name));
+    }
+    for (let index = 0; index < setting.getHitAreasCount(); index += 1) {
+      this.hitAreas.set(setting.getHitAreaName(index), setting.getHitAreaId(index));
+    }
+    const physicsFile = setting.getPhysicsFileName();
+    if (physicsFile) {
+      const buffer = await fetchBuffer(resolveResource(physicsFile), "physics");
+      this.loadPhysics(buffer, buffer.byteLength);
+    }
+    const poseFile = setting.getPoseFileName();
+    if (poseFile) {
+      const buffer = await fetchBuffer(resolveResource(poseFile), "pose");
+      this.loadPose(buffer, buffer.byteLength);
     }
     this.getModel().saveParameters();
   }
 
-  tick(deltaSeconds: number): void {
+  tick(deltaSeconds: number, parameterValues: ReadonlyMap<string, number>): void {
     const model = this.getModel();
     model.loadParameters();
-    if (this.idleMotion && this._motionManager.isFinished()) {
-      this._motionManager.startMotionPriority(this.idleMotion, false, 1);
-    }
     this._motionManager.updateMotion(model, deltaSeconds);
     model.saveParameters();
+    this._expressionManager.updateMotion(model, deltaSeconds);
+    for (const [parameterId, value] of parameterValues) {
+      this.applyParameter(parameterId, value);
+    }
+    this._physics?.evaluate(model, deltaSeconds);
+    this._pose?.updateParameters(model, deltaSeconds);
     model.update();
+  }
+
+  playMotion(
+    group: string,
+    index: number,
+    options: CubismMotionOptions,
+    onFinished: () => void,
+  ): { cancel(): void } {
+    const motion = this.motions.get(`${group}:${index}`);
+    if (!motion) return { cancel() {} };
+    motion.setIsLoop(options.loop);
+    motion.setFinishedMotionHandler(() => onFinished());
+    this._motionManager.startMotionPriority(motion, false, options.priority);
+    let cancelled = false;
+    return {
+      cancel: () => {
+        if (cancelled) return;
+        cancelled = true;
+        this._motionManager.stopAllMotions();
+      },
+    };
+  }
+
+  stopAllMotions(): void {
+    this._motionManager.stopAllMotions();
+  }
+
+  setExpression(name: string, weight: number): void {
+    const expression = this.expressions.get(name);
+    if (!expression) return;
+    expression.setWeight(weight);
+    this._expressionManager.startMotion(expression, false);
+  }
+
+  private applyParameter(parameterId: string, value: number): void {
+    const model = this.getModel();
+    const id = CubismFramework.getIdManager().getId(parameterId);
+    const index = model.getParameterIndex(id);
+    if (index < 0 || index >= model.getParameterCount()) return;
+    model.setParameterValueByIndex(index, value);
+  }
+
+  getParameterRange(parameterId: string): { min: number; max: number } | null {
+    const model = this.getModel();
+    const id = CubismFramework.getIdManager().getId(parameterId);
+    const index = model.getParameterIndex(id);
+    if (index < 0 || index >= model.getParameterCount()) return null;
+    return {
+      min: model.getParameterMinimumValue(index),
+      max: model.getParameterMaximumValue(index),
+    };
+  }
+
+  hitTest(name: string, point: { x: number; y: number }, width: number, height: number): boolean {
+    const drawableId = this.hitAreas.get(name);
+    if (!drawableId || width <= 0 || height <= 0) return false;
+    const screenX = point.x / width * 2 - 1;
+    const screenY = 1 - point.y / height * 2;
+    return this.isHit(
+      drawableId,
+      this.viewProjection.invertTransformX(screenX),
+      this.viewProjection.invertTransformY(screenY),
+    );
   }
 
   render(gl: WebGLRenderingContext | WebGL2RenderingContext, width: number, height: number): void {
@@ -89,6 +188,7 @@ class ProbeModel extends CubismUserModel {
     } else {
       projection.scale(height / width, 1);
     }
+    this.viewProjection = projection.clone();
     projection.multiplyByMatrix(this.getModelMatrix());
 
     const renderer = this.getRenderer();
@@ -100,15 +200,21 @@ class ProbeModel extends CubismUserModel {
   releaseWithTextures(gl: WebGLRenderingContext | WebGL2RenderingContext): void {
     for (const texture of this.textures) gl.deleteTexture(texture);
     this.textures.length = 0;
-    this.idleMotion = null;
+    this.motions.clear();
+    this.expressions.clear();
+    this.hitAreas.clear();
     this.release();
   }
 }
 
-class OfficialCubismAdapter implements CubismAdapter {
+class OfficialCubismAdapter implements CubismControlAdapter {
   private canvas: HTMLCanvasElement | null = null;
   private gl: WebGLRenderingContext | WebGL2RenderingContext | null = null;
   private model: ProbeModel | null = null;
+  private width = 1;
+  private height = 1;
+  private frameworkLease = false;
+  private pendingParameters = new Map<string, number>();
 
   async initialize(canvas: HTMLCanvasElement): Promise<void> {
     this.canvas = canvas;
@@ -122,6 +228,8 @@ class OfficialCubismAdapter implements CubismAdapter {
       throw new Error("Cubism Framework 启动失败");
     }
     if (!CubismFramework.isInitialized()) CubismFramework.initialize();
+    frameworkUsers += 1;
+    this.frameworkLease = true;
   }
 
   async loadModel(modelUrl: string): Promise<void> {
@@ -133,13 +241,17 @@ class OfficialCubismAdapter implements CubismAdapter {
 
   resize(width: number, height: number, dpr: number): void {
     if (!this.canvas) return;
+    this.width = Math.max(1, width);
+    this.height = Math.max(1, height);
     this.canvas.width = Math.max(1, Math.round(width * dpr));
     this.canvas.height = Math.max(1, Math.round(height * dpr));
     this.model?.setRenderTargetSize(this.canvas.width, this.canvas.height);
   }
 
   update(deltaMs: number): void {
-    this.model?.tick(deltaMs / 1000);
+    const parameters = this.pendingParameters;
+    this.pendingParameters = new Map();
+    this.model?.tick(deltaMs / 1000, parameters);
   }
 
   draw(): void {
@@ -150,6 +262,35 @@ class OfficialCubismAdapter implements CubismAdapter {
     this.model.render(this.gl, this.canvas.width, this.canvas.height);
   }
 
+  playMotion(
+    group: string,
+    index: number,
+    options: CubismMotionOptions,
+    onFinished: () => void,
+  ): { cancel(): void } {
+    return this.model?.playMotion(group, index, options, onFinished) ?? { cancel() {} };
+  }
+
+  stopAllMotions(): void {
+    this.model?.stopAllMotions();
+  }
+
+  setExpression(name: string, weight: number): void {
+    this.model?.setExpression(name, weight);
+  }
+
+  setParameter(parameterId: string, value: number): void {
+    this.pendingParameters.set(parameterId, value);
+  }
+
+  getParameterRange(parameterId: string): { min: number; max: number } | null {
+    return this.model?.getParameterRange(parameterId) ?? null;
+  }
+
+  hitTest(name: string, point: { x: number; y: number }): boolean {
+    return this.model?.hitTest(name, point, this.width, this.height) ?? false;
+  }
+
   destroy(): void {
     try {
       if (this.model && this.gl) this.model.releaseWithTextures(this.gl);
@@ -157,18 +298,25 @@ class OfficialCubismAdapter implements CubismAdapter {
       console.error("Cubism 模型释放失败", error);
     }
     this.model = null;
-    try {
-      if (CubismFramework.isInitialized()) CubismFramework.dispose();
-      if (CubismFramework.isStarted()) CubismFramework.cleanUp();
-    } catch (error) {
-      console.error("Cubism Framework 释放失败", error);
+    this.pendingParameters.clear();
+    if (this.frameworkLease) {
+      this.frameworkLease = false;
+      frameworkUsers = Math.max(0, frameworkUsers - 1);
+    }
+    if (frameworkUsers === 0) {
+      try {
+        if (CubismFramework.isInitialized()) CubismFramework.dispose();
+        if (CubismFramework.isStarted()) CubismFramework.cleanUp();
+      } catch (error) {
+        console.error("Cubism Framework 释放失败", error);
+      }
     }
     this.gl = null;
     this.canvas = null;
   }
 }
 
-export function createCubismAdapter(): CubismAdapter {
+export function createCubismAdapter(): CubismControlAdapter {
   return new OfficialCubismAdapter();
 }
 

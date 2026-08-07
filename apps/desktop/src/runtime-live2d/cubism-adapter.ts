@@ -7,6 +7,16 @@ export interface CubismAdapter {
   destroy(): void;
 }
 
+const ABSOLUTE_URL = /^[a-z][a-z\d+.-]*:/i;
+
+export function resolveCubismResourceUrl(modelUrl: string, resourceUrl: string): string {
+  if (ABSOLUTE_URL.test(resourceUrl) || resourceUrl.startsWith("//") || resourceUrl.startsWith("/")) {
+    return resourceUrl;
+  }
+  const directoryEnd = modelUrl.lastIndexOf("/");
+  return directoryEnd < 0 ? resourceUrl : `${modelUrl.slice(0, directoryEnd + 1)}${resourceUrl}`;
+}
+
 interface CubismRuntimeModule {
   createCubismAdapter(): CubismAdapter;
 }
@@ -53,5 +63,11 @@ export class UnavailableCubismAdapter implements CubismAdapter {
   resize(_width: number, _height: number, _dpr: number): void {}
   update(_deltaMs: number): void {}
   draw(): void {}
+  playMotion(): { cancel(): void } { return { cancel() {} }; }
+  stopAllMotions(): void {}
+  setExpression(): void {}
+  setParameter(): void {}
+  getParameterRange(): null { return null; }
+  hitTest(): boolean { return false; }
   destroy(): void {}
 }
