@@ -1,37 +1,71 @@
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
-import { availableMonitors, getCurrentWindow, primaryMonitor } from "@tauri-apps/api/window";
-import { Application, Assets, Graphics, Text } from "pixi.js";
-import { applyHitRegion, loadPreferences, savePreferences } from "./bridge";
-import type { ProbePreferences } from "./contracts";
-import { clampRectToWorkArea, computeContainRect } from "./geometry";
-import { alphaToRegionSpans } from "./hit-mask";
-import { LayeredSprite } from "../assets/layered-sprite";
-import { decide } from "../behavior/decision";
+import { decide, type PetStateSnapshot } from "../behavior/decision";
 import type { PetEvent } from "../behavior/events";
-import type { PetStateSnapshot } from "../behavior/decision";
-import { PetAnimator } from "./pet-animator";
+import type { PetEffect, PetPresentationPorts } from "./pet-presentation-controller";
+import { PetPresentationController } from "./pet-presentation-controller";
+import type { PetRenderer } from "./pet-renderer";
 import { RenderScheduler } from "./render-scheduler";
+import type { WindowPoint } from "./window-motion-controller";
+
+interface StageEventTarget {
+  addEventListener(type: string, listener: EventListener): void;
+  removeEventListener(type: string, listener: EventListener): void;
+}
+
+export type StageWindowMotion = PetPresentationPorts["windowMotion"] & {
+  beginDrag(pointer: WindowPoint, dpr?: number): Promise<void>;
+  dragTo(pointer: WindowPoint): Promise<void>;
+  endDrag(): Promise<void>;
+  update(deltaMs: number): Promise<void>;
+};
+
+export interface StageEffectOverlay {
+  play(effect: PetEffect): void;
+  destroy(): void;
+}
+
+export interface PetStageOptions {
+  renderer: PetRenderer;
+  windowMotion: StageWindowMotion;
+  effects: StageEffectOverlay;
+  pointerTarget?: StageEventTarget;
+  resizeTarget?: StageEventTarget;
+  requestFrame?: (callback: FrameRequestCallback) => number;
+  cancelFrame?: (handle: number) => void;
+  devicePixelRatio?: () => number;
+  setTimer?: (callback: () => void, delayMs: number) => number;
+  clearTimer?: (handle: number) => void;
+  refreshHitRegion?: () => Promise<void>;
+  diagnose?: (stage: string, error: unknown) => void;
+}
+
+const DRAG_THRESHOLD_PX = 4;
 
 export class PetStage {
-  private readonly app = new Application();
-  private layered!: LayeredSprite;
-  private bodySource!: CanvasImageSource;
-  private root!: HTMLElement;
-  private preferences!: ProbePreferences;
-  private baseScale = 1;
-  private saveTimer: number | undefined;
-  private activeTimer: number | undefined;
-  private readonly scheduler = new RenderScheduler({
-    start: () => this.app.start(),
-    stop: () => this.app.stop(),
-    setMaxFps: (fps) => { this.app.ticker.maxFPS = fps; },
-    renderOnce: () => this.app.render(),
-  });
-  private animator!: PetAnimator;
-  private assetUrls: { bodyUrl: string } = { bodyUrl: "/test-assets/layered/body.png" };
-  private stateSnapshot: PetStateSnapshot = {
+  private readonly renderer: PetRenderer;
+  private readonly windowMotion: StageWindowMotion;
+  private readonly effects: StageEffectOverlay;
+  private readonly pointerTarget: StageEventTarget;
+  private readonly resizeTarget: StageEventTarget;
+  private readonly requestFrame: (callback: FrameRequestCallback) => number;
+  private readonly cancelFrame: (handle: number) => void;
+  private readonly devicePixelRatio: () => number;
+  private readonly setTimer: (callback: () => void, delayMs: number) => number;
+  private readonly clearTimer: (handle: number) => void;
+  private readonly scheduler: RenderScheduler;
+  private readonly presentation: PetPresentationController;
+  private root: HTMLElement | null = null;
+  private running = false;
+  private destroyed = false;
+  private frameHandle: number | null = null;
+  private maxFps = 24;
+  private lastFrameAt: number | null = null;
+  private activeTimer: number | null = null;
+  private pointerDown: WindowPoint | null = null;
+  private dragging = false;
+
+  private readonly stateSnapshot: PetStateSnapshot = {
     schemaVersion: 1,
-    petId: "probe",
+    petId: "runtime",
     energy: 0.7,
     mood: 0.6,
     bond: 0.3,
@@ -39,249 +73,197 @@ export class PetStage {
     lastInteractionAt: new Date().toISOString(),
   };
 
-  async mount(
-    root: HTMLElement,
-    degraded?: { status: string },
-    assets?: { bodyUrl: string; eyeOpenUrl: string; eyeClosedUrl: string; accentUrl?: string },
-  ): Promise<void> {
-    this.root = root;
-    this.preferences = await loadPreferences();
-    const petWindow = getCurrentWindow();
-    await this.restoreWindowPlacement();
-    if (assets) this.assetUrls = { bodyUrl: assets.bodyUrl };
-
-    await this.app.init({
-      resizeTo: root,
-      backgroundAlpha: 0,
-      antialias: true,
-      autoStart: false,
-      preference: "webgl",
+  constructor(private readonly options: PetStageOptions) {
+    this.renderer = options.renderer;
+    this.windowMotion = options.windowMotion;
+    this.effects = options.effects;
+    this.pointerTarget = options.pointerTarget
+      ?? (typeof document === "undefined" ? unavailableEventTarget() : document);
+    this.resizeTarget = options.resizeTarget
+      ?? (typeof window === "undefined" ? this.pointerTarget : window);
+    this.requestFrame = options.requestFrame
+      ?? ((callback) => window.requestAnimationFrame(callback));
+    this.cancelFrame = options.cancelFrame
+      ?? ((handle) => window.cancelAnimationFrame(handle));
+    this.devicePixelRatio = options.devicePixelRatio
+      ?? (() => typeof window === "undefined" ? 1 : window.devicePixelRatio || 1);
+    this.setTimer = options.setTimer
+      ?? ((callback, delayMs) => window.setTimeout(callback, delayMs));
+    this.clearTimer = options.clearTimer
+      ?? ((handle) => window.clearTimeout(handle));
+    this.scheduler = new RenderScheduler({
+      start: () => this.startFrames(),
+      stop: () => this.stopFrames(),
+      setMaxFps: (fps) => { this.maxFps = fps; },
+      renderOnce: () => this.renderFrame(0),
     });
-    root.replaceChildren(this.app.canvas);
-    if (degraded) {
-      this.renderDegradedPlaceholder(degraded.status);
-      this.scheduler.setTier("still");
+    this.presentation = new PetPresentationController({
+      renderer: this.renderer,
+      effects: this.effects,
+      windowMotion: this.windowMotion,
+      scheduler: this.scheduler,
+    });
+  }
+
+  async mount(root: HTMLElement): Promise<void> {
+    if (this.destroyed) throw new Error("PetStage has been destroyed");
+    this.root = root;
+    this.resize();
+    this.renderer.setVisibility(true);
+    this.renderer.playMotion("idle", { priority: 10, loop: true });
+    this.renderFrame(0);
+    root.addEventListener("pointerdown", this.onPointerDown);
+    root.addEventListener("dblclick", this.onDoubleClick);
+    this.pointerTarget.addEventListener("pointermove", this.onPointerMove);
+    this.pointerTarget.addEventListener("pointerup", this.onPointerUp);
+    this.pointerTarget.addEventListener("pointercancel", this.onPointerCancel);
+    this.resizeTarget.addEventListener("resize", this.onResize);
+    this.scheduler.setTier("companion");
+    await this.refreshHitRegion();
+  }
+
+  setVisibility(visible: boolean): void {
+    if (this.destroyed) return;
+    if (visible) {
+      this.renderer.setVisibility(true);
+      this.presentation.dispatch({ type: "awake" });
+      this.scheduler.setTier("companion");
       return;
     }
-    this.layered = new LayeredSprite(
-      assets ?? {
-        bodyUrl: "/test-assets/layered/body.png",
-        eyeOpenUrl: "/test-assets/layered/eye-open.png",
-        eyeClosedUrl: "/test-assets/layered/eye-closed.png",
-        accentUrl: "/test-assets/layered/accent.png",
-      },
-    );
-    await this.layered.mount(
-      this.app.stage,
-      { width: this.root.clientWidth, height: this.root.clientHeight },
-      this.preferences.flipped,
-    );
-    const bodyTexture = await Assets.load("/test-assets/layered/body.png");
-    this.bodySource = bodyTexture.source.resource as CanvasImageSource;
-    this.animator = new PetAnimator({
-      setEyesOpen: (open) => this.layered.setEyesOpen(open),
-      setBreathPhase: (phase) => this.layered.setBreathPhase(phase),
-      scaleSquash: (factor) => this.layered.setSquash(factor),
-      shift: (dx, dy) => this.layered.setShift(dx, dy),
-      setAccentVisible: (visible) => this.layered.setAccentVisible(visible),
-    });
-    await this.layoutAndApplyRegion();
-    this.animator.start();
-    this.scheduler.setTier("companion");
-
-    this.app.ticker.add(() => {
-      this.animator.tick(this.app.ticker.lastTime);
-    });
-
-    this.app.canvas.addEventListener("pointerdown", (event) => {
-      void this.onPointerDown(event);
-    });
-    document.addEventListener("pointermove", (event) => {
-      void this.onPointerMove(event);
-    });
-    document.addEventListener("pointerup", () => {
-      void this.onPointerUp();
-    });
-    document.addEventListener("pointercancel", () => {
-      void this.onPointerUp();
-    });
-    this.app.canvas.addEventListener("wheel", (event) => {
-      event.preventDefault();
-      const delta = event.deltaY < 0 ? 0.1 : -0.1;
-      void this.setScale(Math.min(1.5, Math.max(0.5, this.preferences.scale + delta)));
-    }, { passive: false });
-    this.app.canvas.addEventListener("dblclick", () => {
-      this.dispatchEvent({ type: "double-clicked" });
-    });
-    window.addEventListener("resize", () => void this.layoutAndApplyRegion());
+    this.presentation.dispatch({ type: "sleep" });
+    this.renderer.setVisibility(false);
+    this.scheduler.setTier("paused");
   }
 
-  private async layoutAndApplyRegion(): Promise<void> {
-    this.layered.setFlip(this.preferences.flipped);
-    this.layered.setUserScale(this.preferences.scale);
-    this.app.render();
-    await this.updateHitRegion();
+  destroy(): void {
+    if (this.destroyed) return;
+    this.destroyed = true;
+    this.scheduler.setTier("paused");
+    if (this.activeTimer !== null) this.clearTimer(this.activeTimer);
+    this.root?.removeEventListener("pointerdown", this.onPointerDown);
+    this.root?.removeEventListener("dblclick", this.onDoubleClick);
+    this.pointerTarget.removeEventListener("pointermove", this.onPointerMove);
+    this.pointerTarget.removeEventListener("pointerup", this.onPointerUp);
+    this.pointerTarget.removeEventListener("pointercancel", this.onPointerCancel);
+    this.resizeTarget.removeEventListener("resize", this.onResize);
+    this.renderer.setVisibility(false);
+    this.renderer.destroy();
+    this.effects.destroy();
+    this.root = null;
   }
 
-  private dragging = false;
-  private dragStartMouse: { x: number; y: number } | null = null;
-  private dragStartWindow: { x: number; y: number } | null = null;
-
-  private renderDegradedPlaceholder(status: string): void {
-    const width = this.root.clientWidth;
-    const height = this.root.clientHeight;
-    const box = new Graphics()
-      .roundRect(width / 2 - 90, height / 2 - 70, 180, 140, 24)
-      .fill({ color: 0x88909a, alpha: 0.9 });
-    const label = new Text({
-      text: status === "missing" ? "资产缺失" : "资产损坏",
-      style: { fill: 0xffffff, fontSize: 20, fontWeight: "600" },
-    });
-    label.anchor.set(0.5, 0.5);
-    label.position.set(width / 2, height / 2);
-    const hint = new Text({
-      text: "请在设置中重新导入",
-      style: { fill: 0xe8e8e8, fontSize: 12 },
-    });
-    hint.anchor.set(0.5, 0.5);
-    hint.position.set(width / 2, height / 2 + 34);
-    this.app.stage.addChild(box, label, hint);
-    this.app.render();
-  }
-
-  private async onPointerDown(event: PointerEvent): Promise<void> {
-    if (event.button !== 0) return;
-    this.scheduler.setTier("active");
-    window.clearTimeout(this.activeTimer);
-    this.dispatchEvent({ type: "drag-start" });
-    const petWindow = getCurrentWindow();
-    const [position] = await Promise.all([petWindow.outerPosition()]);
-    this.dragging = true;
-    this.dragStartMouse = { x: event.screenX, y: event.screenY };
-    this.dragStartWindow = { x: position.x, y: position.y };
-  }
-
-  private async onPointerMove(event: PointerEvent): Promise<void> {
-    if (!this.dragging || !this.dragStartMouse || !this.dragStartWindow) return;
-    const dpr = window.devicePixelRatio || 1;
-    const dx = (event.screenX - this.dragStartMouse.x) * dpr;
-    const dy = (event.screenY - this.dragStartMouse.y) * dpr;
-    const petWindow = getCurrentWindow();
-    await petWindow.setPosition(new PhysicalPosition(
-      Math.round(this.dragStartWindow.x + dx),
-      Math.round(this.dragStartWindow.y + dy),
-    ));
-  }
-
-  private async onPointerUp(): Promise<void> {
-    const wasDragging = this.dragging;
+  private readonly onPointerDown = (event: Event): void => {
+    const pointer = event as PointerEvent;
+    if (pointer.button !== 0) return;
+    this.pointerDown = { x: pointer.screenX, y: pointer.screenY };
     this.dragging = false;
-    this.dragStartMouse = null;
-    this.dragStartWindow = null;
-    window.clearTimeout(this.activeTimer);
-    this.dispatchEvent(wasDragging ? { type: "drag-end" } : { type: "body-clicked" });
-    this.activeTimer = window.setTimeout(() => this.scheduler.setTier("companion"), 400);
-    if (wasDragging) await this.captureWindowPlacement();
+    this.scheduler.setTier("active");
+  };
+
+  private readonly onPointerMove = (event: Event): void => {
+    const pointer = event as PointerEvent;
+    void this.movePointer({ x: pointer.screenX, y: pointer.screenY });
+  };
+
+  private readonly onPointerUp = (event: Event): void => {
+    const pointer = event as PointerEvent;
+    void this.releasePointer({ x: pointer.clientX, y: pointer.clientY });
+  };
+
+  private readonly onPointerCancel = (): void => {
+    void this.releasePointer(null);
+  };
+
+  private readonly onDoubleClick = (): void => {
+    this.dispatchEvent({ type: "double-clicked" });
+  };
+
+  private readonly onResize = (): void => {
+    this.resize();
+    void this.refreshHitRegion();
+  };
+
+  private async movePointer(pointer: WindowPoint): Promise<void> {
+    if (!this.pointerDown) return;
+    if (!this.dragging) {
+      const distance = Math.hypot(pointer.x - this.pointerDown.x, pointer.y - this.pointerDown.y);
+      if (distance < DRAG_THRESHOLD_PX) return;
+      this.dragging = true;
+      await this.windowMotion.beginDrag(this.pointerDown, this.devicePixelRatio());
+      this.dispatchEvent({ type: "drag-start" });
+    }
+    await this.windowMotion.dragTo(pointer);
+  }
+
+  private async releasePointer(pointer: WindowPoint | null): Promise<void> {
+    if (!this.pointerDown) return;
+    const wasDragging = this.dragging;
+    this.pointerDown = null;
+    this.dragging = false;
+    if (wasDragging) {
+      await this.windowMotion.endDrag();
+      this.dispatchEvent({ type: "drag-end" });
+    } else if (pointer && this.root) {
+      const bounds = this.root.getBoundingClientRect();
+      const area = this.renderer.hitTest({ x: pointer.x - bounds.left, y: pointer.y - bounds.top });
+      if (area) this.dispatchEvent({ type: area === "head" ? "head-clicked" : "body-clicked" });
+    }
+    if (this.activeTimer !== null) this.clearTimer(this.activeTimer);
+    this.activeTimer = this.setTimer(() => this.scheduler.setTier("companion"), 400);
   }
 
   private dispatchEvent(event: PetEvent): void {
     const intents = decide({ event, state: this.stateSnapshot, policy: { cooldowns: {} } });
-    for (const intent of intents) {
-      this.animator.setIntent(intent);
-    }
+    for (const intent of intents) this.presentation.dispatch(intent);
   }
 
-  private async updateHitRegion(): Promise<void> {
-    const canvas = document.createElement("canvas");
-    canvas.width = this.root.clientWidth;
-    canvas.height = this.root.clientHeight;
-    const context = canvas.getContext("2d", { willReadFrequently: true });
-    if (!context) throw new Error("2D canvas is unavailable for hit-mask extraction");
-    const bodyTexture = await Assets.load(this.assetUrls.bodyUrl);
-    const bounds = this.layered.getBodyBounds();
-    context.save();
-    context.translate(this.preferences.flipped ? canvas.width : 0, 0);
-    context.scale(this.preferences.flipped ? -1 : 1, 1);
-    context.drawImage(this.bodySource, bounds.x, bounds.y, bounds.width, bounds.height);
-    context.restore();
-    const image = context.getImageData(0, 0, canvas.width, canvas.height);
-    await applyHitRegion({
-      canvasWidth: canvas.width,
-      canvasHeight: canvas.height,
-      scaleFactor: window.devicePixelRatio,
-      spans: alphaToRegionSpans(image.data, image.width, image.height, { alphaThreshold: 32, rowStep: 2 }),
+  private resize(): void {
+    if (!this.root) return;
+    this.renderer.resize({
+      width: Math.max(1, this.root.clientWidth),
+      height: Math.max(1, this.root.clientHeight),
+      dpr: Math.max(1, this.devicePixelRatio()),
     });
   }
 
-  private async setScale(scale: number): Promise<void> {
-    this.preferences.scale = scale;
-    await this.layoutAndApplyRegion();
-    this.scheduleSave();
-  }
-
-  private async setFlipped(flipped: boolean): Promise<void> {
-    this.preferences.flipped = flipped;
-    await this.layoutAndApplyRegion();
-    this.scheduleSave();
-  }
-
-  private async captureWindowPlacement(): Promise<void> {
-    const petWindow = getCurrentWindow();
-    const [position, size] = await Promise.all([petWindow.outerPosition(), petWindow.outerSize()]);
-    Object.assign(this.preferences, {
-      x: position.x,
-      y: position.y,
-      width: size.width,
-      height: size.height,
-    });
-    this.scheduleSave();
-  }
-
-  private async restoreWindowPlacement(): Promise<void> {
-    const petWindow = getCurrentWindow();
-    const monitors = await availableMonitors();
-    const saved = {
-      x: this.preferences.x,
-      y: this.preferences.y,
-      width: this.preferences.width,
-      height: this.preferences.height,
-    };
-    const defaultSize = { width: 420, height: 520 };
-
-    let restored = saved;
-    let anchored = false;
-    for (const monitor of monitors) {
-      const area = { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height };
-      const overlaps = saved.x < area.x + area.width && saved.x + saved.width > area.x
-        && saved.y < area.y + area.height && saved.y + saved.height > area.y;
-      if (!overlaps) continue;
-      // size larger than 95% of a monitor is treated as a leftover snap state
-      if (saved.width > area.width * 0.95 || saved.height > area.height * 0.95) {
-        restored = { ...clampRectToWorkArea(saved, area, 64), ...defaultSize };
-      } else {
-        restored = clampRectToWorkArea(saved, area, 64);
-      }
-      anchored = true;
-      break;
+  private async refreshHitRegion(): Promise<void> {
+    try {
+      await this.options.refreshHitRegion?.();
+    } catch (error) {
+      this.options.diagnose?.("hit-region", error);
     }
-    if (!anchored) {
-      const monitor = await primaryMonitor();
-      if (monitor) {
-        const area = { x: monitor.position.x, y: monitor.position.y, width: monitor.size.width, height: monitor.size.height };
-        if (saved.width > area.width * 0.95 || saved.height > area.height * 0.95) {
-          restored = { ...clampRectToWorkArea(saved, area, 64), ...defaultSize };
-        } else {
-          restored = clampRectToWorkArea(saved, area, 64);
-        }
-      }
-    }
-    Object.assign(this.preferences, restored);
-    await petWindow.setSize(new PhysicalSize(restored.width, restored.height));
-    await petWindow.setPosition(new PhysicalPosition(restored.x, restored.y));
   }
 
-  private scheduleSave(): void {
-    window.clearTimeout(this.saveTimer);
-    this.saveTimer = window.setTimeout(() => void savePreferences(this.preferences), 250);
+  private startFrames(): void {
+    if (this.running || this.destroyed) return;
+    this.running = true;
+    this.frameHandle = this.requestFrame(this.onFrame);
   }
+
+  private stopFrames(): void {
+    this.running = false;
+    this.lastFrameAt = null;
+    if (this.frameHandle !== null) this.cancelFrame(this.frameHandle);
+    this.frameHandle = null;
+  }
+
+  private readonly onFrame = (now: number): void => {
+    if (!this.running || this.destroyed) return;
+    const deltaMs = this.lastFrameAt === null ? Math.max(0, now) : Math.max(0, now - this.lastFrameAt);
+    const minimumFrameMs = 1_000 / this.maxFps;
+    if (this.lastFrameAt === null || deltaMs >= minimumFrameMs) {
+      this.lastFrameAt = now;
+      this.renderFrame(deltaMs);
+    }
+    this.frameHandle = this.requestFrame(this.onFrame);
+  };
+
+  private renderFrame(deltaMs: number): void {
+    this.renderer.update(deltaMs);
+    void this.windowMotion.update(deltaMs).catch((error) => this.options.diagnose?.("window-motion", error));
+  }
+}
+
+function unavailableEventTarget(): StageEventTarget {
+  return { addEventListener() {}, removeEventListener() {} };
 }

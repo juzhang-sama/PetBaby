@@ -133,6 +133,28 @@ describe("Live2DRenderer", () => {
     expect(model.playMotion).toHaveBeenCalledWith("Idle", 0, { priority: 10, loop: true }, expect.any(Function));
   });
 
+  it("resumes the background state loop after a one-shot motion finishes", async () => {
+    const model = fakeModel();
+    let finishCurrent: (() => void) | undefined;
+    vi.mocked(model.playMotion).mockImplementation((_group, _index, _options, onFinished) => {
+      finishCurrent = onFinished;
+      return { cancel: vi.fn() };
+    });
+    const renderer = new Live2DRenderer(fakeCanvas(), { loader: { load: vi.fn(async () => model) } });
+    await renderer.load(liveAsset());
+
+    renderer.playMotion("idle", { priority: 10, loop: true });
+    renderer.playMotion("carried", { priority: 60 });
+    finishCurrent?.();
+
+    expect(model.playMotion).toHaveBeenLastCalledWith(
+      "Idle",
+      0,
+      { priority: 10, loop: true },
+      expect.any(Function),
+    );
+  });
+
   it("queues semantic parameter writes before the SDK update and draw", async () => {
     const model = fakeModel();
     const renderer = new Live2DRenderer(fakeCanvas(), { loader: { load: vi.fn(async () => model) } });

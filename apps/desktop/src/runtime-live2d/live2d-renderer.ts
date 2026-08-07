@@ -43,6 +43,7 @@ export class Live2DRenderer implements PetRenderer {
   private motions: MotionController | null = null;
   private mixer: ParameterMixer | null = null;
   private hitAreas: HitAreaResolver | null = null;
+  private backgroundMotion: { name: PetMotion; priority: number; loop: true } | null = null;
   private lookTarget: { x: number; y: number } | null = null;
   private lipSync: number | null = null;
   private viewport: { width: number; height: number; dpr: number } | null = null;
@@ -117,6 +118,9 @@ export class Live2DRenderer implements PetRenderer {
     if (!this.asset.semantics.motions[motion]) {
       this.options.diagnose?.(`Live2D motion mapping is missing: ${motion}`);
       return NOOP_MOTION;
+    }
+    if (options.loop && (options.priority ?? 0) < 80) {
+      this.backgroundMotion = { name: motion, priority: options.priority ?? 0, loop: true };
     }
     return this.motions.play(motion, options);
   }
@@ -193,6 +197,7 @@ export class Live2DRenderer implements PetRenderer {
         },
         stopAll: () => model.stopAllMotions(),
       },
+      resumeForState: () => this.backgroundMotion,
     });
     this.mixer = new ParameterMixer({
       semantics: asset.semantics.parameters,
@@ -202,6 +207,9 @@ export class Live2DRenderer implements PetRenderer {
     this.hitAreas = new HitAreaResolver(asset.semantics.hitAreas, model);
     if (this.viewport) model.resize(this.viewport.width, this.viewport.height, this.viewport.dpr);
     this.status = "ready";
+    if (this.backgroundMotion) {
+      this.motions.play(this.backgroundMotion.name, this.backgroundMotion);
+    }
   }
 
   private releaseCurrent(options: { preserveAsset?: boolean } = {}): void {

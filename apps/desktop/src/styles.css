@@ -7,3 +7,78 @@
 }
 
 html, body { user-select: none; }
+
+#app {
+  position: relative;
+}
+
+.pet-render-host,
+.pet-render-surface,
+.pet-effect-overlay {
+  position: absolute;
+  inset: 0;
+  width: 100%;
+  height: 100%;
+}
+
+.pet-render-host {
+  overflow: hidden;
+}
+
+.pet-render-surface {
+  display: block;
+}
+
+.pet-effect-overlay {
+  overflow: hidden;
+  pointer-events: none;
+}
+
+.pet-effect-particle {
+  --particle-index: 0;
+  position: absolute;
+  left: var(--particle-x);
+  top: var(--particle-y);
+  color: #ff5f7f;
+  font-family: "Segoe UI Symbol", sans-serif;
+  font-size: 22px;
+  font-weight: 700;
+  line-height: 1;
+  animation: pet-particle-rise 680ms cubic-bezier(.18, .72, .24, 1) forwards;
+}
+
+.pet-effect-overlay[data-effect="sparkles"] .pet-effect-particle {
+  color: #55d6ad;
+  animation-name: pet-particle-spark;
+}
+
+.pet-effect-overlay[data-effect="landing"] .pet-effect-particle {
+  top: 79%;
+  color: #ffd166;
+  font-size: 18px;
+  animation-name: pet-particle-land;
+}
+
+@keyframes pet-particle-rise {
+  0% { opacity: 0; transform: translateY(12px) scale(.65); }
+  28% { opacity: 1; }
+  100% { opacity: 0; transform: translateY(-54px) scale(1.08); }
+}
+
+@keyframes pet-particle-spark {
+  0% { opacity: 0; transform: rotate(0deg) scale(.4); }
+  40% { opacity: 1; }
+  100% { opacity: 0; transform: rotate(90deg) scale(1.25); }
+}
+
+@keyframes pet-particle-land {
+  0% { opacity: 0; transform: translateX(0) scaleX(.2); }
+  35% { opacity: 1; }
+  100% { opacity: 0; transform: translateX(var(--particle-drift)) scaleX(1.8); }
+}
+
+@media (prefers-reduced-motion: reduce) {
+  .pet-effect-particle {
+    animation-duration: 1ms;
+  }
+}
