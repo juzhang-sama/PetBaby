@@ -6,3 +6,4 @@ apps/desktop/src-tauri/gen/
 apps/desktop/.vendor/live2d-cubism-sdk/
 apps/desktop/public/live2d/
 .superpowers/
+.worktrees/
