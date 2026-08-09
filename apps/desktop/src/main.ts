@@ -15,6 +15,7 @@ import {
 } from "./runtime/pet-renderer-bootstrap";
 import { WindowMotionController } from "./runtime/window-motion-controller";
 import { isLive2DProbeMode, mountLive2DProbe } from "./runtime-live2d/probe";
+import { isLive2DPreviewMode, mountLive2DPreview } from "./runtime-live2d/preview";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
@@ -23,6 +24,8 @@ if (isLive2DProbeMode(location.search)) {
   const result = await mountLive2DProbe(root);
   root.dataset.live2dProbeResult = result.ok ? "ok" : result.reason;
   console.info("Live2D probe result", result);
+} else if (isLive2DPreviewMode(location.search)) {
+  await mountLive2DPreview(root);
 } else {
   try {
     await mountPet(root);

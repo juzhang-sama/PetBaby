@@ -7,3 +7,5 @@ apps/desktop/.vendor/live2d-cubism-sdk/
 apps/desktop/public/live2d/
 .superpowers/
 .worktrees/
+.playwright-cli/
+output/

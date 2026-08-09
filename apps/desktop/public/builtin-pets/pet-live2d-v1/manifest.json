@@ -9,7 +9,7 @@
                   {
                       "role":  "texture",
                       "relativePath":  "pet-live2d-v1.2048/texture_00.png",
-                      "sha256":  "211bd6ef5f32244d6c12332af627f10a65b006d2de2ee46b971187c3c2430a5d"
+                      "sha256":  "204a8092f6b52937160f67aae80502003750d86a1102786935e63d1f54f3beaf"
                   },
                   {
                       "role":  "metadata",
@@ -19,17 +19,17 @@
                   {
                       "role":  "moc",
                       "relativePath":  "pet-live2d-v1.moc3",
-                      "sha256":  "8691e4c5dfbc0cd4d8e1abf042309a04dda0adbda59924fe5db306234d68fdf0"
+                      "sha256":  "68cb21bd08543e4f473689b312aefc5f8633314bcb28a9e6e8c0b27fd56c5792"
                   },
                   {
                       "role":  "model",
                       "relativePath":  "pet-live2d-v1.model3.json",
-                      "sha256":  "c04b13c35dcb9164bd7aa5aeb23c0851f0ff372b755722aab653101622d22b54"
+                      "sha256":  "2ca0cb8ed85c73ed3100ce3a79372c547bd9b719371c6f966256c9ea5491e7b5"
                   },
                   {
                       "role":  "preview",
                       "relativePath":  "preview.png",
-                      "sha256":  "6032a35d9c7abac9941be5b735a8e604e139478abc11286514729810fd928418"
+                      "sha256":  "a19851bdbac35a9d07a577b4eaa20ca2d5b2585fa624c75503b16c8880050885"
                   },
                   {
                       "role":  "license",
