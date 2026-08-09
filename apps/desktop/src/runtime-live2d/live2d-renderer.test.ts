@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { PetRenderAsset } from "../runtime/pet-renderer";
 import { Live2DRenderer } from "./live2d-renderer";
 import type { LoadedCubismModel } from "./cubism-model-loader";
+import { MicroMotionController } from "./micro-motion";
 
 function liveAsset(id = "a"): Extract<PetRenderAsset, { kind: "live2d" }> {
   return {
@@ -12,7 +13,16 @@ function liveAsset(id = "a"): Extract<PetRenderAsset, { kind: "live2d" }> {
       motions: { idle: { group: "Idle", index: 0 }, carried: { group: "Carry", index: 0 } },
       expressions: { happy: "Happy" },
       hitAreas: { head: "Head" },
-      parameters: { eyeOpen: "Eye", mouthOpen: "Mouth" },
+      parameters: {
+        eyeOpen: "Eye",
+        eyeBallX: "EyeBallX",
+        eyeBallY: "EyeBallY",
+        angleX: "AngleX",
+        angleY: "AngleY",
+        bodyBreath: "Breath",
+        bodySway: "Sway",
+        mouthOpen: "Mouth",
+      },
     },
     dispose: vi.fn(),
   };
@@ -28,7 +38,9 @@ function fakeModel(): LoadedCubismModel {
     stopAllMotions: vi.fn(),
     setExpression: vi.fn(),
     setParameter: vi.fn(),
-    getParameterRange: vi.fn(() => ({ min: 0, max: 1 })),
+    getParameterRange: vi.fn((parameterId: string) => parameterId === "Sway"
+      ? { min: -10, max: 10 }
+      : { min: 0, max: 1 }),
     hitTest: vi.fn(() => true),
   };
 }
@@ -180,6 +192,63 @@ describe("Live2DRenderer", () => {
     renderer.update(16);
 
     expect(model.setParameter).not.toHaveBeenCalledWith("Mouth", expect.any(Number));
+  });
+
+  it("automates only chest breathing and whole-body sway", async () => {
+    const model = fakeModel();
+    const renderer = new Live2DRenderer(fakeCanvas(), { loader: { load: vi.fn(async () => model) } });
+    await renderer.load(liveAsset());
+    renderer.setVisibility(true);
+    renderer.setLookTarget({ x: 1, y: -1 });
+
+    renderer.update(100);
+
+    const parameterIds = vi.mocked(model.setParameter).mock.calls.map(([parameterId]) => parameterId);
+    expect(parameterIds).toContain("Breath");
+    expect(parameterIds).toContain("Sway");
+    expect(parameterIds).not.toContain("AngleX");
+    expect(parameterIds).not.toContain("AngleY");
+    expect(parameterIds).not.toContain("EyeBallX");
+    expect(parameterIds).not.toContain("EyeBallY");
+    expect(parameterIds).not.toContain("Eye");
+    expect(parameterIds).not.toContain("Mouth");
+  });
+
+  it("suppresses sway while carried and restores it for landed state without a mapped motion", async () => {
+    const model = fakeModel();
+    const renderer = new Live2DRenderer(fakeCanvas(), { loader: { load: vi.fn(async () => model) } });
+    await renderer.load(liveAsset());
+    renderer.setVisibility(true);
+
+    renderer.playMotion("carried");
+    renderer.update(100);
+    expect(model.setParameter).toHaveBeenLastCalledWith("Sway", 0);
+
+    vi.mocked(model.setParameter).mockClear();
+    renderer.playMotion("landed");
+    renderer.update(100);
+    expect(vi.mocked(model.setParameter).mock.calls.find(([parameterId]) => parameterId === "Sway")?.[1]).not.toBe(0);
+  });
+
+  it("does not advance micro-motion while hidden", async () => {
+    const model = fakeModel();
+    const renderer = new Live2DRenderer(fakeCanvas(), { loader: { load: vi.fn(async () => model) } });
+    const control = new MicroMotionController();
+    await renderer.load(liveAsset());
+    renderer.setVisibility(true);
+    renderer.update(100);
+    control.update(100);
+
+    renderer.setVisibility(false);
+    renderer.update(5_000);
+    renderer.setVisibility(true);
+    renderer.update(100);
+    const expected = control.update(100);
+
+    const breathWrites = vi.mocked(model.setParameter).mock.calls
+      .filter(([parameterId]) => parameterId === "Breath");
+    expect(breathWrites).toHaveLength(2);
+    expect(breathWrites[1]?.[1]).toBeCloseTo(expected.breath);
   });
 
   it("destroys model, asset and listeners idempotently", async () => {

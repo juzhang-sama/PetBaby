@@ -13,6 +13,7 @@ import {
   type LoadedCubismModel,
 } from "./cubism-model-loader";
 import { HitAreaResolver } from "./hit-area-resolver";
+import { MicroMotionController } from "./micro-motion";
 import { MotionController } from "./motion-controller";
 import { ParameterMixer } from "./parameter-mixer";
 
@@ -34,6 +35,7 @@ const NOOP_MOTION: PetMotionHandle = { cancel() {} };
 
 export class Live2DRenderer implements PetRenderer {
   private readonly loader: CubismModelLoaderPort;
+  private readonly microMotion = new MicroMotionController();
   private status: Live2DRendererStatus = "unloaded";
   private visible = false;
   private generation = 0;
@@ -44,7 +46,6 @@ export class Live2DRenderer implements PetRenderer {
   private mixer: ParameterMixer | null = null;
   private hitAreas: HitAreaResolver | null = null;
   private backgroundMotion: { name: PetMotion; priority: number; loop: true } | null = null;
-  private lookTarget: { x: number; y: number } | null = null;
   private lipSync: number | null = null;
   private viewport: { width: number; height: number; dpr: number } | null = null;
 
@@ -115,6 +116,10 @@ export class Live2DRenderer implements PetRenderer {
 
   playMotion(motion: PetMotion, options: { loop?: boolean; priority?: number } = {}): PetMotionHandle {
     if (this.status !== "ready" || !this.motions || !this.asset) return NOOP_MOTION;
+    if (motion === "carried") this.microMotion.setCarried(true);
+    if (motion === "landed" || motion === "idle" || motion === "wake") {
+      this.microMotion.setCarried(false);
+    }
     if (!this.asset.semantics.motions[motion]) {
       this.options.diagnose?.(`Live2D motion mapping is missing: ${motion}`);
       return NOOP_MOTION;
@@ -135,11 +140,7 @@ export class Live2DRenderer implements PetRenderer {
     this.model.setExpression(name, Math.min(1, Math.max(0, weight)));
   }
 
-  setLookTarget(target: { x: number; y: number } | null): void {
-    this.lookTarget = target
-      ? { x: Math.min(1, Math.max(-1, target.x)), y: Math.min(1, Math.max(-1, target.y)) }
-      : null;
-  }
+  setLookTarget(_target: { x: number; y: number } | null): void {}
 
   setLipSync(value: number): void {
     this.lipSync = Math.min(1, Math.max(0, value));
@@ -152,20 +153,16 @@ export class Live2DRenderer implements PetRenderer {
 
   setVisibility(visible: boolean): void {
     this.visible = visible && this.status !== "destroyed";
+    this.microMotion.setPaused(!this.visible);
     this.canvas.style.visibility = this.visible ? "visible" : "hidden";
   }
 
   update(deltaMs: number): void {
     if (this.status !== "ready" || !this.visible || !this.model) return;
+    const frame = this.microMotion.update(Math.max(0, deltaMs));
     this.mixer?.apply({
-      ...(this.lookTarget
-        ? {
-            lookX: this.lookTarget.x,
-            lookY: this.lookTarget.y,
-            angleX: this.lookTarget.x,
-            angleY: this.lookTarget.y,
-          }
-        : {}),
+      breath: frame.breath,
+      sway: frame.bodySway,
       ...(this.lipSync === null ? {} : { lipSync: this.lipSync }),
     });
     this.model.update(Math.max(0, deltaMs));
@@ -203,6 +200,7 @@ export class Live2DRenderer implements PetRenderer {
       semantics: asset.semantics.parameters,
       port: model,
       diagnose: (semantic) => this.options.diagnose?.(`Live2D parameter mapping is missing: ${semantic}`),
+      silentMissing: new Set(["bodyBreath", "bodySway"]),
     });
     this.hitAreas = new HitAreaResolver(asset.semantics.hitAreas, model);
     if (this.viewport) model.resize(this.viewport.width, this.viewport.height, this.viewport.dpr);

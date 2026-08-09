@@ -21,6 +21,16 @@ describe("mixParameters", () => {
     });
     expect(result.angleX).toBe(6);
   });
+
+  it("mixes body sway independently from breath", () => {
+    const result = mixParameters({ breath: 0.8, sway: -4 });
+
+    expect(result).toMatchObject({ bodyBreath: 0.8, bodySway: -4 });
+    expect(result.eyeOpen).toBeUndefined();
+    expect(result.eyeBallX).toBeUndefined();
+    expect(result.angleX).toBeUndefined();
+    expect(result.mouthOpen).toBeUndefined();
+  });
 });
 
 describe("ParameterMixer", () => {
@@ -53,5 +63,19 @@ describe("ParameterMixer", () => {
     expect(diagnose).toHaveBeenCalledTimes(2);
     expect(diagnose).toHaveBeenCalledWith("eyeOpen");
     expect(diagnose).toHaveBeenCalledWith("mouthOpen");
+  });
+
+  it("silently skips optional production micro-motion mappings", () => {
+    const diagnose = vi.fn();
+    const mixer = new ParameterMixer({
+      semantics: {},
+      port: { getParameterRange: () => null, setParameter: vi.fn() },
+      diagnose,
+      silentMissing: new Set(["bodyBreath", "bodySway"]),
+    });
+
+    mixer.apply({ breath: 0.8, sway: -4 });
+
+    expect(diagnose).not.toHaveBeenCalled();
   });
 });

@@ -11,6 +11,7 @@ export interface ParameterMixInput {
   physics?: ParameterValues;
   blink?: number;
   breath?: number;
+  sway?: number;
   lookX?: number;
   lookY?: number;
   angleX?: number;
@@ -32,6 +33,7 @@ export interface ParameterMixerOptions {
   semantics: Partial<Record<Live2DParameterSemantic, string>>;
   port: ParameterWritePort;
   diagnose?: (semantic: Live2DParameterSemantic) => void;
+  silentMissing?: ReadonlySet<Live2DParameterSemantic>;
 }
 
 const PARAMETER_ORDER: Live2DParameterSemantic[] = [
@@ -41,6 +43,7 @@ const PARAMETER_ORDER: Live2DParameterSemantic[] = [
   "angleX",
   "angleY",
   "bodyBreath",
+  "bodySway",
   "mouthOpen",
 ];
 
@@ -51,6 +54,7 @@ export function mixParameters(input: ParameterMixInput): ParameterValues {
   Object.assign(result, input.automation, {
     ...(input.blink === undefined ? {} : { eyeOpen: input.blink }),
     ...(input.breath === undefined ? {} : { bodyBreath: input.breath }),
+    ...(input.sway === undefined ? {} : { bodySway: input.sway }),
   });
   Object.assign(result, input.look, {
     ...(input.lookX === undefined ? {} : { eyeBallX: input.lookX }),
@@ -88,6 +92,7 @@ export class ParameterMixer {
   }
 
   private diagnoseOnce(semantic: Live2DParameterSemantic): void {
+    if (this.options.silentMissing?.has(semantic)) return;
     if (this.diagnosed.has(semantic)) return;
     this.diagnosed.add(semantic);
     this.options.diagnose?.(semantic);
