@@ -78,7 +78,7 @@ export function parseLive2DManifest(json: unknown): RuntimeAssetManifestV2 {
   if (typeof value.semantics !== "object" || value.semantics === null) throw new Error("missing or invalid semantics");
   const semantics = value.semantics as Record<string, unknown>;
   for (const key of ["motions", "expressions", "hitAreas", "parameters"]) if (typeof semantics[key] !== "object" || semantics[key] === null) throw new Error(`invalid semantics.${key}`);
-  const known = { motions: new Set(["idle", "look-left", "look-right", "react-happy", "react-curious", "sleep", "wake", "carried", "landed"]), expressions: new Set(["neutral", "happy", "curious", "sleepy", "sad", "angry"]), hitAreas: new Set(["head", "body"]), parameters: new Set(["eyeOpen", "eyeBallX", "eyeBallY", "angleX", "angleY", "bodyBreath", "mouthOpen"]) };
+  const known = { motions: new Set(["idle", "look-left", "look-right", "react-happy", "react-curious", "sleep", "wake", "carried", "landed"]), expressions: new Set(["neutral", "happy", "curious", "sleepy", "sad", "angry"]), hitAreas: new Set(["head", "body"]), parameters: new Set(["eyeOpen", "eyeBallX", "eyeBallY", "angleX", "angleY", "bodyBreath", "bodySway", "mouthOpen"]) };
   for (const [group, allowed] of Object.entries(known)) for (const key of Object.keys((semantics[group] as object))) if (!allowed.has(key)) throw new Error(`unknown semantics.${group}.${key}`);
   for (const [key, mapping] of Object.entries(semantics.motions as Record<string, unknown>)) {
     const motion = mapping as Record<string, unknown>;

@@ -3,22 +3,8 @@ export interface ModelContractResult {
   errors: string[];
 }
 
-const REQUIRED_MOTIONS = ["idle", "react-happy", "react-curious", "sleep", "wake", "carried", "landed"] as const;
-const REQUIRED_EXPRESSIONS = ["neutral", "happy", "curious", "sleepy", "sad", "angry"] as const;
-const REQUIRED_HIT_AREAS = ["head", "body"] as const;
-const REQUIRED_PARAMETERS = ["eyeOpen", "angleX", "angleY", "mouthOpen", "bodyBreath"] as const;
-
 function isRecord(value: unknown): value is Record<string, unknown> {
   return typeof value === "object" && value !== null;
-}
-
-function hasStringMapping(group: unknown, key: string): boolean {
-  return isRecord(group) && typeof group[key] === "string" && group[key]!.length > 0;
-}
-
-function hasMotionMapping(group: unknown, key: string): boolean {
-  const mapping = isRecord(group) ? group[key] : undefined;
-  return isRecord(mapping) && typeof mapping.group === "string" && mapping.group.length > 0;
 }
 
 export function validateModelContract(input: unknown): ModelContractResult {
@@ -36,26 +22,6 @@ export function validateModelContract(input: unknown): ModelContractResult {
   if (!paths.some((path) => path.endsWith(".moc3"))) errors.push("missing file: moc3");
   if (!paths.some((path) => path.endsWith(".png") && path !== previewImage)) {
     errors.push("missing file: texture");
-  }
-  if (!paths.some((path) => path.endsWith(".motion3.json"))) errors.push("missing file: motion3");
-  if (!paths.some((path) => path.endsWith(".exp3.json"))) errors.push("missing file: exp3");
-
-  const semantics = isRecord(input.semantics) ? input.semantics : undefined;
-  const motions = semantics && semantics.motions;
-  const expressions = semantics && semantics.expressions;
-  const hitAreas = semantics && semantics.hitAreas;
-  const parameters = semantics && semantics.parameters;
-  for (const motion of REQUIRED_MOTIONS) {
-    if (!hasMotionMapping(motions, motion)) errors.push(`missing motion: ${motion}`);
-  }
-  for (const expression of REQUIRED_EXPRESSIONS) {
-    if (!hasStringMapping(expressions, expression)) errors.push(`missing expression: ${expression}`);
-  }
-  for (const hitArea of REQUIRED_HIT_AREAS) {
-    if (!hasStringMapping(hitAreas, hitArea)) errors.push(`missing hit area: ${hitArea}`);
-  }
-  for (const parameter of REQUIRED_PARAMETERS) {
-    if (!hasStringMapping(parameters, parameter)) errors.push(`missing parameter: ${parameter}`);
   }
 
   const license = isRecord(input.license) ? input.license : undefined;

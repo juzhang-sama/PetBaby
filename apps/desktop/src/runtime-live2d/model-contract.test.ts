@@ -57,24 +57,38 @@ function modelFixture(overrides: Partial<RuntimeAssetManifestV2> = {}): RuntimeA
 }
 
 describe("validateModelContract", () => {
-  it("requires all six product expressions", () => {
+  it("accepts a loadable micro-motion model without motions or expressions", () => {
+    const base = modelFixture();
     const fixture = modelFixture({
+      files: base.files.filter((file) => !file.relativePath.endsWith(".motion3.json") && !file.relativePath.endsWith(".exp3.json")),
       semantics: {
-        ...modelFixture().semantics,
-        expressions: { neutral: "Neutral" },
+        motions: {},
+        expressions: {},
+        hitAreas: {},
+        parameters: {
+          bodyBreath: "ParamBreath",
+          bodySway: "ParamBodyAngleX",
+        },
       },
     });
 
-    const result = validateModelContract(fixture);
-
-    expect(result.errors).toContain("missing expression: happy");
-    expect(result.errors).toContain("missing expression: curious");
-    expect(result.errors).toContain("missing expression: sleepy");
-    expect(result.errors).toContain("missing expression: sad");
-    expect(result.errors).toContain("missing expression: angry");
+    expect(validateModelContract(fixture)).toEqual({ valid: true, errors: [] });
   });
 
-  it("requires model files, product motions, hit areas and control parameters", () => {
+  it("treats motions, expressions, hit areas, and parameters as optional capabilities", () => {
+    const fixture = modelFixture({
+      semantics: {
+        motions: {},
+        expressions: {},
+        hitAreas: {},
+        parameters: {},
+      },
+    });
+
+    expect(validateModelContract(fixture)).toEqual({ valid: true, errors: [] });
+  });
+
+  it("requires the files needed to load and preview a model", () => {
     const fixture = modelFixture({
       files: [{ role: "preview", relativePath: "preview.png", sha256: "ab".repeat(32) }],
       semantics: { motions: {}, expressions: {}, hitAreas: {}, parameters: {} },
@@ -85,9 +99,9 @@ describe("validateModelContract", () => {
     expect(result.errors).toContain("missing file: model3");
     expect(result.errors).toContain("missing file: moc3");
     expect(result.errors).toContain("missing file: texture");
-    expect(result.errors).toContain("missing motion: idle");
-    expect(result.errors).toContain("missing hit area: head");
-    expect(result.errors).toContain("missing parameter: mouthOpen");
+    expect(result.errors).not.toContain("missing motion: idle");
+    expect(result.errors).not.toContain("missing hit area: head");
+    expect(result.errors).not.toContain("missing parameter: mouthOpen");
     expect(result.valid).toBe(false);
   });
 

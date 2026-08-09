@@ -236,6 +236,7 @@ fn validate_semantics(value: &serde_json::Value) -> Result<(), String> {
                 "angleX",
                 "angleY",
                 "bodyBreath",
+                "bodySway",
                 "mouthOpen",
             ][..],
         ),
@@ -304,6 +305,18 @@ mod tests {
     fn parses_valid_v2_manifest() {
         assert!(matches!(
             parse_manifest(valid_v2_json()).unwrap(),
+            RuntimeAssetManifest::V2(_)
+        ));
+    }
+
+    #[test]
+    fn accepts_body_sway_parameter_semantic() {
+        let json = valid_v2_json().replace(
+            "\"parameters\":{}",
+            "\"parameters\":{\"bodyBreath\":\"ParamBreath\",\"bodySway\":\"ParamBodyAngleX\"}",
+        );
+        assert!(matches!(
+            parse_manifest(&json).unwrap(),
             RuntimeAssetManifest::V2(_)
         ));
     }

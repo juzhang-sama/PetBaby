@@ -20,6 +20,7 @@ export type Live2DParameterSemantic =
   | "angleX"
   | "angleY"
   | "bodyBreath"
+  | "bodySway"
   | "mouthOpen";
 
 export interface Live2DSemantics {

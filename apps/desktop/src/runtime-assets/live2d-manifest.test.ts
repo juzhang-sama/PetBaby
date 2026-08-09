@@ -39,6 +39,17 @@ describe("Live2D manifest v2", () => {
   it("rejects unknown semantic keys", () => {
     expect(() => parseLive2DManifest({ ...valid, semantics: { ...valid.semantics, motions: { dance: { group: "Dance" } } } })).toThrow(/unknown semantics/i);
   });
+  it("accepts the production body sway parameter semantic", () => {
+    const manifest = parseLive2DManifest({
+      ...valid,
+      semantics: {
+        ...valid.semantics,
+        parameters: { bodyBreath: "ParamBreath", bodySway: "ParamBodyAngleX" },
+      },
+    });
+
+    expect(manifest.semantics.parameters.bodySway).toBe("ParamBodyAngleX");
+  });
   it("rejects invalid semantic mapping values", () => {
     expect(() => parseLive2DManifest({ ...valid, semantics: { ...valid.semantics, motions: { idle: "Idle" } } })).toThrow(/semantics\.motions\.idle/i);
     expect(() => parseLive2DManifest({ ...valid, semantics: { ...valid.semantics, motions: { idle: { group: "Idle", index: "0" } } } })).toThrow(/semantics\.motions\.idle/i);
