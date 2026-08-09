@@ -1,0 +1,62 @@
+{
+    "schemaVersion":  2,
+    "renderer":  "live2d-v1",
+    "petId":  "pet-live2d-v1",
+    "variantId":  "front-sitting-motion-v1",
+    "modelEntry":  "pet-live2d-v1.model3.json",
+    "previewImage":  "preview.png",
+    "files":  [
+                  {
+                      "role":  "texture",
+                      "relativePath":  "pet-live2d-v1.2048/texture_00.png",
+                      "sha256":  "211bd6ef5f32244d6c12332af627f10a65b006d2de2ee46b971187c3c2430a5d"
+                  },
+                  {
+                      "role":  "metadata",
+                      "relativePath":  "pet-live2d-v1.cdi3.json",
+                      "sha256":  "21e4863db14d2d04a5ed0c16f5f7d38726168e706ed1703f9ed09759244e297c"
+                  },
+                  {
+                      "role":  "moc",
+                      "relativePath":  "pet-live2d-v1.moc3",
+                      "sha256":  "8691e4c5dfbc0cd4d8e1abf042309a04dda0adbda59924fe5db306234d68fdf0"
+                  },
+                  {
+                      "role":  "model",
+                      "relativePath":  "pet-live2d-v1.model3.json",
+                      "sha256":  "c04b13c35dcb9164bd7aa5aeb23c0851f0ff372b755722aab653101622d22b54"
+                  },
+                  {
+                      "role":  "preview",
+                      "relativePath":  "preview.png",
+                      "sha256":  "6032a35d9c7abac9941be5b735a8e604e139478abc11286514729810fd928418"
+                  },
+                  {
+                      "role":  "license",
+                      "relativePath":  "许可证.json",
+                      "sha256":  "58a4dd2faa04ce4b6f7b0cb946518b9207af882fcb8c42f77cb95c19c2bdfd90"
+                  }
+              ],
+    "semantics":  {
+                      "motions":  {
+
+                                  },
+                      "expressions":  {
+
+                                      },
+                      "hitAreas":  {
+
+                                   },
+                      "parameters":  {
+                                         "bodyBreath":  "ParamBreath",
+                                         "bodySway":  "ParamBodyAngleX"
+                                     }
+                  },
+    "license":  {
+                    "id":  "pet-live2d-v1",
+                    "author":  "juzhang-sama",
+                    "source":  "用户自有宠物照片与用户在 ChatGPT 中生成并确认的衍生图像",
+                    "commercialUse":  true,
+                    "redistributable":  true
+                }
+}

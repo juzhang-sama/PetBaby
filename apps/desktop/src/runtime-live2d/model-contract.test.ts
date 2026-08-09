@@ -1,5 +1,7 @@
+import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
+import { parseLive2DManifest } from "../runtime-assets/live2d-manifest";
 import { validateModelContract } from "./model-contract";
 
 function modelFixture(overrides: Partial<RuntimeAssetManifestV2> = {}): RuntimeAssetManifestV2 {
@@ -57,6 +59,20 @@ function modelFixture(overrides: Partial<RuntimeAssetManifestV2> = {}): RuntimeA
 }
 
 describe("validateModelContract", () => {
+  it("accepts the packaged pet with only breathing and body sway mappings", () => {
+    const manifestUrl = new URL("../../public/builtin-pets/pet-live2d-v1/manifest.json", import.meta.url);
+    const manifest = parseLive2DManifest(JSON.parse(readFileSync(manifestUrl, "utf8")));
+
+    expect(validateModelContract(manifest)).toEqual({ valid: true, errors: [] });
+    expect(manifest.semantics.parameters).toEqual({
+      bodyBreath: "ParamBreath",
+      bodySway: "ParamBodyAngleX",
+    });
+    expect(manifest.semantics.motions).toEqual({});
+    expect(manifest.semantics.expressions).toEqual({});
+    expect(manifest.semantics.hitAreas).toEqual({});
+  });
+
   it("accepts a loadable micro-motion model without motions or expressions", () => {
     const base = modelFixture();
     const fixture = modelFixture({
