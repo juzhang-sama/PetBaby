@@ -195,10 +195,7 @@ fn asset_file_b64(
     let json =
         std::fs::read_to_string(root.join("manifest.json")).map_err(|error| error.to_string())?;
     let manifest = runtime_assets::manifest::parse_manifest(&json)?;
-    let files = match &manifest {
-        runtime_assets::manifest::RuntimeAssetManifest::V1(value) => &value.files,
-        runtime_assets::manifest::RuntimeAssetManifest::V2(value) => &value.files,
-    };
+    let files = runtime_assets::manifest::manifest_files(&manifest);
     let normalized = runtime_assets::manifest::normalize_relative_path(&relative_path)?;
     if !files.iter().any(|file| file.relative_path == normalized) {
         return Err("asset file is not declared in manifest".into());

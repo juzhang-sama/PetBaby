@@ -1,6 +1,7 @@
 use crate::runtime_assets::manifest::{
-    parse_manifest, validate_relative_path, RuntimeAssetManifest,
+    manifest_files, parse_manifest, validate_relative_path, RuntimeAssetManifest,
 };
+use crate::runtime_assets::motion_profile::parse_motion_profile;
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -38,10 +39,7 @@ fn validate_asset_manifest(path: &Path) -> Result<(), AssetReadError> {
     };
     let json = String::from_utf8(data).map_err(|_| AssetReadError::Corrupt)?;
     let manifest = parse_manifest(&json).map_err(|_| AssetReadError::Corrupt)?;
-    let files = match &manifest {
-        RuntimeAssetManifest::V1(value) => &value.files,
-        RuntimeAssetManifest::V2(value) => &value.files,
-    };
+    let files = manifest_files(&manifest);
     let assets_dir = path.parent().ok_or(AssetReadError::Corrupt)?;
     for file in files {
         validate_relative_path(&file.relative_path).map_err(|_| AssetReadError::Corrupt)?;
@@ -50,6 +48,11 @@ fn validate_asset_manifest(path: &Path) -> Result<(), AssetReadError> {
         if sha256_hex(&bytes) != file.sha256 {
             return Err(AssetReadError::Corrupt);
         }
+    }
+    if let RuntimeAssetManifest::V3(value) = manifest {
+        let profile = std::fs::read_to_string(assets_dir.join(value.motion_profile))
+            .map_err(|_| AssetReadError::Corrupt)?;
+        parse_motion_profile(&profile).map_err(|_| AssetReadError::Corrupt)?;
     }
     Ok(())
 }
@@ -91,6 +94,44 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn setup_v3() -> (std::path::PathBuf, std::path::PathBuf) {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("desktop-pet-v3-loader-{}-{n}", std::process::id()));
+        let pets_dir = root.join("pets");
+        let assets = pets_dir.join("pet-a").join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let body = b"body-bytes";
+        let profile = serde_json::json!({
+            "profileVersion": 1,
+            "engineProfile": "life-v1",
+            "alphaBounds": { "left": 0.1, "top": 0.05, "right": 0.9, "bottom": 0.96 },
+            "breathZone": { "left": 0.2, "top": 0.5, "right": 0.8, "bottom": 0.84 },
+            "swayPivot": { "x": 0.5, "y": 0.72 }
+        })
+        .to_string();
+        std::fs::write(assets.join("body.png"), body).unwrap();
+        std::fs::write(assets.join("motion-profile.json"), profile.as_bytes()).unwrap();
+        let manifest = serde_json::json!({
+            "schemaVersion": 3,
+            "renderer": "animated-image-v1",
+            "petId": "pet-a",
+            "variantId": "variant-a",
+            "image": "body.png",
+            "motionProfile": "motion-profile.json",
+            "files": [
+                { "role": "main", "relativePath": "body.png", "sha256": sha256_hex(body) },
+                { "role": "motion-profile", "relativePath": "motion-profile.json", "sha256": sha256_hex(profile.as_bytes()) }
+            ]
+        });
+        std::fs::write(
+            assets.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        (pets_dir, root)
+    }
 
     fn write_png(path: &Path, width: u32, height: u32) {
         let mut bytes = Vec::new();
@@ -150,6 +191,36 @@ mod tests {
         std::fs::write(&img, b"corrupted content").unwrap();
         let health = scan_assets(&pets_dir);
         assert_eq!(health[0].status, "corrupt");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_corrupt_when_the_motion_profile_hash_mismatches() {
+        let (pets_dir, root) = setup_v3();
+        std::fs::write(pets_dir.join("pet-a/assets/motion-profile.json"), b"{}").unwrap();
+        assert_eq!(inspect_pet_asset(&pets_dir, "pet-a").status, "corrupt");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_corrupt_when_the_motion_profile_content_is_invalid() {
+        let (pets_dir, root) = setup_v3();
+        let assets = pets_dir.join("pet-a/assets");
+        std::fs::write(assets.join("motion-profile.json"), b"{}").unwrap();
+        let manifest_path = assets.join("manifest.json");
+        let mut manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+        manifest["files"][1]["sha256"] = sha256_hex(b"{}").into();
+        std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
+        assert_eq!(inspect_pet_asset(&pets_dir, "pet-a").status, "corrupt");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_corrupt_when_the_motion_profile_is_missing() {
+        let (pets_dir, root) = setup_v3();
+        std::fs::remove_file(pets_dir.join("pet-a/assets/motion-profile.json")).unwrap();
+        assert_eq!(inspect_pet_asset(&pets_dir, "pet-a").status, "corrupt");
         let _ = std::fs::remove_dir_all(root);
     }
 

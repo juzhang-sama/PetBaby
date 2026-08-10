@@ -1,7 +1,7 @@
 use crate::pets::active::{SharedActivePetService, BUILTIN_PET_ID};
 use crate::runtime_assets::{
     loader::inspect_pet_asset,
-    manifest::{parse_manifest, RuntimeAssetManifest},
+    manifest::{manifest_identity, parse_manifest},
 };
 use crate::storage::Storage;
 use rusqlite::OptionalExtension;
@@ -328,13 +328,11 @@ impl PetCatalogService {
             .join("assets")
             .join("manifest.json");
         let manifest = std::fs::read_to_string(manifest_path).ok()?;
-        let (manifest_pet_id, variant_id) = match parse_manifest(&manifest).ok()? {
-            RuntimeAssetManifest::V1(manifest) => (manifest.pet_id, manifest.variant_id),
-            RuntimeAssetManifest::V2(manifest) => (manifest.pet_id, manifest.variant_id),
-        };
+        let parsed = parse_manifest(&manifest).ok()?;
+        let (manifest_pet_id, variant_id) = manifest_identity(&parsed);
         Some(ManifestIdentity {
-            pet_id: manifest_pet_id,
-            variant_id,
+            pet_id: manifest_pet_id.to_owned(),
+            variant_id: variant_id.to_owned(),
         })
     }
 

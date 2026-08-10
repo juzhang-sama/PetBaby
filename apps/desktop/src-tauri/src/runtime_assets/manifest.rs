@@ -55,11 +55,40 @@ pub struct RuntimeAssetManifestV2 {
     pub license: Live2DLicense,
 }
 
+#[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
+#[serde(rename_all = "camelCase")]
+pub struct RuntimeAssetManifestV3 {
+    pub schema_version: u32,
+    pub renderer: String,
+    pub pet_id: String,
+    pub variant_id: String,
+    pub image: String,
+    pub motion_profile: String,
+    pub files: Vec<ManifestFileEntry>,
+}
+
 #[derive(Debug, Clone, Serialize, PartialEq)]
 #[serde(untagged)]
 pub enum RuntimeAssetManifest {
     V1(RuntimeAssetManifestV1),
     V2(RuntimeAssetManifestV2),
+    V3(RuntimeAssetManifestV3),
+}
+
+pub fn manifest_files(manifest: &RuntimeAssetManifest) -> &[ManifestFileEntry] {
+    match manifest {
+        RuntimeAssetManifest::V1(value) => &value.files,
+        RuntimeAssetManifest::V2(value) => &value.files,
+        RuntimeAssetManifest::V3(value) => &value.files,
+    }
+}
+
+pub fn manifest_identity(manifest: &RuntimeAssetManifest) -> (&str, &str) {
+    match manifest {
+        RuntimeAssetManifest::V1(value) => (&value.pet_id, &value.variant_id),
+        RuntimeAssetManifest::V2(value) => (&value.pet_id, &value.variant_id),
+        RuntimeAssetManifest::V3(value) => (&value.pet_id, &value.variant_id),
+    }
 }
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
@@ -151,6 +180,9 @@ pub fn parse_manifest(json: &str) -> Result<RuntimeAssetManifest, String> {
     if version == 1 {
         return parse_manifest_v1(json).map(RuntimeAssetManifest::V1);
     }
+    if version == 3 {
+        return parse_manifest_v3(value).map(RuntimeAssetManifest::V3);
+    }
     if version != 2 {
         return Err(format!("unsupported schemaVersion: {version}"));
     }
@@ -203,6 +235,49 @@ pub fn parse_manifest(json: &str) -> Result<RuntimeAssetManifest, String> {
     }
     validate_semantics(&manifest.semantics)?;
     Ok(RuntimeAssetManifest::V2(manifest))
+}
+
+fn parse_manifest_v3(value: serde_json::Value) -> Result<RuntimeAssetManifestV3, String> {
+    let mut manifest: RuntimeAssetManifestV3 =
+        serde_json::from_value(value).map_err(|error| format!("invalid v3 manifest: {error}"))?;
+    if manifest.renderer != "animated-image-v1" {
+        return Err("unsupported renderer".into());
+    }
+    if manifest.pet_id.is_empty() || manifest.variant_id.is_empty() {
+        return Err("missing petId or variantId".into());
+    }
+    validate_files(&manifest.files, false)?;
+    manifest.image =
+        normalize_relative_path(&manifest.image).map_err(|_| "image must be a relative path")?;
+    manifest.motion_profile = normalize_relative_path(&manifest.motion_profile)
+        .map_err(|_| "motionProfile must be a relative path")?;
+    if !manifest.image.to_ascii_lowercase().ends_with(".png") {
+        return Err("image must be a PNG file".into());
+    }
+    if !manifest
+        .motion_profile
+        .to_ascii_lowercase()
+        .ends_with(".json")
+    {
+        return Err("motionProfile must be a JSON file".into());
+    }
+    for file in &mut manifest.files {
+        file.relative_path = normalize_relative_path(&file.relative_path)?;
+        file.sha256.make_ascii_lowercase();
+    }
+    let has_file = |role: &str, path: &str| {
+        manifest
+            .files
+            .iter()
+            .any(|file| file.role == role && file.relative_path == path)
+    };
+    if !has_file("main", &manifest.image) {
+        return Err("image is not listed as the main file".into());
+    }
+    if !has_file("motion-profile", &manifest.motion_profile) {
+        return Err("motionProfile is not listed as the motion-profile file".into());
+    }
+    Ok(manifest)
 }
 
 fn validate_semantics(value: &serde_json::Value) -> Result<(), String> {
@@ -269,6 +344,23 @@ fn validate_semantics(value: &serde_json::Value) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+
+    fn valid_v3_json() -> String {
+        serde_json::json!({
+            "schemaVersion": 3,
+            "renderer": "animated-image-v1",
+            "petId": "pet-a",
+            "variantId": "variant-a",
+            "image": "body.png",
+            "motionProfile": "motion-profile.json",
+            "files": [
+                { "role": "main", "relativePath": "body.png", "sha256": "ab".repeat(32) },
+                { "role": "motion-profile", "relativePath": "motion-profile.json", "sha256": "cd".repeat(32) }
+            ]
+        })
+        .to_string()
+    }
+
     fn valid_json() -> &'static str {
         r#"{"schemaVersion":1,"assetType":"single-image","petId":"pet-1","variantId":"variant-1","styleId":"signature-cartoon-v1","view":"front","pose":"sitting","files":[{"role":"main","relativePath":"pet.png","sha256":"abababababababababababababababababababababababababababababababab"}],"animation":{"idleFps":12,"blinkMsMin":3000,"blinkMsMax":8000}}"#
     }
@@ -307,6 +399,26 @@ mod tests {
             parse_manifest(valid_v2_json()).unwrap(),
             RuntimeAssetManifest::V2(_)
         ));
+    }
+
+    #[test]
+    fn parses_an_animated_image_v3_manifest() {
+        let manifest = parse_manifest(&valid_v3_json()).unwrap();
+        let RuntimeAssetManifest::V3(value) = manifest else {
+            panic!("expected v3")
+        };
+        assert_eq!(value.renderer, "animated-image-v1");
+        assert_eq!(value.image, "body.png");
+        assert_eq!(value.motion_profile, "motion-profile.json");
+    }
+
+    #[test]
+    fn rejects_a_v3_motion_profile_traversal_path() {
+        let mut value: serde_json::Value = serde_json::from_str(&valid_v3_json()).unwrap();
+        value["motionProfile"] = "../motion-profile.json".into();
+        assert!(parse_manifest(&value.to_string())
+            .unwrap_err()
+            .contains("relative path"));
     }
 
     #[test]
