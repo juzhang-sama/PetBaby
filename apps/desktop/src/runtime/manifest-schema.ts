@@ -3,6 +3,7 @@ import {
   parseLive2DManifest,
   type RuntimeAssetManifestV2,
 } from "../runtime-assets/live2d-manifest";
+import { parseAnimatedImageManifest, type RuntimeAssetManifestV3 } from "./animated-image-manifest";
 
 export const MANIFEST_SCHEMA_VERSION = 1 as const;
 
@@ -99,7 +100,18 @@ export function parseManifestV1(json: unknown): RuntimeAssetManifestV1 {
   };
 }
 
-export function parseRuntimeAssetManifest(json: unknown): RuntimeAssetManifestV1 | RuntimeAssetManifestV2 {
+export function parseRuntimeAssetManifest(
+  json: unknown,
+): RuntimeAssetManifestV1 | RuntimeAssetManifestV2 | RuntimeAssetManifestV3 {
   if (typeof json !== "object" || json === null) throw new Error("manifest must be an object");
-  return (json as Record<string, unknown>).schemaVersion === 2 ? parseLive2DManifest(json) : parseManifestV1(json);
+  switch ((json as Record<string, unknown>).schemaVersion) {
+    case 1:
+      return parseManifestV1(json);
+    case 2:
+      return parseLive2DManifest(json);
+    case 3:
+      return parseAnimatedImageManifest(json);
+    default:
+      throw new Error(`unsupported schemaVersion: ${String((json as Record<string, unknown>).schemaVersion)}`);
+  }
 }

@@ -1,3 +1,5 @@
+import type { MotionProfileV1 } from "./animated-image-manifest";
+
 export type PetExpression = "neutral" | "happy" | "curious" | "sleepy" | "sad" | "angry";
 
 export type PetMotion =
@@ -32,6 +34,7 @@ export interface Live2DSemantics {
 
 export type PetRenderAsset =
   | { kind: "static-png"; imageUrl: string }
+  | { kind: "animated-image"; imageUrl: string; motionProfile: MotionProfileV1 }
   | {
       kind: "live2d";
       modelUrl: string;

@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
+import { validAnimatedManifest } from "./animated-image-test-fixtures";
 import type { PetRenderAsset, PetRenderer } from "./pet-renderer";
 import { createPetRendererRuntime, type RendererDiagnostic } from "./pet-renderer-bootstrap";
 
@@ -115,6 +116,16 @@ describe("createPetRendererRuntime", () => {
     expect(test.liveRenderer.load).toHaveBeenCalledWith(expect.objectContaining({ kind: "live2d" }));
     expect(test.root.replaceChildren).toHaveBeenCalledWith(runtime.getSurface());
     expect(runtime.kind()).toBe("live2d");
+  });
+
+  it("does not route a v3 animated image manifest through the Live2D runtime", async () => {
+    const test = harness();
+
+    await expect(createPetRendererRuntime("pet-user-1", validAnimatedManifest(), test.options))
+      .rejects.toThrow(/animated-image/i);
+
+    expect(test.options.loadLive2DAsset).not.toHaveBeenCalled();
+    expect(test.options.createLive2DRenderer).not.toHaveBeenCalled();
   });
 
   it("falls back to the manifest preview when initial Live2D loading fails", async () => {

@@ -100,6 +100,9 @@ export async function createPetRendererRuntime(
   );
 
   if (manifest.schemaVersion === 1) return makeStatic(preferredV1Image(manifest));
+  if (manifest.schemaVersion === 3) {
+    throw new Error("animated-image renderer runtime is not available");
+  }
 
   const liveManifest: RuntimeAssetManifestV2 = manifest;
   const previewAsset = {

@@ -61,6 +61,9 @@ fn serve_pet_asset(file: &std::path::Path) -> tauri::http::Response<Vec<u8>> {
                 Some(extension) if extension.eq_ignore_ascii_case("png") => {
                     builder.header(CONTENT_TYPE, "image/png")
                 }
+                Some(extension) if extension.eq_ignore_ascii_case("json") => {
+                    builder.header(CONTENT_TYPE, "application/json")
+                }
                 _ => builder,
             };
             builder.body(bytes).unwrap()
@@ -885,6 +888,39 @@ mod tests {
             "*"
         );
         assert_eq!(response.body(), &png);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pet_asset_json_response_preserves_cors_with_json_content_type() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-uri-json-response-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("motion-profile.JSON");
+        let json = br#"{"profileVersion":1}"#.to_vec();
+        std::fs::write(&file, &json).unwrap();
+
+        let response = serve_pet_asset(&file);
+
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "*"
+        );
+        assert_eq!(response.body(), &json);
         let _ = std::fs::remove_dir_all(root);
     }
 
