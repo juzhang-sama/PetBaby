@@ -43,6 +43,8 @@ enum DeletionPhase {
 struct DeletionJournal {
     pet_id: String,
     job_ids: Vec<String>,
+    #[serde(default)]
+    session_ids: Vec<String>,
     phase: DeletionPhase,
 }
 
@@ -73,6 +75,7 @@ impl PetDeletionService {
         let mut journal = DeletionJournal {
             pet_id: pet_id.into(),
             job_ids: job_ids.clone(),
+            session_ids: Vec::new(),
             phase: DeletionPhase::Prepared,
         };
         write_journal(&quarantine_root, &journal)?;
@@ -122,6 +125,88 @@ impl PetDeletionService {
         Ok(DeleteOutcome {
             warning: (!warnings.is_empty()).then(|| warnings.join("; ")),
         })
+    }
+
+    pub fn abandon_creation(&self, session_id: &str) -> Result<(), String> {
+        let _operation = deletion_operation_lock()
+            .lock()
+            .map_err(|_| "deletion operation lock poisoned")?;
+        validate_component(session_id, "session id")?;
+
+        let Some((pet_id, method, status, job_ids)) = self.creation_abandon_plan(session_id)?
+        else {
+            return Ok(());
+        };
+        if status == "completed" {
+            return Err("a completed creation session cannot be abandoned".into());
+        }
+        validate_component(&pet_id, "pet id")?;
+        for job_id in &job_ids {
+            validate_component(job_id, "job id")?;
+        }
+
+        let quarantine_root = self.quarantine_root();
+        let mut journal = DeletionJournal {
+            pet_id: pet_id.clone(),
+            job_ids: job_ids.clone(),
+            session_ids: vec![session_id.into()],
+            phase: DeletionPhase::Prepared,
+        };
+        write_journal(&quarantine_root, &journal)?;
+
+        let pets_root = self.app_data_dir.join("pets");
+        let jobs_root = self.app_data_dir.join("jobs");
+        let sessions_root = self.app_data_dir.join("creation-sessions");
+        let mut planned_paths = vec![
+            (
+                sessions_root.join(session_id),
+                sessions_root,
+                format!("session-{session_id}"),
+            ),
+            (pets_root.join(&pet_id), pets_root, "pet".to_owned()),
+        ];
+        for job_id in &job_ids {
+            planned_paths.push((
+                jobs_root.join(job_id),
+                jobs_root.clone(),
+                format!("job-{job_id}"),
+            ));
+        }
+        for (source, parent, _) in &planned_paths {
+            validate_source_path(source, parent)?;
+        }
+
+        let mut quarantined = Vec::new();
+        for (source, _, name) in &planned_paths {
+            match quarantine_path(source, &quarantine_root, name) {
+                Ok(Some(path)) => quarantined.push(path),
+                Ok(None) => {}
+                Err(error) => {
+                    return Err(recover_uncommitted(
+                        &quarantine_root,
+                        format!("failed to quarantine {}: {error}", source.display()),
+                        &quarantined,
+                    ));
+                }
+            }
+        }
+
+        if let Err(error) = self.abandon_creation_rows(session_id, &pet_id, &method, &job_ids) {
+            return Err(recover_uncommitted(&quarantine_root, error, &quarantined));
+        }
+
+        journal.phase = DeletionPhase::Committed;
+        if let Err(error) = write_journal(&quarantine_root, &journal) {
+            eprintln!(
+                "[desktop-pet] could not record committed creation abandonment {session_id}: {error}"
+            );
+        }
+        if let Err(error) = remove_operation(&quarantine_root) {
+            eprintln!(
+                "[desktop-pet] creation abandonment quarantine cleanup failed {session_id}: {error}"
+            );
+        }
+        Ok(())
     }
 
     pub fn cleanup_quarantine(&self) -> Result<(), String> {
@@ -210,6 +295,127 @@ impl PetDeletionService {
             .map_err(|error| error.to_string())?;
         rows.map(|row| row.map_err(|error| error.to_string()))
             .collect()
+    }
+
+    fn creation_abandon_plan(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<(String, String, String, Vec<String>)>, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tombstoned = storage
+            .db
+            .query_row(
+                "SELECT 1 FROM creation_session_tombstones WHERE session_id=?1",
+                [session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .is_some();
+        if tombstoned {
+            return Ok(None);
+        }
+        let session: Option<(String, String, String)> = storage
+            .db
+            .query_row(
+                "SELECT pet_id, method, status FROM creation_sessions WHERE session_id=?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (pet_id, method, status) =
+            session.ok_or_else(|| format!("creation session not found: {session_id}"))?;
+        let job_ids = {
+            let mut statement = storage
+                .db
+                .prepare("SELECT job_id FROM generation_jobs WHERE pet_id=?1 ORDER BY job_id")
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([&pet_id], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .map(|row| row.map_err(|error| error.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        Ok(Some((pet_id, method, status, job_ids)))
+    }
+
+    fn abandon_creation_rows(
+        &self,
+        session_id: &str,
+        pet_id: &str,
+        method: &str,
+        expected_job_ids: &[String],
+    ) -> Result<(), String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let tombstoned = tx
+            .query_row(
+                "SELECT 1 FROM creation_session_tombstones WHERE session_id=?1",
+                [session_id],
+                |_| Ok(()),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .is_some();
+        if tombstoned {
+            return Ok(());
+        }
+        let current: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT pet_id, method, status FROM creation_sessions WHERE session_id=?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (current_pet_id, current_method, current_status) = current
+            .ok_or_else(|| format!("creation session changed during abandonment: {session_id}"))?;
+        if current_pet_id != pet_id || current_method != method {
+            return Err("creation session ownership changed during abandonment".into());
+        }
+        if current_status == "completed" {
+            return Err("a completed creation session cannot be abandoned".into());
+        }
+        let current_job_ids = {
+            let mut statement = tx
+                .prepare("SELECT job_id FROM generation_jobs WHERE pet_id=?1 ORDER BY job_id")
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([pet_id], |row| row.get::<_, String>(0))
+                .map_err(|error| error.to_string())?
+                .map(|row| row.map_err(|error| error.to_string()))
+                .collect::<Result<Vec<_>, _>>()?;
+            rows
+        };
+        let mut expected_job_ids = expected_job_ids.to_vec();
+        expected_job_ids.sort();
+        if current_job_ids != expected_job_ids {
+            return Err("creation jobs changed during abandonment".into());
+        }
+        tx.execute(
+            "INSERT INTO creation_session_tombstones
+             (session_id, pet_id, method, abandoned_at)
+             VALUES (?1, ?2, ?3, ?4)",
+            rusqlite::params![
+                session_id,
+                pet_id,
+                method,
+                crate::creation::profiles::now_iso()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let affected = tx
+            .execute("DELETE FROM pets WHERE pet_id=?1", [pet_id])
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("reserved pet changed during abandonment".into());
+        }
+        tx.commit().map_err(|error| error.to_string())
     }
 
     fn delete_rows(&self, pet_id: &str, expected_job_ids: &[String]) -> Result<(), String> {
@@ -313,6 +519,15 @@ impl PetDeletionService {
                 original: jobs_root.join(job_id),
                 quarantined: operation.join(format!("job-{job_id}")),
                 original_parent: jobs_root.clone(),
+                quarantine_parent: operation.into(),
+            });
+        }
+        let sessions_root = self.app_data_dir.join("creation-sessions");
+        for session_id in &journal.session_ids {
+            paths.push(QuarantinedPath {
+                original: sessions_root.join(session_id),
+                quarantined: operation.join(format!("session-{session_id}")),
+                original_parent: sessions_root.clone(),
                 quarantine_parent: operation.into(),
             });
         }
@@ -503,6 +718,13 @@ fn validate_journal(journal: &DeletionJournal) -> Result<(), String> {
         validate_component(job_id, "journal job id")?;
         if !job_ids.insert(job_id) {
             return Err("journal contains duplicate job id".into());
+        }
+    }
+    let mut session_ids = std::collections::BTreeSet::new();
+    for session_id in &journal.session_ids {
+        validate_component(session_id, "journal session id")?;
+        if !session_ids.insert(session_id) {
+            return Err("journal contains duplicate session id".into());
         }
     }
     Ok(())

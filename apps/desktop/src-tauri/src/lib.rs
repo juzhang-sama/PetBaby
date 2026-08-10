@@ -360,6 +360,46 @@ fn pet_creation_resume(
 }
 
 #[tauri::command]
+fn creation_start(
+    service: tauri::State<'_, creation::SharedCreationService>,
+    method: creation::domain::CreationMethod,
+) -> Result<creation::domain::CreationSnapshot, String> {
+    service.start(method)
+}
+
+#[tauri::command]
+fn creation_draft(
+    service: tauri::State<'_, creation::SharedCreationService>,
+) -> Result<Option<creation::domain::CreationSnapshot>, String> {
+    service.draft()
+}
+
+#[tauri::command]
+fn creation_snapshot(
+    service: tauri::State<'_, creation::SharedCreationService>,
+    session_id: String,
+) -> Result<creation::domain::CreationSnapshot, String> {
+    service.snapshot(&session_id)
+}
+
+#[tauri::command]
+fn creation_set_name(
+    service: tauri::State<'_, creation::SharedCreationService>,
+    session_id: String,
+    display_name: String,
+) -> Result<creation::domain::CreationSnapshot, String> {
+    service.set_name(&session_id, &display_name)
+}
+
+#[tauri::command]
+fn creation_abandon(
+    service: tauri::State<'_, creation::SharedCreationService>,
+    session_id: String,
+) -> Result<(), String> {
+    service.abandon(&session_id)
+}
+
+#[tauri::command]
 fn pet_prepare_switch(
     state: tauri::State<'_, SharedActivePetService>,
     pet_id: String,
@@ -698,14 +738,21 @@ pub fn run() {
             }
             app.manage(active as SharedActivePetService);
             app.manage(catalog as SharedPetCatalogService);
+            let creation_service = Arc::new(creation::CreationService::new(
+                storage.clone(),
+                data_dir.clone(),
+                deletion.clone(),
+            ));
             app.manage(deletion as SharedPetDeletionService);
+            app.manage(creation_service as creation::SharedCreationService);
             app.manage(Arc::new(Mutex::new(pets::repository::PetRepository::new(
                 storage.clone(),
             ))) as SharedPetRepository);
             let state_store = Arc::new(Mutex::new(pets::state::StateStore::new(storage.clone())));
             app.manage(state_store.clone() as pets::state::SharedStateStore);
 
-            let creation_store = Arc::new(Mutex::new(creation::CreationStore::new(storage)));
+            let creation_store =
+                Arc::new(Mutex::new(creation::CreationStore::new(storage.clone())));
             app.manage(creation_store.clone() as creation::SharedCreationStore);
 
             let manager = generation::tasks::GenerationManager::new(
@@ -770,6 +817,11 @@ pub fn run() {
             app_setting_set,
             pet_calibration_load,
             pet_calibration_save,
+            creation_start,
+            creation_draft,
+            creation_snapshot,
+            creation_set_name,
+            creation_abandon,
             gen_start,
             gen_cancel,
             gen_list,
@@ -856,6 +908,15 @@ mod tests {
     fn pet_catalog_commands_are_available() {
         let _list = super::pet_catalog_list;
         let _resume = super::pet_creation_resume;
+    }
+
+    #[test]
+    fn creation_session_commands_are_available() {
+        let _start = super::creation_start;
+        let _draft = super::creation_draft;
+        let _snapshot = super::creation_snapshot;
+        let _set_name = super::creation_set_name;
+        let _abandon = super::creation_abandon;
     }
 
     #[test]

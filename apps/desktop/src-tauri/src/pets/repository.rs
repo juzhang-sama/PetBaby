@@ -67,21 +67,16 @@ impl PetRepository {
         method: CreationMethod,
         source_template: Option<(&str, u32)>,
     ) -> Result<Pet, String> {
-        match (method, source_template) {
-            (CreationMethod::Adoption, None) => {
-                return Err("adoption creation requires a source template".into());
-            }
-            (CreationMethod::Upload | CreationMethod::Composer, Some(_)) => {
-                return Err("only adoption creation accepts a source template".into());
-            }
-            _ => {}
-        }
-        let mode = match method {
-            CreationMethod::Upload => IdentityMode::RealPet,
-            CreationMethod::Composer => IdentityMode::Guided,
-            CreationMethod::Adoption => IdentityMode::Adopted,
-        };
-        self.insert(Species::Cat, mode, method, source_template)
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        reserve_on_connection(&storage.db, method, source_template)
+    }
+
+    pub(crate) fn reserve_in_transaction(
+        tx: &rusqlite::Transaction<'_>,
+        method: CreationMethod,
+        source_template: Option<(&str, u32)>,
+    ) -> Result<Pet, String> {
+        reserve_on_connection(tx, method, source_template)
     }
 
     fn insert(
@@ -91,43 +86,8 @@ impl PetRepository {
         method: CreationMethod,
         source_template: Option<(&str, u32)>,
     ) -> Result<Pet, String> {
-        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
-        let pet_id = new_entity_id("pet");
-        let now = now_iso();
-        let (source_template_id, source_template_version) = source_template
-            .map(|(id, version)| (Some(id), Some(version)))
-            .unwrap_or((None, None));
-        db.execute(
-            "INSERT INTO pets
-             (pet_id, schema_version, species, identity_mode, display_name, creation_method,
-              source_template_id, source_template_version, lifecycle, completed_at,
-              created_at, updated_at)
-             VALUES (?1, 1, ?2, ?3, NULL, ?4, ?5, ?6, 'draft', NULL, ?7, ?7)",
-            rusqlite::params![
-                pet_id,
-                format!("{species:?}").to_lowercase(),
-                format!("{mode:?}").to_lowercase(),
-                creation_method_value(method),
-                source_template_id,
-                source_template_version,
-                now,
-            ],
-        )
-        .map_err(|error| error.to_string())?;
-        Ok(Pet {
-            pet_id,
-            schema_version: 1,
-            species,
-            identity_mode: mode,
-            display_name: None,
-            creation_method: method,
-            source_template_id: source_template_id.map(str::to_owned),
-            source_template_version,
-            lifecycle: "draft".into(),
-            completed_at: None,
-            created_at: now.clone(),
-            updated_at: now,
-        })
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        insert_on_connection(&storage.db, species, mode, method, source_template)
     }
 
     pub fn get(&self, pet_id: &str) -> Result<Option<Pet>, String> {
@@ -180,6 +140,73 @@ impl PetRepository {
         }
         Ok(())
     }
+}
+
+fn reserve_on_connection(
+    db: &rusqlite::Connection,
+    method: CreationMethod,
+    source_template: Option<(&str, u32)>,
+) -> Result<Pet, String> {
+    match (method, source_template) {
+        (CreationMethod::Adoption, None) => {
+            return Err("adoption creation requires a source template".into());
+        }
+        (CreationMethod::Upload | CreationMethod::Composer, Some(_)) => {
+            return Err("only adoption creation accepts a source template".into());
+        }
+        _ => {}
+    }
+    let mode = match method {
+        CreationMethod::Upload => IdentityMode::RealPet,
+        CreationMethod::Composer => IdentityMode::Guided,
+        CreationMethod::Adoption => IdentityMode::Adopted,
+    };
+    insert_on_connection(db, Species::Cat, mode, method, source_template)
+}
+
+fn insert_on_connection(
+    db: &rusqlite::Connection,
+    species: Species,
+    mode: IdentityMode,
+    method: CreationMethod,
+    source_template: Option<(&str, u32)>,
+) -> Result<Pet, String> {
+    let pet_id = new_entity_id("pet");
+    let now = now_iso();
+    let (source_template_id, source_template_version) = source_template
+        .map(|(id, version)| (Some(id), Some(version)))
+        .unwrap_or((None, None));
+    db.execute(
+        "INSERT INTO pets
+             (pet_id, schema_version, species, identity_mode, display_name, creation_method,
+              source_template_id, source_template_version, lifecycle, completed_at,
+              created_at, updated_at)
+             VALUES (?1, 1, ?2, ?3, NULL, ?4, ?5, ?6, 'draft', NULL, ?7, ?7)",
+        rusqlite::params![
+            pet_id,
+            format!("{species:?}").to_lowercase(),
+            format!("{mode:?}").to_lowercase(),
+            creation_method_value(method),
+            source_template_id,
+            source_template_version,
+            now,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(Pet {
+        pet_id,
+        schema_version: 1,
+        species,
+        identity_mode: mode,
+        display_name: None,
+        creation_method: method,
+        source_template_id: source_template_id.map(str::to_owned),
+        source_template_version,
+        lifecycle: "draft".into(),
+        completed_at: None,
+        created_at: now.clone(),
+        updated_at: now,
+    })
 }
 
 fn parse_species(value: &str) -> Species {
