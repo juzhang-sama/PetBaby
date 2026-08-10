@@ -1,4 +1,5 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import { validAnimatedManifest } from "./animated-image-test-fixtures";
 import type { PetRendererRuntime } from "./pet-renderer-bootstrap";
 import { loadRuntimePet, type RuntimePetLoaderPorts } from "./runtime-pet-loader";
 
@@ -6,6 +7,7 @@ function fakeRuntime(): PetRendererRuntime {
   return {
     host: {} as PetRendererRuntime["host"],
     getSurface: () => ({}) as HTMLCanvasElement,
+    getHitSurface: () => ({}) as HTMLCanvasElement,
     kind: () => "static-png",
     recoverToPreview: async () => undefined,
   };
@@ -107,7 +109,7 @@ describe("loadRuntimePet", () => {
     }));
   });
 
-  it("uses the installed body preview after initial manifest loading fails", async () => {
+  it("does not turn an installed manifest failure into static success", async () => {
     const ports = loaderPorts();
     const root = {} as HTMLElement;
     const createPreviewRuntime = vi.fn(async () => fakeRuntime());
@@ -125,27 +127,24 @@ describe("loadRuntimePet", () => {
       root,
       ports,
       { allowPreviewFallback: true },
-    )).resolves.toMatchObject({ petId: "pet-user-1" });
+    )).rejects.toThrow("missing manifest");
 
-    expect(createPreviewRuntime).toHaveBeenCalledWith(
-      "http://pet-asset.localhost/pet-user-1/assets/body.png",
-      expect.objectContaining({ root }),
-    );
+    expect(createPreviewRuntime).not.toHaveBeenCalled();
     expect(ports.installedAssetUrl).toHaveBeenCalledWith("pet-user-1", "body.png");
   });
 
-  it("rejects an installed v3 runtime failure instead of falling back to a static preview", async () => {
+  it("does not turn an installed startup failure into static success", async () => {
     const ports = loaderPorts();
     const root = {} as HTMLElement;
-    ports.readInstalledManifest.mockResolvedValue({ schemaVersion: 3 });
-    ports.createRuntime.mockRejectedValue(new Error("animated-image renderer runtime is not available"));
+    ports.readInstalledManifest.mockResolvedValue(validAnimatedManifest());
+    ports.createRuntime.mockRejectedValue(new Error("motion profile corrupt"));
 
     await expect(loadRuntimePet(
       { petId: "pet-user-1", source: "installed" },
       root,
       ports,
       { allowPreviewFallback: true },
-    )).rejects.toThrow("animated-image renderer runtime is not available");
+    )).rejects.toThrow("motion profile corrupt");
 
     expect(ports.createPreviewRuntime).not.toHaveBeenCalled();
   });
@@ -207,6 +206,24 @@ describe("loadRuntimePet", () => {
       ports,
     )).rejects.toThrow("preview fallback is not allowed for hot switching");
 
+    expect(ports.createPreviewRuntime).not.toHaveBeenCalled();
+  });
+
+  it("rejects an animated-image candidate that reports a static runtime", async () => {
+    const ports = loaderPorts();
+    const root = {} as HTMLElement;
+    ports.readInstalledManifest.mockResolvedValue(validAnimatedManifest());
+    const fallbackRuntime = fakeRuntime();
+    fallbackRuntime.host = { destroy: vi.fn() } as unknown as PetRendererRuntime["host"];
+    ports.createRuntime.mockResolvedValue(fallbackRuntime);
+
+    await expect(loadRuntimePet(
+      { petId: "pet-user-1", source: "installed" },
+      root,
+      ports,
+    )).rejects.toThrow("preview fallback is not allowed for hot switching");
+
+    expect(fallbackRuntime.host.destroy).toHaveBeenCalledOnce();
     expect(ports.createPreviewRuntime).not.toHaveBeenCalled();
   });
 });

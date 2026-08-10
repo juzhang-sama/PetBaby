@@ -1,13 +1,19 @@
 import { loadLive2DAsset } from "../runtime-assets/live2d-asset-loader";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
 import { Live2DRenderer } from "../runtime-live2d/live2d-renderer";
+import { loadAnimatedImageAsset } from "./animated-image-asset-loader";
+import { AnimatedImageRenderer } from "./animated-image-renderer";
 import { parseRuntimeAssetManifest, type RuntimeAssetManifestV1 } from "./manifest-schema";
 import { installedPetAssetUrl } from "./pet-asset-url";
 import type { PetRenderer } from "./pet-renderer";
 import { PetRendererHost } from "./pet-renderer-host";
 import { StaticPngRenderer } from "./static-png-renderer";
 
-export type RendererKind = "live2d" | "static-png";
+export type RendererKind = "live2d" | "animated-image" | "static-png";
+
+type AnimatedPetRenderer = Omit<PetRenderer, "getHitSurface"> & {
+  getHitSurface(): HTMLCanvasElement;
+};
 
 export interface RendererDiagnostic {
   petId: string;
@@ -27,6 +33,7 @@ export interface RendererDiagnostic {
 export interface PetRendererRuntime {
   host: PetRendererHost;
   getSurface(): HTMLCanvasElement;
+  getHitSurface(): HTMLCanvasElement;
   kind(): RendererKind;
   recoverToPreview(error: unknown): Promise<void>;
 }
@@ -39,7 +46,13 @@ export interface PetRendererBootstrapOptions {
     canvas: HTMLCanvasElement,
     onReloadFailure: (error: unknown) => void,
   ) => PetRenderer;
+  createAnimatedRenderer?: (
+    root: HTMLElement,
+    displaySurface: HTMLCanvasElement,
+    hitSurface: HTMLCanvasElement,
+  ) => AnimatedPetRenderer;
   loadLive2DAsset?: typeof loadLive2DAsset;
+  loadAnimatedImageAsset?: typeof loadAnimatedImageAsset;
   assetUrl?: (petId: string, relativePath: string) => string;
   diagnose?: (diagnostic: RendererDiagnostic) => void;
   onSurfaceChanged?: () => void | Promise<void>;
@@ -74,6 +87,7 @@ export async function createStaticPngRuntime(
   return {
     host,
     getSurface: () => surface,
+    getHitSurface: () => surface,
     kind: () => "static-png",
     recoverToPreview: async () => undefined,
   };
@@ -92,6 +106,14 @@ export async function createPetRendererRuntime(
     ?? ((root, canvas) => new StaticPngRenderer(root, { createCanvas: () => canvas }));
   const createLive2DRenderer = options.createLive2DRenderer
     ?? ((canvas, onReloadFailure) => new Live2DRenderer(canvas, { onReloadFailure }));
+  const createAnimatedRenderer = options.createAnimatedRenderer
+    ?? ((root, displaySurface, hitSurface) => {
+      const surfaces = [displaySurface, hitSurface];
+      let surfaceIndex = 0;
+      return new AnimatedImageRenderer(root, {
+        createCanvas: () => surfaces[surfaceIndex++]!,
+      });
+    });
   const assetUrl = options.assetUrl ?? installedPetAssetUrl;
 
   const makeStatic = (relativePath: string): Promise<PetRendererRuntime> => createStaticPngRuntime(
@@ -101,7 +123,30 @@ export async function createPetRendererRuntime(
 
   if (manifest.schemaVersion === 1) return makeStatic(preferredV1Image(manifest));
   if (manifest.schemaVersion === 3) {
-    throw new Error("animated-image renderer runtime is not available");
+    const displaySurface = createCanvas();
+    displaySurface.className = "pet-render-surface";
+    const hitSurface = createCanvas();
+    const animatedRenderer = createAnimatedRenderer(options.root, displaySurface, hitSurface);
+    const host = new PetRendererHost(animatedRenderer);
+    try {
+      const asset = await (options.loadAnimatedImageAsset ?? loadAnimatedImageAsset)(
+        petId,
+        manifest,
+        assetUrl,
+      );
+      await host.load(asset);
+      options.root.replaceChildren(displaySurface);
+    } catch (error) {
+      host.destroy();
+      throw error;
+    }
+    return {
+      host,
+      getSurface: () => displaySurface,
+      getHitSurface: () => animatedRenderer.getHitSurface(),
+      kind: () => "animated-image",
+      recoverToPreview: async () => undefined,
+    };
   }
 
   const liveManifest: RuntimeAssetManifestV2 = manifest;
@@ -138,6 +183,7 @@ export async function createPetRendererRuntime(
   runtime = {
     host,
     getSurface: () => surface,
+    getHitSurface: () => surface,
     kind: () => rendererKind,
     recoverToPreview: async (error) => {
       if (rendererKind !== "live2d") return;

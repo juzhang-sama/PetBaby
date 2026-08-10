@@ -60,6 +60,11 @@ export class PetRuntimeSlot implements PetRenderer {
     return this.active.getSurface();
   }
 
+  getHitSurface(): HTMLCanvasElement {
+    this.assertAlive();
+    return this.active.getHitSurface();
+  }
+
   refreshActiveSurface(runtime: MountedPetRuntime, afterAttach?: () => void): boolean {
     this.assertAlive();
     if (this.active !== runtime) return false;

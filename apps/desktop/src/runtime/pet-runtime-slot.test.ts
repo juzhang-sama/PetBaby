@@ -11,6 +11,7 @@ function fakeRoot(): HTMLElement {
 
 function fakeRuntime(petId: string): MountedPetRuntime {
   const surface = { dataset: { petId } } as unknown as HTMLCanvasElement;
+  const hitSurface = { dataset: { petId: `${petId}-hit` } } as unknown as HTMLCanvasElement;
   const host: PetRenderer = {
     load: vi.fn(async (_asset: PetRenderAsset) => undefined),
     resize: vi.fn(),
@@ -26,6 +27,7 @@ function fakeRuntime(petId: string): MountedPetRuntime {
   const runtime: PetRendererRuntime = {
     host: host as PetRendererHost,
     getSurface: () => surface,
+    getHitSurface: () => hitSurface,
     kind: () => "static-png",
     recoverToPreview: async () => undefined,
   };
@@ -33,6 +35,28 @@ function fakeRuntime(petId: string): MountedPetRuntime {
 }
 
 describe("PetRuntimeSlot", () => {
+  it("keeps display and hit surfaces aligned with the active runtime", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+
+    expect(slot.getSurface()).toBe(oldRuntime.getSurface());
+    expect(slot.getHitSurface()).toBe(oldRuntime.getHitSurface());
+
+    const swap = slot.prepare(candidate);
+    expect(slot.getHitSurface()).toBe(oldRuntime.getHitSurface());
+    swap.activate();
+    expect(slot.getSurface()).toBe(candidate.getSurface());
+    expect(slot.getHitSurface()).toBe(candidate.getHitSurface());
+
+    swap.rollback();
+    expect(slot.getSurface()).toBe(oldRuntime.getSurface());
+    expect(slot.getHitSurface()).toBe(oldRuntime.getHitSurface());
+
+    slot.destroy();
+    expect(() => slot.getHitSurface()).toThrow("PetRuntimeSlot has been destroyed");
+  });
+
   it("rolls back an activated candidate without destroying the previous runtime", () => {
     const root = fakeRoot();
     const oldRuntime = fakeRuntime("old");

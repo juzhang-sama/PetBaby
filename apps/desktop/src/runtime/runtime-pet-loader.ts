@@ -75,7 +75,12 @@ function rejectCandidatePreviewFallback(
   manifest: unknown,
   options: RuntimePetLoadOptions,
 ): PetRendererRuntime {
-  if (!options.allowPreviewFallback && manifestVersionOf(manifest) === 2 && runtime.kind() === "static-png") {
+  const manifestVersion = manifestVersionOf(manifest);
+  if (
+    !options.allowPreviewFallback
+    && (manifestVersion === 2 || manifestVersion === 3)
+    && runtime.kind() === "static-png"
+  ) {
     runtime.host.destroy();
     throw new Error("preview fallback is not allowed for hot switching");
   }
@@ -97,7 +102,10 @@ export async function loadRuntimePet(
       let runtime: PetRendererRuntime | undefined;
       let previewFallback = false;
       const onSurfaceChanged = async (): Promise<void> => {
-        if (runtime?.kind() === "static-png" && manifestVersionOf(manifest) === 2) previewFallback = true;
+        const manifestVersion = manifestVersionOf(manifest);
+        if (runtime?.kind() === "static-png" && (manifestVersion === 2 || manifestVersion === 3)) {
+          previewFallback = true;
+        }
         await options.onSurfaceChanged?.();
       };
       runtime = await ports.createRuntime(descriptor.petId, manifest, {
@@ -125,7 +133,10 @@ export async function loadRuntimePet(
     let runtime: PetRendererRuntime | undefined;
     let previewFallback = false;
     const onSurfaceChanged = async (): Promise<void> => {
-      if (runtime?.kind() === "static-png" && manifestVersionOf(manifest) === 2) previewFallback = true;
+      const manifestVersion = manifestVersionOf(manifest);
+      if (runtime?.kind() === "static-png" && (manifestVersion === 2 || manifestVersion === 3)) {
+        previewFallback = true;
+      }
       await options.onSurfaceChanged?.();
     };
     runtime = await ports.createRuntime(
@@ -150,8 +161,7 @@ export async function loadRuntimePet(
       stage: "manifest-load",
       message: error instanceof Error ? error.message : String(error),
     });
-    if (manifestVersionOf(manifest) === 3) throw error;
-    if (!options.allowPreviewFallback) throw error;
+    if (descriptor.source !== "builtin" || !options.allowPreviewFallback) throw error;
     return {
       petId: descriptor.petId,
       ...(await ports.createPreviewRuntime(previewUrl!, {

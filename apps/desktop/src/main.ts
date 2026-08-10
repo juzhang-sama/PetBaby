@@ -69,7 +69,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
 
   let slot: PetRuntimeSlot;
   const refreshHitRegion = async (): Promise<void> => {
-    const surface = slot.getSurface();
+    const surface = slot.getHitSurface();
     const width = Math.max(1, rendererRoot.clientWidth || appRoot.clientWidth);
     const height = Math.max(1, rendererRoot.clientHeight || appRoot.clientHeight);
     const scratch = document.createElement("canvas");

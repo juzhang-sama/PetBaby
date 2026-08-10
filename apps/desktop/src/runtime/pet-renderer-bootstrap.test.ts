@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
-import { validAnimatedManifest } from "./animated-image-test-fixtures";
+import { validAnimatedManifest, validMotionProfile } from "./animated-image-test-fixtures";
 import type { PetRenderAsset, PetRenderer } from "./pet-renderer";
 import { createPetRendererRuntime, type RendererDiagnostic } from "./pet-renderer-bootstrap";
 
@@ -56,8 +56,18 @@ function harness(options: { liveLoadError?: Error } = {}) {
     { className: "", style: {} },
     { className: "", style: {} },
   ] as unknown as HTMLCanvasElement[];
+  const animatedHitSurface = canvases[1]!;
   const staticRenderers: PetRenderer[] = [];
   const liveRenderer = fakeRenderer(options.liveLoadError);
+  const animatedRenderer = Object.assign(fakeRenderer(), {
+    getHitSurface: vi.fn(() => animatedHitSurface),
+  });
+  const animatedAsset: Extract<PetRenderAsset, { kind: "animated-image" }> = {
+    kind: "animated-image",
+    imageUrl: "asset://pet-user-1/body.png",
+    motionProfile: validMotionProfile(),
+  };
+  const createAnimatedRenderer = vi.fn(() => animatedRenderer);
   let reloadFailure: ((error: unknown) => void) | undefined;
   const liveAsset: Extract<PetRenderAsset, { kind: "live2d" }> = {
     kind: "live2d",
@@ -69,6 +79,8 @@ function harness(options: { liveLoadError?: Error } = {}) {
   const diagnostics: RendererDiagnostic[] = [];
   return {
     diagnostics,
+    animatedRenderer,
+    createAnimatedRenderer,
     liveRenderer,
     reload: (error: unknown) => reloadFailure?.(error),
     root,
@@ -85,7 +97,9 @@ function harness(options: { liveLoadError?: Error } = {}) {
         reloadFailure = onReloadFailure;
         return liveRenderer;
       }),
+      createAnimatedRenderer,
       loadLive2DAsset: vi.fn(async () => liveAsset),
+      loadAnimatedImageAsset: vi.fn(async () => animatedAsset),
       assetUrl: (petId: string, path: string) => `asset://${petId}/${path}`,
       diagnose: (diagnostic: RendererDiagnostic) => diagnostics.push(diagnostic),
     },
@@ -118,12 +132,22 @@ describe("createPetRendererRuntime", () => {
     expect(runtime.kind()).toBe("live2d");
   });
 
-  it("does not route a v3 animated image manifest through the Live2D runtime", async () => {
+  it("boots schema v3 through the animated image renderer", async () => {
     const test = harness();
 
-    await expect(createPetRendererRuntime("pet-user-1", validAnimatedManifest(), test.options))
-      .rejects.toThrow(/animated-image/i);
+    const runtime = await createPetRendererRuntime(
+      "pet-user-1",
+      validAnimatedManifest(),
+      test.options,
+    );
 
+    expect(runtime.kind()).toBe("animated-image");
+    expect(test.createAnimatedRenderer).toHaveBeenCalledOnce();
+    expect(test.animatedRenderer.load).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "animated-image",
+      imageUrl: "asset://pet-user-1/body.png",
+    }));
+    expect(runtime.getSurface()).not.toBe(runtime.getHitSurface());
     expect(test.options.loadLive2DAsset).not.toHaveBeenCalled();
     expect(test.options.createLive2DRenderer).not.toHaveBeenCalled();
   });

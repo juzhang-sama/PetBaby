@@ -25,6 +25,7 @@ function fakeRuntime(petId: string): MountedPetRuntime {
   const runtime: PetRendererRuntime = {
     host: host as PetRendererRuntime["host"],
     getSurface: () => ({ dataset: { petId } }) as unknown as HTMLCanvasElement,
+    getHitSurface: () => ({ dataset: { petId: `${petId}-hit` } }) as unknown as HTMLCanvasElement,
     kind: () => "static-png",
     recoverToPreview: async () => undefined,
   };
