@@ -1,73 +1,44 @@
-import { invoke } from "@tauri-apps/api/core";
-import type { CreationResume } from "../pets/pet-catalog-contract";
+import type { CreationSnapshot } from "./contracts";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
-import { requestPetSwitch } from "../settings/pet-switch-client";
 
-export type CreationStep = "upload" | "generating" | "review" | "confirm" | "complete";
+export type CreationStep = "upload" | "generating" | "review" | "finalizing" | "complete";
 
-export interface CreationStore {
-  genStart(petId: string, prompt: string, refPngB64: string): Promise<string>;
-  resume(petId: string): Promise<CreationResume>;
-  compile(petId: string, variantId: string): Promise<{ manifestPath: string; degraded: boolean }>;
-  switchPet(petId: string, acceptedVariantId: string): Promise<PetSwitchResult>;
-}
-
-class TauriStore implements CreationStore {
-  async genStart(petId: string, prompt: string, refPngB64: string): Promise<string> {
-    return invoke("gen_start", {
-      petId,
-      prompt,
-      refPngB64,
-      refSha256: "sha-placeholder",
-    });
-  }
-
-  async resume(petId: string): Promise<CreationResume> {
-    return invoke("pet_creation_resume", { petId });
-  }
-
-  async compile(petId: string, variantId: string): Promise<{ manifestPath: string; degraded: boolean }> {
-    const cutoutPath = await invoke<string>("gen_cutout_path", { jobId: variantId });
-    return invoke("asset_compile", { petId, variantId, cutoutPath });
-  }
-
-  switchPet(petId: string, acceptedVariantId: string): Promise<PetSwitchResult> {
-    return requestPetSwitch(petId, { acceptedVariantId });
-  }
+export interface UploadCreationStore {
+  start(): Promise<CreationSnapshot>;
+  submit(sessionId: string, prompt: string, refPngB64: string): Promise<string>;
+  snapshot(sessionId: string): Promise<CreationSnapshot>;
+  setName(sessionId: string, name: string): Promise<CreationSnapshot>;
+  finalize(sessionId: string): Promise<PetSwitchResult>;
+  abandon(sessionId: string): Promise<void>;
 }
 
 export class CreationFlow {
   step: CreationStep = "upload";
   activationWarning: string | null = null;
-  private species: "cat" | "dog" = "cat";
-  private currentPetId: string | null = null;
+  private currentSnapshot: CreationSnapshot | null = null;
   private photoBytes: Uint8Array | null = null;
   private currentJobId: string | null = null;
-  private currentVariantId: string | null = null;
-  private readonly store: CreationStore;
 
-  constructor(store?: CreationStore) {
-    this.store = store ?? new TauriStore();
+  constructor(private readonly store: UploadCreationStore) {}
+
+  get sessionId(): string | null {
+    return this.currentSnapshot?.sessionId ?? null;
   }
 
   get petId(): string | null {
-    return this.currentPetId;
+    return this.currentSnapshot?.petId ?? null;
   }
 
   get jobId(): string | null {
     return this.currentJobId;
   }
 
-  get variantId(): string | null {
-    return this.currentVariantId;
+  get displayName(): string | null {
+    return this.currentSnapshot?.displayName ?? null;
   }
 
-  setPetId(petId: string): void {
-    this.currentPetId = petId;
-  }
-
-  setSpecies(species: "cat" | "dog"): void {
-    this.species = species;
+  get snapshot(): CreationSnapshot | null {
+    return this.currentSnapshot;
   }
 
   setPhotoBytes(bytes: Uint8Array): void {
@@ -78,84 +49,104 @@ export class CreationFlow {
     this.photoBytes = null;
   }
 
-  restore(snapshot: CreationResume): void {
-    this.currentPetId = snapshot.petId;
-    this.currentJobId = snapshot.jobId;
-    this.currentVariantId = snapshot.variantId;
-    switch (snapshot.status) {
-      case "generating":
-        this.step = "generating";
-        break;
-      case "generationFailed":
-        this.step = "upload";
-        break;
-      case "awaitingConfirm":
-      case "compileRetryable":
-        this.step = "review";
-        break;
-      case "awaitingActivation":
-        this.step = "confirm";
-        break;
-      case "ready":
-        this.step = "complete";
-        break;
-      case "corrupt":
-        throw new Error("corrupt pet is not resumable");
-    }
-  }
-
-  async submitSingle(): Promise<void> {
-    if (!this.photoBytes) throw new Error("photo required");
-    if (!this.currentPetId) throw new Error("pet id required");
-    this.currentJobId = await this.store.genStart(
-      this.currentPetId,
-      buildPrompt(this.species),
-      bytesToBase64(this.photoBytes),
-    );
-    this.currentVariantId = this.currentJobId;
-    this.step = "generating";
-  }
-
-  async poll(): Promise<CreationResume> {
-    if (!this.currentPetId) throw new Error("pet id required");
-    const snapshot = await this.store.resume(this.currentPetId);
+  async start(): Promise<CreationSnapshot> {
+    const snapshot = await this.store.start();
     this.restore(snapshot);
     return snapshot;
   }
 
-  async compileCandidate(): Promise<{ manifestPath: string; degraded: boolean }> {
-    if (!this.currentPetId || !this.currentVariantId) throw new Error("candidate required");
-    try {
-      const result = await this.store.compile(this.currentPetId, this.currentVariantId);
-      this.step = "confirm";
-      return result;
-    } catch (error) {
-      this.step = "review";
-      throw error;
+  restore(snapshot: CreationSnapshot): void {
+    if (snapshot.method !== "upload") {
+      throw new Error("当前草稿不是上传创建，请先返回对应创建入口处理");
     }
+    if (snapshot.status === "abandoned") throw new Error("上传创建已放弃");
+    this.currentSnapshot = snapshot;
+    this.currentJobId = snapshot.jobId ?? snapshot.candidateId;
+    this.step = stepFromSnapshot(snapshot);
   }
 
-  async activateCandidate(): Promise<string | undefined> {
-    if (!this.currentPetId || !this.currentVariantId) throw new Error("candidate required");
-    const result = await this.store.switchPet(this.currentPetId, this.currentVariantId);
-    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+  async submitSingle(): Promise<string> {
+    if (!this.photoBytes) throw new Error("photo required");
+    const sessionId = this.sessionId;
+    if (!sessionId) throw new Error("session id required");
+    const jobId = await this.store.submit(
+      sessionId,
+      buildPrompt(),
+      bytesToBase64(this.photoBytes),
+    );
+    this.currentJobId = jobId;
+    this.step = "generating";
+    return jobId;
+  }
+
+  async poll(): Promise<CreationSnapshot> {
+    const sessionId = this.sessionId;
+    if (!sessionId) throw new Error("session id required");
+    const snapshot = await this.store.snapshot(sessionId);
+    this.restore(snapshot);
+    return snapshot;
+  }
+
+  async finish(displayName: string): Promise<PetSwitchResult> {
+    const sessionId = this.sessionId;
+    if (!sessionId) throw new Error("session id required");
+    if (!displayName.trim()) throw new Error("请输入宠物名称");
+    const saved = await this.store.setName(sessionId, displayName);
+    this.restore(saved);
+    this.step = "finalizing";
+    let result: PetSwitchResult;
+    try {
+      result = await this.store.finalize(sessionId);
+    } catch (error) {
+      this.restore(saved);
+      throw error;
+    }
+    if (!result.ok) {
+      this.restore(saved);
+      return result;
+    }
     this.activationWarning = result.warning ?? null;
     this.step = "complete";
-    return result.warning;
+    return result;
+  }
+
+  async abandon(): Promise<void> {
+    const sessionId = this.sessionId;
+    if (!sessionId) return;
+    await this.store.abandon(sessionId);
   }
 }
 
-export function buildPrompt(species: string): string {
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
+  return Array.from(
+    new Uint8Array(digest),
+    (value) => value.toString(16).padStart(2, "0"),
+  ).join("");
+}
+
+export function buildPrompt(): string {
   return (
-    `Create a cute chibi cartoon style with a round face, unified soft outlines, ` +
-    `big expressive eyes, short rounded body, sitting upright. Subject: a ${species}. ` +
-    `Front view, facing the viewer directly, full body visible, ` +
-    `plain uniform light grey background, no text, no watermark. ` +
-    `High fidelity to the reference: keep the exact fur colors, markings, ear shape, ` +
-    `eye color and face proportions so the owner can recognise the pet. ` +
-    `Faithful face details: keep eye shape, eye colour and highlights, nose, whiskers, ` +
-    `mouth and face markings; calm natural expression.`
+    "Create a cute chibi cartoon style with a round face, unified soft outlines, "
+    + "big expressive eyes, short rounded body, sitting upright. Subject: a cat. "
+    + "Front view, facing the viewer directly, full body visible, "
+    + "plain uniform light grey background, no text, no watermark. "
+    + "High fidelity to the reference: keep the exact fur colors, markings, ear shape, "
+    + "eye color and face proportions so the owner can recognise the pet. "
+    + "Faithful face details: keep eye shape, eye colour and highlights, nose, whiskers, "
+    + "mouth and face markings; calm natural expression."
   );
+}
+
+function stepFromSnapshot(snapshot: CreationSnapshot): CreationStep {
+  if (snapshot.status === "completed") return "complete";
+  if (snapshot.status === "finalizing") return "finalizing";
+  if (
+    snapshot.status === "candidateReady"
+    || snapshot.lastStableStatus === "candidateReady"
+    || snapshot.currentStep === "review"
+  ) return "review";
+  return snapshot.currentStep === "generating" ? "generating" : "upload";
 }
 
 function bytesToBase64(bytes: Uint8Array): string {

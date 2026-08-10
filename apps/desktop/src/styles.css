@@ -114,6 +114,8 @@ body.settings-shell {
 .settings-shell *::before,
 .settings-shell *::after { box-sizing: border-box; }
 
+.settings-shell [hidden] { display: none !important; }
+
 .settings-shell h1,
 .settings-shell h2 {
   margin: 0;
@@ -130,6 +132,7 @@ body.settings-shell {
 }
 
 .settings-shell h2 { font-size: 22px; }
+.settings-shell h3 { margin: 0 0 7px; font: 700 17px/1.35 Georgia, "Times New Roman", serif; }
 
 .settings-shell .tabs {
   display: flex;
@@ -248,28 +251,62 @@ body.settings-shell {
   background: var(--paper);
 }
 
-.settings-shell .wizard-step { margin: 18px 0; }
+.settings-shell .wizard-kicker {
+  margin: 0 0 5px;
+  color: var(--pine);
+  font: 700 11px/1.3 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: .08em;
+  text-transform: uppercase;
+}
+.settings-shell .wizard-intro { max-width: 610px; margin: 8px 0 0; color: var(--muted); font-size: 14px; line-height: 1.65; }
+.settings-shell .wizard-step { margin: 20px 0; }
 .settings-shell .wizard-status { min-height: 20px; margin: 10px 0; }
 .settings-shell .wizard-actions { display: flex; flex-wrap: wrap; gap: 8px; margin-top: 18px; }
+.settings-shell .key-row { display: grid; grid-template-columns: minmax(0, 1fr) auto; align-items: end; gap: 7px 10px; padding-block: 17px; border-block: 1px solid #d7e1df; }
+.settings-shell .key-row #key-status { grid-column: 1 / -1; min-height: 18px; }
+.settings-shell .field-group { display: grid; gap: 6px; max-width: 520px; }
+.settings-shell .field-group label { font-size: 13px; font-weight: 700; }
+.settings-shell input[type="password"],
+.settings-shell input[type="text"] {
+  width: 100%;
+  min-height: 40px;
+  padding: 8px 10px;
+  border: 1px solid #b8c6c5;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: 14px/1.4 "Microsoft YaHei UI", system-ui, sans-serif;
+}
+.settings-shell .field-help,
+.settings-shell .field-error { min-height: 18px; margin: 0; color: var(--muted); font-size: 12px; line-height: 1.5; }
+.settings-shell .field-error { color: #9b3f24; }
+.settings-shell .name-field { margin-top: 16px; }
 .settings-shell .privacy-note { margin: 12px 0; padding: 10px; border: 1px solid #e4c7a8; border-radius: 8px; background: #fff4e5; color: #875011; font-size: 12px; line-height: 1.55; }
 .settings-shell .job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
 .settings-shell .job-card { padding: 10px; border: 1px solid #d1dedd; border-radius: 8px; background: #f6faf9; font-size: 13px; }
 .settings-shell .job-card.success { border-color: #73ae87; background: #edf8ef; }
 .settings-shell .job-card.failed { border-color: #d8a38e; background: #fff0eb; }
-.settings-shell .candidate-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
+.settings-shell .candidate-grid { display: grid; width: min(100%, 430px); gap: 12px; }
 .settings-shell .candidate { padding: 8px; border: 2px solid #d1dedd; border-radius: 10px; background: var(--paper); cursor: pointer; }
 .settings-shell .candidate.selected { border-color: var(--pine); }
 .settings-shell .candidate-preview { width: 100%; min-height: 280px; overflow: hidden; border-radius: 6px; background: linear-gradient(45deg,#e6eded 25%,#fff 25%,#fff 50%,#e6eded 50%,#e6eded 75%,#fff 75%); background-size: 16px 16px; }
 .settings-shell .candidate-preview canvas { display: block; width: 100%; min-height: 280px; }
 .settings-shell .candidate-id { margin: 7px 2px 1px; color: var(--muted); font: 700 10px/1.3 "Cascadia Mono", Consolas, monospace; }
-.settings-shell input[type="file"] { margin: 8px 0; }
-.settings-shell #photo-preview { display: none; max-width: 240px; border-radius: 8px; }
+.settings-shell input[type="file"] { max-width: 100%; margin: 2px 0; }
+.settings-shell #photo-preview { display: block; max-width: min(100%, 280px); margin-top: 12px; border: 1px solid #d1dedd; border-radius: 8px; }
 
 @media (max-width: 520px) {
   body.settings-shell { padding: 18px 14px 30px; }
   .settings-shell .pet-item { align-items: flex-start; flex-direction: column; gap: 13px; }
   .settings-shell .actions { width: 100%; justify-content: stretch; }
   .settings-shell .actions button { flex: 1; }
+  .settings-shell .wizard { padding: 18px 15px; }
+  .settings-shell .key-row { grid-template-columns: 1fr; align-items: stretch; }
+  .settings-shell .key-row #key-status { grid-column: 1; }
+  .settings-shell .wizard-actions { align-items: stretch; flex-direction: column; }
+  .settings-shell .wizard-actions button { width: 100%; }
+  .settings-shell .candidate-preview,
+  .settings-shell .candidate-preview canvas { min-height: 240px; }
 }
 
 @media (prefers-reduced-motion: reduce) {

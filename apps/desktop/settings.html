@@ -8,9 +8,9 @@
   </head>
   <body class="settings-shell">
     <h1>桌面宠物设置</h1>
-    <div class="tabs">
-      <button id="tab-list" class="tab active">我的宠物</button>
-      <button id="tab-create" class="tab">创建宠物</button>
+    <div class="tabs" role="tablist" aria-label="设置页面">
+      <button id="tab-list" class="tab active" role="tab" aria-selected="true">我的宠物</button>
+      <button id="tab-create" class="tab" role="tab" aria-selected="false">创建宠物</button>
     </div>
 
     <div id="view-list">
@@ -18,56 +18,62 @@
       <div id="status" role="status" aria-live="polite"></div>
     </div>
 
-    <div id="view-create" style="display:none">
+    <div id="view-create" hidden>
       <div class="wizard">
-        <h2 id="wizard-title">创建新宠物</h2>
+        <p class="wizard-kicker">上传创建 · 猫咪</p>
+        <h2 id="wizard-title">把一张照片变成桌面伙伴</h2>
+        <p class="wizard-intro">选择照片，等待生成，再确认会呼吸微动的候选。完成前不会替换当前宠物。</p>
         <div id="wizard-status" class="wizard-status" role="status" aria-live="polite"></div>
-        <div class="wizard-step">
-          <label>生成 API Key（lk888.ai）：<input type="password" id="api-key" placeholder="sk-..." style="width:280px" /></label>
-          <button id="save-key">保存 Key</button>
-          <div id="key-status" style="font-size:12px;color:#666"></div>
+        <div class="wizard-step key-row">
+          <div class="field-group">
+            <label for="api-key">生成 API Key（lk888.ai）</label>
+            <input type="password" id="api-key" placeholder="sk-..." autocomplete="off" aria-describedby="key-help key-status" />
+            <p id="key-help" class="field-help">Key 只保存在本机，用于本次及后续生成。</p>
+          </div>
+          <button id="save-key" type="button">保存 Key</button>
+          <div id="key-status" role="status" aria-live="polite"></div>
         </div>
         <div class="wizard-step" id="wizard-step">
           <div id="step-upload">
-            <label>种类：
-              <select id="w-species">
-                <option value="cat">猫</option>
-                <option value="dog">狗</option>
-              </select>
-            </label>
-            <div><input type="file" id="photo-input" accept="image/*" /></div>
-            <img id="photo-preview" alt="预览" />
+            <div class="field-group">
+              <label for="photo-input">猫咪照片</label>
+              <input type="file" id="photo-input" accept="image/*" />
+              <p class="field-help">正面、全身清晰、背景简单的照片效果更稳定。</p>
+            </div>
+            <img id="photo-preview" alt="已选择的猫咪照片预览" hidden />
             <div class="privacy-note">
               隐私提示：照片将上传到第三方生成平台（gpt-image-2）用于生成卡通形象，
-              平台侧生成结果默认保留；本地仅保存你的宠物资产。取消可随时进行。
+              平台侧生成结果默认保留；本地仅保存你的宠物资产。你可以随时返回或放弃创建。
             </div>
           </div>
-          <div id="step-generating" style="display:none">
-            <p>正在生成候选（约 1-2 分钟）…</p>
+          <div id="step-generating" hidden>
+            <h3>正在生成候选</h3>
+            <p>通常需要 1–2 分钟。可以返回宠物列表，稍后会从本地创建记录继续。</p>
             <div class="job-grid" id="job-grid"></div>
           </div>
-          <div id="step-review" style="display:none">
-            <p>生成完成，看看效果：</p>
+          <div id="step-review" hidden>
+            <h3>看看它在桌面上的样子</h3>
+            <p>棋盘格舞台会播放真实的呼吸与整体微动预览。</p>
             <div class="candidate-grid" id="candidate-grid"></div>
-            <div class="wizard-actions" id="review-actions" style="display:none">
-              <button id="review-accept" class="primary">满意，出现在桌面</button>
-              <button id="review-retry">不满意，重新生成</button>
-              <button id="review-abandon">放弃</button>
+            <div class="field-group name-field">
+              <label for="pet-name">给它取个名字</label>
+              <input id="pet-name" type="text" maxlength="40" autocomplete="off" aria-describedby="pet-name-error" />
+              <p id="pet-name-error" class="field-error" role="alert"></p>
+            </div>
+            <div class="wizard-actions" id="review-actions">
+              <button id="review-accept" class="primary" type="button" disabled>满意，出现在桌面</button>
+              <button id="review-retry" type="button">不满意，重新生成</button>
+              <button id="review-abandon" class="danger" type="button">放弃创建</button>
             </div>
           </div>
-          <div id="step-confirm" style="display:none">
-            <p>资产已准备，正在设为当前桌面宠物。</p>
-            <div class="wizard-actions">
-              <button id="confirm-retry" class="primary">重试设为当前宠物</button>
-            </div>
-          </div>
-          <div id="step-complete" style="display:none">
-            <p>宠物已出现在桌面。</p>
+          <div id="step-complete" hidden>
+            <h3>已经到桌面啦</h3>
+            <p>这只会呼吸微动的猫咪现在是当前桌面宠物。</p>
           </div>
         </div>
         <div class="wizard-actions">
-          <button id="wizard-next" class="primary">下一步</button>
-          <button id="wizard-cancel" style="display:none">取消</button>
+          <button id="wizard-next" class="primary" type="button">上传照片，生成候选</button>
+          <button id="wizard-cancel" type="button" hidden>返回我的宠物</button>
         </div>
       </div>
     </div>

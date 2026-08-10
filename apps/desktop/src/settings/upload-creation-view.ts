@@ -1,0 +1,635 @@
+import type { UploadJobRecord } from "../creation/api";
+import type { CreationMethod, CreationSnapshot } from "../creation/contracts";
+import { buildPrompt, sha256Hex } from "../creation/creation-flow";
+import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
+import { parseMotionProfile, type MotionProfileV1 } from "../runtime/animated-image-manifest";
+import type { CandidatePreviewController } from "./candidate-dynamic-preview";
+import { CreationPageRun } from "./creation-page-run";
+
+export interface UploadCreationPorts {
+  creation: {
+    start(method: "upload" | "composer"): Promise<CreationSnapshot>;
+    draft(): Promise<CreationSnapshot | null>;
+    snapshot(sessionId: string): Promise<CreationSnapshot>;
+    setName(sessionId: string, displayName: string): Promise<CreationSnapshot>;
+    abandon(sessionId: string): Promise<void>;
+    uploadStart(
+      sessionId: string,
+      prompt: string,
+      refPngB64: string,
+      refSha256: string,
+    ): Promise<string>;
+    uploadJobs(sessionId: string): Promise<UploadJobRecord[]>;
+  };
+  finalize(sessionId: string): Promise<PetSwitchResult>;
+}
+
+export type UploadCreationStep = "upload" | "generating" | "review" | "finalizing" | "complete";
+
+export interface UploadCreationViewSnapshot {
+  sessionId: string | null;
+  method: CreationMethod | null;
+  step: UploadCreationStep;
+  creation: CreationSnapshot | null;
+}
+
+export interface UploadCreationElements {
+  apiKeyInput: HTMLInputElement;
+  saveKeyButton: HTMLButtonElement;
+  keyStatus: HTMLElement;
+  photoInput: HTMLInputElement;
+  photoPreview: HTMLImageElement;
+  status: HTMLElement;
+  stepUpload: HTMLElement;
+  stepGenerating: HTMLElement;
+  stepReview: HTMLElement;
+  stepComplete: HTMLElement;
+  jobGrid: HTMLElement;
+  candidateGrid: HTMLElement;
+  nameInput: HTMLInputElement;
+  nameError: HTMLElement;
+  nextButton: HTMLButtonElement;
+  cancelButton: HTMLButtonElement;
+  retryButton: HTMLButtonElement;
+  abandonButton: HTMLButtonElement;
+  finishButton: HTMLButtonElement;
+}
+
+export function queryUploadCreationElements(root: Document): UploadCreationElements {
+  const get = <T extends HTMLElement>(id: string): T => {
+    const element = root.getElementById(id);
+    if (!element) throw new Error(`missing element #${id}`);
+    return element as T;
+  };
+  return {
+    apiKeyInput: get<HTMLInputElement>("api-key"),
+    saveKeyButton: get<HTMLButtonElement>("save-key"),
+    keyStatus: get<HTMLElement>("key-status"),
+    photoInput: get<HTMLInputElement>("photo-input"),
+    photoPreview: get<HTMLImageElement>("photo-preview"),
+    status: get<HTMLElement>("wizard-status"),
+    stepUpload: get<HTMLElement>("step-upload"),
+    stepGenerating: get<HTMLElement>("step-generating"),
+    stepReview: get<HTMLElement>("step-review"),
+    stepComplete: get<HTMLElement>("step-complete"),
+    jobGrid: get<HTMLElement>("job-grid"),
+    candidateGrid: get<HTMLElement>("candidate-grid"),
+    nameInput: get<HTMLInputElement>("pet-name"),
+    nameError: get<HTMLElement>("pet-name-error"),
+    nextButton: get<HTMLButtonElement>("wizard-next"),
+    cancelButton: get<HTMLButtonElement>("wizard-cancel"),
+    retryButton: get<HTMLButtonElement>("review-retry"),
+    abandonButton: get<HTMLButtonElement>("review-abandon"),
+    finishButton: get<HTMLButtonElement>("review-accept"),
+  };
+}
+
+export interface CandidateDynamicAssets {
+  schemaVersion: number;
+  bodyUrl: string | null;
+  motionProfile: unknown;
+}
+
+export interface UploadCreationDomPorts {
+  elements: UploadCreationElements;
+  createElement(tagName: string): HTMLElement;
+  loadApiKey(): Promise<string | null>;
+  saveApiKey(value: string): Promise<void>;
+  loadCandidate(jobId: string): Promise<CandidateDynamicAssets>;
+  preview: Pick<CandidatePreviewController, "show" | "clear">;
+  setInterval(callback: () => void, delayMs: number): number;
+  clearInterval(id: number): void;
+  createObjectURL(file: Blob): string;
+  revokeObjectURL(url: string): void;
+  confirm(message: string): boolean;
+  onCancel(): void;
+  onAbandoned(): void;
+}
+
+export class UploadCreationView {
+  private state: UploadCreationViewSnapshot = {
+    sessionId: null,
+    method: null,
+    step: "upload",
+    creation: null,
+  };
+  private finalizing: Promise<PetSwitchResult> | null = null;
+  private abandoning: Promise<void> | null = null;
+  private readonly run = new CreationPageRun();
+  private visit = 0;
+  private mounted = false;
+  private dynamicReady = false;
+  private pollTimer: number | null = null;
+  private photoBytes: Uint8Array | null = null;
+  private photoObjectUrl: string | null = null;
+  private readonly onNameInput = () => this.render();
+  private readonly onFinishClick = (event: Event) => {
+    event.preventDefault();
+    void this.finishFromDom();
+  };
+  private readonly onPhotoChange = () => { void this.readSelectedPhoto(); };
+  private readonly onNextClick = (event: Event) => {
+    event.preventDefault();
+    void this.submitFromDom();
+  };
+  private readonly onSaveKeyClick = (event: Event) => {
+    event.preventDefault();
+    void this.saveKeyFromDom();
+  };
+  private readonly onCancelClick = (event: Event) => {
+    event.preventDefault();
+    this.dom?.onCancel();
+  };
+  private readonly onRetryClick = (event: Event) => {
+    event.preventDefault();
+    void this.retryFromDom();
+  };
+  private readonly onAbandonClick = (event: Event) => {
+    event.preventDefault();
+    void this.abandonFromDom();
+  };
+
+  constructor(
+    private readonly ports: UploadCreationPorts,
+    private readonly dom?: UploadCreationDomPorts,
+  ) {}
+
+  snapshot(): UploadCreationViewSnapshot {
+    return this.state;
+  }
+
+  mount(): void {
+    if (!this.dom || this.mounted) return;
+    this.mounted = true;
+    this.dom.elements.nameInput.addEventListener("input", this.onNameInput);
+    this.dom.elements.finishButton.addEventListener("click", this.onFinishClick);
+    this.dom.elements.photoInput.addEventListener("change", this.onPhotoChange);
+    this.dom.elements.nextButton.addEventListener("click", this.onNextClick);
+    this.dom.elements.saveKeyButton.addEventListener("click", this.onSaveKeyClick);
+    this.dom.elements.cancelButton.addEventListener("click", this.onCancelClick);
+    this.dom.elements.retryButton.addEventListener("click", this.onRetryClick);
+    this.dom.elements.abandonButton.addEventListener("click", this.onAbandonClick);
+    this.render();
+  }
+
+  destroy(): void {
+    if (!this.dom || !this.mounted) return;
+    this.leave();
+    this.dom.elements.nameInput.removeEventListener("input", this.onNameInput);
+    this.dom.elements.finishButton.removeEventListener("click", this.onFinishClick);
+    this.dom.elements.photoInput.removeEventListener("change", this.onPhotoChange);
+    this.dom.elements.nextButton.removeEventListener("click", this.onNextClick);
+    this.dom.elements.saveKeyButton.removeEventListener("click", this.onSaveKeyClick);
+    this.dom.elements.cancelButton.removeEventListener("click", this.onCancelClick);
+    this.dom.elements.retryButton.removeEventListener("click", this.onRetryClick);
+    this.dom.elements.abandonButton.removeEventListener("click", this.onAbandonClick);
+    this.mounted = false;
+  }
+
+  async enter(): Promise<void> {
+    if (!this.dom) throw new Error("上传创建页面未装配 DOM");
+    this.leave();
+    this.visit = this.run.enter("upload");
+    const visit = this.visit;
+    this.dynamicReady = false;
+    this.dom.preview.clear();
+    const key = await this.dom.loadApiKey().catch(() => null);
+    if (!this.run.isCurrent(visit)) return;
+    if (key) this.dom.elements.apiKeyInput.value = key;
+    try {
+      await this.open();
+    } catch (error) {
+      if (this.run.isCurrent(visit)) {
+        this.setStatus(`${errorMessage(error)}。请返回对应入口继续，或先放弃现有草稿。`, true);
+        this.render();
+      }
+      return;
+    }
+    if (!this.run.isCurrent(visit)) return;
+    this.dom.elements.nameInput.value = this.state.creation?.displayName ?? "";
+    this.dom.elements.nameError.textContent = "";
+    this.render();
+    if (this.state.step === "upload" && this.state.creation?.error) {
+      this.setStatus(`上次生成失败：${this.state.creation.error}。请重新选择照片后重试。`, true);
+    }
+    if (this.state.step === "review") await this.showCandidate(visit);
+    if (this.state.step === "generating") this.startPolling(visit);
+  }
+
+  leave(): void {
+    this.stopPolling();
+    this.run.leave();
+    this.visit = 0;
+    this.dynamicReady = false;
+    this.dom?.preview.clear();
+    if (this.dom) {
+      this.dom.elements.candidateGrid.replaceChildren();
+      this.dom.elements.finishButton.disabled = true;
+    }
+    this.clearPhoto();
+  }
+
+  async start(): Promise<CreationSnapshot> {
+    const snapshot = await this.ports.creation.start("upload");
+    this.applySnapshot(snapshot);
+    return snapshot;
+  }
+
+  async open(): Promise<CreationSnapshot> {
+    const draft = await this.ports.creation.draft();
+    if (!draft) return this.start();
+    if (draft.method !== "upload") {
+      throw new Error("已有其他创建方式的草稿，请从对应入口继续或放弃后再上传");
+    }
+    return this.restore(draft.sessionId);
+  }
+
+  async restore(sessionId: string): Promise<CreationSnapshot> {
+    const snapshot = await this.ports.creation.snapshot(sessionId);
+    this.applySnapshot(snapshot);
+    return snapshot;
+  }
+
+  async submit(bytes: Uint8Array): Promise<string> {
+    const sessionId = this.state.sessionId;
+    if (!sessionId) throw new Error("请先开始上传创建");
+    const jobId = await this.ports.creation.uploadStart(
+      sessionId,
+      buildPrompt(),
+      bytesToBase64(bytes),
+      await sha256Hex(bytes),
+    );
+    const creation = this.state.creation
+      ? { ...this.state.creation, currentStep: "generating", jobId, jobStatus: "pending" }
+      : null;
+    this.state = { ...this.state, step: "generating", creation };
+    return jobId;
+  }
+
+  async finish(displayName: string): Promise<PetSwitchResult> {
+    if (!displayName.trim()) throw new Error("请输入宠物名称");
+    if (this.finalizing) return this.finalizing;
+    const sessionId = this.state.sessionId;
+    if (!sessionId) throw new Error("请先开始上传创建");
+    const finishing = (async () => {
+      const saved = await this.ports.creation.setName(sessionId, displayName);
+      this.applySnapshot(saved);
+      this.state = { ...this.state, step: "finalizing" };
+      try {
+        const result = await this.ports.finalize(sessionId);
+        this.state = {
+          ...this.state,
+          step: result.ok ? "complete" : "review",
+        };
+        return result;
+      } catch (error) {
+        this.state = { ...this.state, step: "review" };
+        throw error;
+      }
+    })();
+    this.finalizing = finishing;
+    try {
+      return await finishing;
+    } finally {
+      if (this.finalizing === finishing) this.finalizing = null;
+    }
+  }
+
+  async abandon(): Promise<void> {
+    if (this.abandoning) return this.abandoning;
+    const sessionId = this.state.sessionId;
+    if (!sessionId) return;
+    const abandoning = (async () => {
+      await this.ports.creation.abandon(sessionId);
+      if (this.state.sessionId === sessionId) {
+        this.state = {
+          sessionId: null,
+          method: null,
+          step: "upload",
+          creation: null,
+        };
+      }
+    })();
+    this.abandoning = abandoning;
+    try {
+      await abandoning;
+    } finally {
+      if (this.abandoning === abandoning) this.abandoning = null;
+    }
+  }
+
+  private applySnapshot(snapshot: CreationSnapshot): void {
+    this.state = {
+      sessionId: snapshot.sessionId,
+      method: snapshot.method,
+      step: stepFromSnapshot(snapshot),
+      creation: snapshot,
+    };
+  }
+
+  private async showCandidate(visit: number): Promise<void> {
+    if (!this.dom || !this.run.isCurrent(visit)) return;
+    const sessionId = this.state.sessionId;
+    const jobId = this.state.creation?.candidateId ?? this.state.creation?.jobId;
+    if (!sessionId || !jobId) {
+      this.setStatus("候选记录不完整，请重新选择照片生成。", true);
+      this.render();
+      return;
+    }
+    const token = this.run.begin(visit, "preview", sessionId);
+    if (!token) return;
+    try {
+      const assets = await this.dom.loadCandidate(jobId);
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      if (assets.schemaVersion !== 3 || !assets.bodyUrl) {
+        throw new Error("候选缺少 v3 动态图片配置");
+      }
+      const profile: MotionProfileV1 = parseMotionProfile(assets.motionProfile);
+      const root = this.dom.createElement("div");
+      root.className = "candidate-preview";
+      root.setAttribute("role", "img");
+      root.setAttribute("aria-label", "会呼吸微动的宠物候选");
+      this.dom.elements.candidateGrid.replaceChildren(root);
+      await this.dom.preview.show(root, assets.bodyUrl, profile);
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      this.dynamicReady = true;
+      this.setStatus("动态候选已准备好，请为它取名。", false);
+      this.render();
+    } catch (error) {
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      this.dynamicReady = false;
+      this.dom.preview.clear();
+      this.dom.elements.candidateGrid.replaceChildren();
+      this.setStatus(`动态预览不可用：${errorMessage(error)}。请选择“重新生成”再试。`, true);
+      this.render();
+    } finally {
+      this.run.settle(token);
+    }
+  }
+
+  private startPolling(visit: number): void {
+    if (!this.dom || !this.run.isCurrent(visit)) return;
+    this.stopPolling();
+    this.pollTimer = this.dom.setInterval(() => {
+      void this.pollOnce(visit);
+    }, 4_000);
+  }
+
+  private stopPolling(): void {
+    if (!this.dom || this.pollTimer === null) return;
+    this.dom.clearInterval(this.pollTimer);
+    this.pollTimer = null;
+  }
+
+  private async pollOnce(visit: number): Promise<void> {
+    if (!this.dom || !this.run.isCurrent(visit)) return;
+    const sessionId = this.state.sessionId;
+    if (!sessionId) return;
+    const token = this.run.begin(visit, "poll", sessionId);
+    if (!token) return;
+    try {
+      const snapshot = await this.ports.creation.snapshot(sessionId);
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      this.applySnapshot(snapshot);
+      this.render();
+      if (this.state.step === "review") {
+        this.stopPolling();
+        await this.showCandidate(visit);
+      } else if (this.state.step === "upload" && snapshot.error) {
+        this.stopPolling();
+        this.setStatus(`生成失败：${snapshot.error}。请重新选择照片后重试。`, true);
+      }
+    } catch (error) {
+      if (this.run.shouldApply(token, this.state.sessionId)) {
+        this.setStatus(`查询生成进度失败：${errorMessage(error)}。创建记录已保留，将自动重试。`, true);
+      }
+    } finally {
+      this.run.settle(token);
+    }
+  }
+
+  private async finishFromDom(): Promise<void> {
+    if (!this.dom) return;
+    if (this.state.step !== "review" || !this.dynamicReady) return;
+    const sessionId = this.state.sessionId;
+    const visit = this.visit;
+    if (!sessionId) return;
+    const token = this.run.begin(visit, "finalize", sessionId);
+    if (!token) return;
+    this.dom.elements.finishButton.disabled = true;
+    this.dom.elements.nameError.textContent = "";
+    try {
+      const result = await this.finish(this.dom.elements.nameInput.value);
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      if (result.ok) {
+        this.dom.preview.clear();
+        this.dynamicReady = false;
+        this.setStatus(result.warning ?? "宠物已出现在桌面。", false);
+      } else {
+        this.setStatus(`未能放到桌面：${result.message}。动态候选仍保留，请重试。`, true);
+      }
+      this.render();
+    } catch (error) {
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      const message = errorMessage(error);
+      if (message.includes("名称")) this.dom.elements.nameError.textContent = message;
+      this.setStatus(`${message}。请检查名称或桌面宠物窗口后重试。`, true);
+      this.render();
+    } finally {
+      this.run.settle(token);
+      if (this.run.shouldApply(token, this.state.sessionId)) this.render();
+    }
+  }
+
+  private async readSelectedPhoto(): Promise<void> {
+    if (!this.dom) return;
+    const file = this.dom.elements.photoInput.files?.[0];
+    if (!file) return;
+    const bytes = new Uint8Array(await file.arrayBuffer());
+    this.photoBytes = bytes;
+    if (this.photoObjectUrl) this.dom.revokeObjectURL(this.photoObjectUrl);
+    this.photoObjectUrl = this.dom.createObjectURL(file);
+    this.dom.elements.photoPreview.src = this.photoObjectUrl;
+    this.dom.elements.photoPreview.hidden = false;
+    this.setStatus("照片已选择，可以开始生成。", false);
+  }
+
+  private clearPhoto(): void {
+    this.photoBytes = null;
+    if (!this.dom) return;
+    if (this.photoObjectUrl) this.dom.revokeObjectURL(this.photoObjectUrl);
+    this.photoObjectUrl = null;
+    this.dom.elements.photoInput.value = "";
+    this.dom.elements.photoPreview.removeAttribute("src");
+    this.dom.elements.photoPreview.hidden = true;
+  }
+
+  private async saveKeyFromDom(): Promise<void> {
+    if (!this.dom) return;
+    const key = this.dom.elements.apiKeyInput.value.trim();
+    if (!key) {
+      this.dom.elements.keyStatus.textContent = "请输入 API Key 后再保存。";
+      return;
+    }
+    try {
+      await this.dom.saveApiKey(key);
+      this.dom.elements.keyStatus.textContent = "API Key 已保存在本机。";
+    } catch (error) {
+      this.dom.elements.keyStatus.textContent = `保存失败：${errorMessage(error)}。请检查后重试。`;
+    }
+  }
+
+  private async submitFromDom(): Promise<void> {
+    if (!this.dom) return;
+    const sessionId = this.state.sessionId;
+    const visit = this.visit;
+    if (!sessionId) return;
+    if (!this.photoBytes) {
+      this.setStatus("请先选择一张清晰的猫咪照片。", true);
+      return;
+    }
+    const key = this.dom.elements.apiKeyInput.value.trim();
+    if (!key) {
+      this.setStatus("请先填写 API Key；它只保存在本机。", true);
+      return;
+    }
+    const token = this.run.begin(visit, "submit", sessionId);
+    if (!token) return;
+    this.dom.elements.nextButton.disabled = true;
+    try {
+      await this.dom.saveApiKey(key);
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      await this.submit(this.photoBytes);
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      this.setStatus("照片已安全提交，正在生成会呼吸微动的候选。", false);
+      this.render();
+      this.startPolling(visit);
+    } catch (error) {
+      if (this.run.shouldApply(token, this.state.sessionId)) {
+        this.setStatus(`提交生成失败：${errorMessage(error)}。照片和草稿仍在，可直接重试。`, true);
+      }
+    } finally {
+      this.run.settle(token);
+      if (this.run.shouldApply(token, this.state.sessionId)) {
+        this.dom.elements.nextButton.disabled = false;
+        this.render();
+      }
+    }
+  }
+
+  private async retryFromDom(): Promise<void> {
+    if (!this.dom) return;
+    const sessionId = this.state.sessionId;
+    const visit = this.visit;
+    if (!sessionId || !this.run.isCurrent(visit)) return;
+    const token = this.run.begin(visit, "retry", sessionId);
+    if (!token) return;
+    this.dom.elements.retryButton.disabled = true;
+    this.dom.elements.finishButton.disabled = true;
+    this.dom.elements.abandonButton.disabled = true;
+    try {
+      await this.abandon();
+      if (!this.run.isCurrent(visit)) return;
+      await this.start();
+      if (!this.run.isCurrent(visit)) return;
+      this.stopPolling();
+      this.dom.preview.clear();
+      this.dom.elements.candidateGrid.replaceChildren();
+      this.dom.elements.nameInput.value = "";
+      this.dom.elements.nameError.textContent = "";
+      this.dynamicReady = false;
+      this.clearPhoto();
+      this.setStatus("旧候选已清理。请重新选择一张清晰照片，再重新生成。", false);
+      this.render();
+    } catch (error) {
+      if (this.run.isCurrent(visit)) {
+        this.setStatus(`准备重新生成失败：${errorMessage(error)}。请返回后重新进入上传创建。`, true);
+      }
+    } finally {
+      this.run.settle(token);
+      if (this.run.isCurrent(visit)) {
+        this.dom.elements.retryButton.disabled = false;
+        this.dom.elements.abandonButton.disabled = false;
+        this.render();
+      }
+    }
+  }
+
+  private async abandonFromDom(): Promise<void> {
+    if (!this.dom) return;
+    const sessionId = this.state.sessionId;
+    const visit = this.visit;
+    if (!sessionId || !this.run.isCurrent(visit)) return;
+    if (!this.dom.confirm("确定放弃这次创建吗？本地草稿和生成任务会被清理。")) return;
+    const token = this.run.begin(visit, "abandon", sessionId);
+    if (!token) return;
+    this.dom.elements.abandonButton.disabled = true;
+    try {
+      await this.abandon();
+      if (!this.run.isCurrent(visit)) return;
+      this.dom.preview.clear();
+      this.dom.onAbandoned();
+    } catch (error) {
+      if (this.run.isCurrent(visit)) {
+        this.setStatus(`放弃创建失败：${errorMessage(error)}。草稿仍保留，可再次尝试。`, true);
+      }
+    } finally {
+      this.run.settle(token);
+      if (this.run.isCurrent(visit)) this.dom.elements.abandonButton.disabled = false;
+    }
+  }
+
+  private render(): void {
+    if (!this.dom) return;
+    const { elements } = this.dom;
+    elements.stepUpload.hidden = this.state.step !== "upload";
+    elements.stepGenerating.hidden = this.state.step !== "generating";
+    elements.stepReview.hidden = this.state.step !== "review" && this.state.step !== "finalizing";
+    elements.stepComplete.hidden = this.state.step !== "complete";
+    elements.nextButton.hidden = this.state.step !== "upload";
+    elements.cancelButton.hidden = this.state.step !== "generating";
+    elements.finishButton.disabled = this.state.step !== "review"
+      || !this.dynamicReady
+      || !elements.nameInput.value.trim();
+    if (this.state.step === "generating") {
+      const status = this.state.creation?.jobStatus ?? "pending";
+      const labels: Record<string, string> = {
+        pending: "正在排队…",
+        running: "生成中…",
+        success: "生成完成，正在准备动态预览…",
+        failed: "生成失败",
+      };
+      const card = this.dom.createElement("div");
+      card.className = `job-card ${status === "success" ? "success" : status === "failed" ? "failed" : ""}`;
+      card.textContent = labels[status] ?? `生成状态：${status}`;
+      elements.jobGrid.replaceChildren(card);
+    } else {
+      elements.jobGrid.replaceChildren();
+    }
+  }
+
+  private setStatus(message: string, error: boolean): void {
+    if (!this.dom) return;
+    this.dom.elements.status.textContent = message;
+    this.dom.elements.status.classList.toggle("error", error);
+  }
+}
+
+function bytesToBase64(bytes: Uint8Array): string {
+  let binary = "";
+  for (const byte of bytes) binary += String.fromCharCode(byte);
+  return btoa(binary);
+}
+
+function stepFromSnapshot(snapshot: CreationSnapshot): UploadCreationStep {
+  if (snapshot.status === "completed") return "complete";
+  if (snapshot.status === "finalizing") return "finalizing";
+  if (snapshot.status === "candidateReady" || snapshot.lastStableStatus === "candidateReady") {
+    return "review";
+  }
+  return snapshot.currentStep === "generating" ? "generating" : "upload";
+}
+
+function errorMessage(error: unknown): string {
+  return error instanceof Error ? error.message : String(error);
+}

@@ -1,157 +1,145 @@
 import { describe, expect, it } from "vitest";
-import { CreationFlow, type CreationStore } from "./creation-flow";
-import type { CreationResume } from "../pets/pet-catalog-contract";
+import type { CreationSnapshot } from "./contracts";
+import {
+  CreationFlow,
+  sha256Hex,
+  type UploadCreationStore,
+} from "./creation-flow";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 
-class FakeStore implements CreationStore {
-  started: Array<{ petId: string; prompt: string; refPngB64: string }> = [];
-  snapshot: CreationResume = {
-    petId: "pet-1", status: "generating", jobId: "job-1", variantId: "job-1", error: null,
+function creationSnapshot(overrides: Partial<CreationSnapshot> = {}): CreationSnapshot {
+  return {
+    sessionId: "session-1",
+    petId: "pet-1",
+    method: "upload",
+    status: "draft",
+    lastStableStatus: "draft",
+    currentStep: "upload",
+    displayName: null,
+    jobId: null,
+    jobStatus: null,
+    candidateId: null,
+    recipe: null,
+    error: null,
+    ...overrides,
   };
-  switchResult: PetSwitchResult = { ok: true, requestId: "request-1", petId: "pet-1" };
-  compiled: Array<{ petId: string; variantId: string }> = [];
-  switched: Array<{ petId: string; variantId: string }> = [];
-
-  constructor(options?: { switchResult?: PetSwitchResult }) {
-    if (options?.switchResult) this.switchResult = options.switchResult;
-  }
-
-  async genStart(petId: string, prompt: string, refPngB64: string): Promise<string> {
-    this.started.push({ petId, prompt, refPngB64 });
-    return `job-${this.started.length}`;
-  }
-
-  async resume(): Promise<CreationResume> {
-    return this.snapshot;
-  }
-
-  async compile(petId: string, variantId: string): Promise<{ manifestPath: string; degraded: boolean }> {
-    this.compiled.push({ petId, variantId });
-    return { manifestPath: "/tmp/manifest.json", degraded: false };
-  }
-
-  async switchPet(petId: string, acceptedVariantId: string): Promise<PetSwitchResult> {
-    this.switched.push({ petId, variantId: acceptedVariantId });
-    return this.switchResult;
-  }
 }
 
-function restoredAwaitingActivation(store = new FakeStore()): CreationFlow {
-  const flow = new CreationFlow(store);
-  flow.restore({
-    petId: "pet-1", status: "awaitingActivation", jobId: "job-1", variantId: "job-1", error: null,
-  });
-  return flow;
+class FakeStore implements UploadCreationStore {
+  started = 0;
+  submitted: Array<{ sessionId: string; prompt: string; refPngB64: string }> = [];
+  names: Array<{ sessionId: string; displayName: string }> = [];
+  finalized: string[] = [];
+  abandoned: string[] = [];
+  current = creationSnapshot();
+  finalResult: PetSwitchResult = { ok: true, requestId: "request-1", petId: "pet-1" };
+
+  async start(): Promise<CreationSnapshot> {
+    this.started += 1;
+    return this.current;
+  }
+
+  async submit(sessionId: string, prompt: string, refPngB64: string): Promise<string> {
+    this.submitted.push({ sessionId, prompt, refPngB64 });
+    return "job-1";
+  }
+
+  async snapshot(): Promise<CreationSnapshot> {
+    return this.current;
+  }
+
+  async setName(sessionId: string, displayName: string): Promise<CreationSnapshot> {
+    this.names.push({ sessionId, displayName });
+    this.current = { ...this.current, displayName: displayName.trim() };
+    return this.current;
+  }
+
+  async finalize(sessionId: string): Promise<PetSwitchResult> {
+    this.finalized.push(sessionId);
+    return this.finalResult;
+  }
+
+  async abandon(sessionId: string): Promise<void> {
+    this.abandoned.push(sessionId);
+  }
 }
 
 describe("CreationFlow", () => {
-  it("submits exactly one candidate job", async () => {
+  it("uses the durable session id as the root identity", async () => {
     const store = new FakeStore();
     const flow = new CreationFlow(store);
-    flow.setPetId("pet-1");
+
+    await flow.start();
     flow.setPhotoBytes(new Uint8Array([1, 2, 3]));
     await flow.submitSingle();
-    expect(store.started).toHaveLength(1);
+
+    expect(flow.sessionId).toBe("session-1");
+    expect(store.submitted).toEqual([expect.objectContaining({ sessionId: "session-1" })]);
     expect(flow.step).toBe("generating");
-    expect(flow.variantId).toBe("job-1");
   });
 
-  it("requires a pet created or restored by the caller before submission", async () => {
+  it("restores only an upload session snapshot", () => {
     const flow = new CreationFlow(new FakeStore());
-    flow.setPhotoBytes(new Uint8Array([1, 2, 3]));
-    await expect(flow.submitSingle()).rejects.toThrow("pet id required");
+    flow.restore(creationSnapshot({
+      status: "candidateReady",
+      lastStableStatus: "candidateReady",
+      currentStep: "review",
+      jobId: "job-1",
+      candidateId: "job-1",
+    }));
+
+    expect(flow.step).toBe("review");
+    expect(flow.jobId).toBe("job-1");
+    expect(() => flow.restore(creationSnapshot({ method: "composer" }))).toThrow("上传");
   });
 
-  it.each([
-    ["generating", "generating"],
-    ["generationFailed", "upload"],
-    ["awaitingConfirm", "review"],
-    ["compileRetryable", "review"],
-    ["awaitingActivation", "confirm"],
-  ] as const)("restores %s to %s", (status, step) => {
-    const flow = new CreationFlow(new FakeStore());
-    flow.restore({ petId: "pet-1", status, jobId: "job-1", variantId: "job-1", error: null });
-    expect(flow.step).toBe(step);
-    expect(flow.petId).toBe("pet-1");
-  });
+  it("saves the name through the backend before finalizing", async () => {
+    const store = new FakeStore();
+    const flow = new CreationFlow(store);
+    flow.restore(creationSnapshot({
+      status: "candidateReady",
+      lastStableStatus: "candidateReady",
+      currentStep: "review",
+      jobId: "job-1",
+      candidateId: "job-1",
+    }));
 
-  it("restores ready creation as complete", () => {
-    const flow = new CreationFlow(new FakeStore());
-    flow.restore({ petId: "pet-1", status: "ready", jobId: "job-1", variantId: "job-1", error: null });
+    await expect(flow.finish("  团子  ")).resolves.toMatchObject({ ok: true });
+
+    expect(store.names).toEqual([{ sessionId: "session-1", displayName: "  团子  " }]);
+    expect(store.finalized).toEqual(["session-1"]);
+    expect(flow.displayName).toBe("团子");
     expect(flow.step).toBe("complete");
   });
 
-  it("refuses to resume a corrupt creation", () => {
-    const flow = new CreationFlow(new FakeStore());
-    expect(() => flow.restore({
-      petId: "pet-1", status: "corrupt", jobId: null, variantId: null, error: "manifest damaged",
-    })).toThrow("corrupt pet is not resumable");
-  });
-
-  it("uses the latest resume snapshot when polling", async () => {
+  it("does not complete when the finalizer returns a failure", async () => {
     const store = new FakeStore();
-    store.snapshot = { petId: "pet-1", status: "awaitingConfirm", jobId: "job-1", variantId: "job-1", error: null };
-    const flow = new CreationFlow(store);
-    flow.restore({ petId: "pet-1", status: "generating", jobId: "job-1", variantId: "job-1", error: null });
-    await flow.poll();
-    expect(flow.step).toBe("review");
-  });
-
-  it("keeps review available when compilation fails", async () => {
-    const store = new FakeStore();
-    store.compile = async () => { throw new Error("compiler unavailable"); };
-    const flow = new CreationFlow(store);
-    flow.restore({ petId: "pet-1", status: "awaitingConfirm", jobId: "job-1", variantId: "job-1", error: null });
-    await expect(flow.compileCandidate()).rejects.toThrow("compiler unavailable");
-    expect(flow.step).toBe("review");
-  });
-
-  it("only completes after a successful desktop switch", async () => {
-    const store = new FakeStore();
-    const flow = restoredAwaitingActivation(store);
-    await flow.activateCandidate();
-    expect(store.switched).toEqual([{ petId: "pet-1", variantId: "job-1" }]);
-    expect(flow.step).toBe("complete");
-  });
-
-  it("returns and stores a successful switch finalization warning", async () => {
-    const store = new FakeStore({ switchResult: {
-      ok: true,
-      requestId: "request-warning",
+    store.finalResult = {
+      ok: false,
+      requestId: "request-1",
       petId: "pet-1",
-      warning: "变更门释放未确认",
-    } });
-    const flow = restoredAwaitingActivation(store);
-
-    await expect(flow.activateCandidate()).resolves.toBe("变更门释放未确认");
-    expect(flow.activationWarning).toBe("变更门释放未确认");
-    expect(flow.step).toBe("complete");
-  });
-
-  it("compiles and activates the accepted candidate with its original pet and variant ids", async () => {
-    const store = new FakeStore();
+      code: "blank-frame",
+      message: "首帧为空",
+    };
     const flow = new CreationFlow(store);
-    flow.restore({
-      petId: "pet-original",
-      status: "awaitingConfirm",
-      jobId: "job-original",
-      variantId: "variant-original",
-      error: null,
+    store.current = creationSnapshot({
+      status: "candidateReady",
+      lastStableStatus: "candidateReady",
+      currentStep: "review",
+      jobId: "job-1",
+      candidateId: "job-1",
     });
+    flow.restore(store.current);
 
-    await flow.compileCandidate();
-    await flow.activateCandidate();
+    await expect(flow.finish("团子")).resolves.toMatchObject({ ok: false });
 
-    expect(store.compiled).toEqual([{ petId: "pet-original", variantId: "variant-original" }]);
-    expect(store.switched).toEqual([{ petId: "pet-original", variantId: "variant-original" }]);
+    expect(flow.step).toBe("review");
   });
 
-  it("does not finish when desktop switching fails", async () => {
-    const store = new FakeStore({ switchResult: {
-      ok: false, requestId: "request-1", petId: "pet-1", code: "blank-frame", message: "first frame empty",
-    } });
-    const flow = restoredAwaitingActivation(store);
-    await expect(flow.activateCandidate()).rejects.toThrow("blank-frame");
-    expect(flow.step).toBe("confirm");
+  it("computes the real SHA-256 digest", async () => {
+    const bytes = new TextEncoder().encode("abc");
+    await expect(sha256Hex(bytes)).resolves.toBe(
+      "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    );
   });
 });
