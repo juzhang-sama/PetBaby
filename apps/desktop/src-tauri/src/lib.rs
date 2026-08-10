@@ -7,13 +7,13 @@ mod runtime_assets;
 mod storage;
 mod windowing;
 
-use pets::pet::{IdentityMode, Pet, PetSummary, Species};
+use pets::pet::{Pet, PetSummary};
 use pets::SharedPetRepository;
 use pets::{
     active::{
         CommitCompensation, CommitReconciliation, RuntimePetDescriptor, SharedActivePetService,
     },
-    catalog::{CreationResume, PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
+    catalog::{PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
     deletion::{DeleteOutcome, PetDeletionService, SharedPetDeletionService},
     mutation::{PetMutationGate, SharedPetMutationGate},
 };
@@ -316,16 +316,6 @@ fn pet_list(state: tauri::State<'_, SharedPetRepository>) -> Result<Vec<PetSumma
 }
 
 #[tauri::command]
-fn pet_create(
-    state: tauri::State<'_, SharedPetRepository>,
-    species: Species,
-    identity_mode: IdentityMode,
-) -> Result<Pet, String> {
-    let repo = state.lock().map_err(|_| "pets lock poisoned")?;
-    repo.create(species, identity_mode)
-}
-
-#[tauri::command]
 fn pet_get(
     state: tauri::State<'_, SharedPetRepository>,
     pet_id: String,
@@ -352,14 +342,6 @@ fn pet_catalog_list(
     state: tauri::State<'_, SharedPetCatalogService>,
 ) -> Result<Vec<PetCatalogEntry>, String> {
     state.list()
-}
-
-#[tauri::command]
-fn pet_creation_resume(
-    state: tauri::State<'_, SharedPetCatalogService>,
-    pet_id: String,
-) -> Result<CreationResume, String> {
-    state.creation_resume(&pet_id)
 }
 
 #[tauri::command]
@@ -1028,12 +1010,10 @@ pub fn run() {
             asset_file_b64,
             asset_compile,
             pet_list,
-            pet_create,
             pet_get,
             pet_delete_full,
             pet_get_active,
             pet_catalog_list,
-            pet_creation_resume,
             pet_prepare_switch,
             pet_prepare_startup,
             pet_commit_switch,
@@ -1224,7 +1204,18 @@ mod tests {
     #[test]
     fn pet_catalog_commands_are_available() {
         let _list = super::pet_catalog_list;
-        let _resume = super::pet_creation_resume;
+    }
+
+    #[test]
+    fn legacy_pet_creation_commands_are_not_exposed_by_tauri() {
+        let source = include_str!("lib.rs");
+        for command in [
+            ["pet", "create"].join("_"),
+            ["pet", "creation", "resume"].join("_"),
+        ] {
+            assert!(!source.contains(&format!("fn {command}(")));
+            assert!(!source.contains(&format!("            {command},")));
+        }
     }
 
     #[test]

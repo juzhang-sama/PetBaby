@@ -32,7 +32,7 @@ pub(crate) const MAX_UPLOAD_SOURCE_BASE64_BYTES: usize = MAX_UPLOAD_SOURCE_BYTES
 const MAX_UPLOAD_WIDTH: u32 = 4096;
 const MAX_UPLOAD_HEIGHT: u32 = 4096;
 const MAX_UPLOAD_PIXELS: u64 = 16_000_000;
-pub(crate) const MAX_NORMALIZED_PNG_BYTES: usize = 24 * 1024 * 1024;
+pub(crate) const MAX_NORMALIZED_PNG_BYTES: usize = MAX_UPLOAD_SOURCE_BYTES;
 
 #[derive(Clone, Copy)]
 struct UploadImageLimits {
@@ -1925,6 +1925,7 @@ mod tests {
 
     #[test]
     fn upload_normalization_enforces_raw_dimensions_pixels_and_output_limits() {
+        assert_eq!(MAX_NORMALIZED_PNG_BYTES, MAX_UPLOAD_SOURCE_BYTES);
         let oversized = vec![0_u8; MAX_UPLOAD_SOURCE_BYTES + 1];
         assert_upload_rejected_without_persistence(oversized, "raw byte");
 
@@ -2052,7 +2053,68 @@ mod tests {
     }
 
     #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
-    async fn durable_retry_sends_a_10_to_24_mib_normalized_blob_unchanged_to_the_provider() {
+    async fn first_start_accepts_a_near_limit_png_and_sends_its_persisted_bytes() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/media/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "task_id": 41 }
+            })))
+            .mount(&server)
+            .await;
+        let test = manager_harness_with_job(false);
+        let png = noisy_png(1_670, 1_560);
+        assert!(
+            png.len() > 9 * 1024 * 1024,
+            "fixture too small: {}",
+            png.len()
+        );
+        assert!(
+            png.len() <= MAX_UPLOAD_SOURCE_BYTES,
+            "fixture too large: {}",
+            png.len()
+        );
+        test.manager.set_test_provider_endpoint(server.uri());
+
+        let job_id = tokio::task::block_in_place(|| {
+            test.manager.start_for_session(
+                &test.session_id,
+                "first prompt",
+                &png,
+                &sha256_hex(&png),
+            )
+        })
+        .unwrap();
+
+        let source = test
+            .store
+            .lock()
+            .unwrap()
+            .upload_source(&test.session_id)
+            .unwrap()
+            .unwrap();
+        assert!(source.normalized_png.len() <= MAX_UPLOAD_SOURCE_BYTES);
+        let jobs = test
+            .store
+            .lock()
+            .unwrap()
+            .upload_jobs(&test.session_id)
+            .unwrap();
+        let job = jobs.iter().find(|job| job.job_id == job_id).unwrap();
+        assert_eq!(job.ref_sha256, source.sha256);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let data_url = body["params"]["images"][0].as_str().unwrap();
+        let provider_bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_url.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        assert_eq!(provider_bytes, source.normalized_png);
+        assert_eq!(sha256_hex(&provider_bytes), source.sha256);
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn durable_retry_sends_a_near_limit_normalized_blob_unchanged_to_the_provider() {
         let server = MockServer::start().await;
         Mock::given(method("POST"))
             .and(path("/v1/media/generate"))
@@ -2062,14 +2124,14 @@ mod tests {
             .mount(&server)
             .await;
         let test = manager_harness_with_job(false);
-        let png = noisy_png(1_700, 1_600);
+        let png = noisy_png(1_670, 1_560);
         assert!(
-            png.len() > MAX_UPLOAD_SOURCE_BYTES,
+            png.len() > 9 * 1024 * 1024,
             "fixture too small: {}",
             png.len()
         );
         assert!(
-            png.len() <= MAX_NORMALIZED_PNG_BYTES,
+            png.len() <= MAX_UPLOAD_SOURCE_BYTES,
             "fixture too large: {}",
             png.len()
         );

@@ -257,7 +257,7 @@ pub const MIGRATIONS: &[&str] = &[
       normalized_png BLOB NOT NULL,
       sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
       mime_type TEXT NOT NULL CHECK(mime_type = 'image/png'),
-      byte_size INTEGER NOT NULL CHECK(byte_size > 0 AND byte_size <= 25165824),
+      byte_size INTEGER NOT NULL CHECK(byte_size > 0 AND byte_size <= 10485760),
       created_at TEXT NOT NULL,
       CHECK(length(normalized_png) = byte_size)
     );
@@ -383,8 +383,8 @@ mod tests {
         assert!(sql.contains("REFERENCES creation_sessions"));
         assert!(sql.contains("ON DELETE CASCADE"));
         assert!(
-            sql.contains("byte_size <= 25165824"),
-            "missing normalized source hard limit: {sql}"
+            sql.contains("byte_size <= 10485760"),
+            "missing retransmittable normalized source hard limit: {sql}"
         );
         let _ = std::fs::remove_dir_all(root);
     }

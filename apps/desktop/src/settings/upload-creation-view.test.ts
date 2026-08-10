@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CreationSnapshot } from "../creation/contracts";
+import { sha256Hex } from "../creation/creation-flow";
 import { validMotionProfile } from "../runtime/animated-image-test-fixtures";
 import {
   UploadCreationView,
@@ -728,12 +729,12 @@ describe("UploadCreationView", () => {
     expect(core.creation.uploadStart).not.toHaveBeenCalled();
   });
 
-  it("retries a restored source larger than the raw upload limit without hashing or base64 retransmission", async () => {
+  it("retries a restored source near the raw upload limit without hashing or base64 retransmission", async () => {
     const core = uploadPorts();
     const failed = snapshot({ status: "retryableFailure", currentStep: "upload", error: "provider down" });
     core.creation.draft.mockResolvedValue(failed);
     core.creation.snapshot.mockResolvedValue(failed);
-    const restoredBytes = "x".repeat(10 * 1024 * 1024 + 1);
+    const restoredBytes = "x".repeat(10 * 1024 * 1024 - 1024);
     core.creation.uploadSource.mockResolvedValue({
       dataUrl: `data:image/png;base64,${btoa(restoredBytes)}`,
       refSha256: "a".repeat(64),
@@ -748,6 +749,39 @@ describe("UploadCreationView", () => {
     await vi.waitFor(() => expect(core.creation.uploadRetry).toHaveBeenCalledOnce());
 
     expect(core.creation.uploadStart).not.toHaveBeenCalled();
+  });
+
+  it("reuploads retained near-limit bytes after candidate retry starts a replacement session", async () => {
+    const core = uploadPorts({ candidateReady: true });
+    const restoredText = "x".repeat(10 * 1024 * 1024 - 1024);
+    const restoredBytes = new TextEncoder().encode(restoredText);
+    const expectedHash = await sha256Hex(restoredBytes);
+    core.creation.uploadSource.mockResolvedValue({
+      dataUrl: `data:image/png;base64,${btoa(restoredText)}`,
+      refSha256: expectedHash,
+    });
+    core.creation.start.mockResolvedValue(snapshot({ sessionId: "session-2", petId: "pet-2" }));
+    core.creation.snapshot.mockImplementation(async (sessionId) => snapshot({
+      sessionId,
+      petId: sessionId === "session-2" ? "pet-2" : "pet-1",
+    }));
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+
+    dom.elements.retryButton.dispatch("click");
+    await vi.waitFor(() => expect(view.snapshot().sessionId).toBe("session-2"));
+    dom.elements.apiKeyInput.value = "key";
+    dom.elements.nextButton.dispatch("click");
+    await vi.waitFor(() => expect(core.creation.uploadStart).toHaveBeenCalledOnce());
+
+    expect(core.creation.uploadRetry).not.toHaveBeenCalled();
+    const [sessionId, , sourceBase64, refSha256] = core.creation.uploadStart.mock.calls[0]!;
+    expect(sessionId).toBe("session-2");
+    expect(refSha256).toBe(expectedHash);
+    expect(sourceBase64.length).toBe(btoa(restoredText).length);
+    expect(atob(sourceBase64)).toBe(restoredText);
   });
 
   it("recovers a durable draft when retry abandon succeeds but starting the replacement is lost", async () => {

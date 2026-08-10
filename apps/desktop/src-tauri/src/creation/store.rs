@@ -27,7 +27,7 @@ impl CreationStore {
         if normalized_png.is_empty()
             || normalized_png.len() > crate::generation::tasks::MAX_NORMALIZED_PNG_BYTES
         {
-            return Err("normalized upload source must be between 1 byte and 24 MiB".into());
+            return Err("normalized upload source must be between 1 byte and 10 MiB".into());
         }
         if sha256_hex(normalized_png) != sha256 {
             return Err("upload source hash does not match its normalized bytes".into());
@@ -1211,7 +1211,7 @@ fn load_upload_source_record(
     };
     let max = crate::generation::tasks::MAX_NORMALIZED_PNG_BYTES as i64;
     if metadata.byte_size <= 0 || metadata.byte_size > max || metadata.blob_length > max {
-        return Err("upload source size must be between 1 byte and 24 MiB".into());
+        return Err("upload source size must be between 1 byte and 10 MiB".into());
     }
     if metadata.blob_length != metadata.byte_size {
         return Err("upload source size metadata is corrupt".into());
@@ -1455,7 +1455,7 @@ mod tests {
             .db
             .execute_batch(&format!(
                 "PRAGMA ignore_check_constraints=ON;
-                 UPDATE creation_upload_sources SET byte_size=25165825
+                 UPDATE creation_upload_sources SET byte_size=10485761
                  WHERE session_id='{session_id}';
                  PRAGMA ignore_check_constraints=OFF;"
             ))
@@ -1464,7 +1464,7 @@ mod tests {
         let error = store.upload_source(&session_id).unwrap_err();
 
         assert!(
-            error.contains("24 MiB"),
+            error.contains("10 MiB"),
             "unexpected validation priority: {error}"
         );
         let _ = std::fs::remove_dir_all(root);
