@@ -752,6 +752,8 @@ fn delete_owned_rows(
         "DELETE FROM variants WHERE pet_id=?1",
         "DELETE FROM appearance_variants WHERE pet_id=?1",
         "DELETE FROM generation_jobs WHERE pet_id=?1",
+        "DELETE FROM creation_upload_sources WHERE session_id IN
+             (SELECT session_id FROM creation_sessions WHERE pet_id=?1)",
         "DELETE FROM composer_recipes WHERE session_id IN
              (SELECT session_id FROM creation_sessions WHERE pet_id=?1)",
         "DELETE FROM creation_sessions WHERE pet_id=?1",
@@ -1708,6 +1710,17 @@ mod tests {
             .lock()
             .unwrap()
             .db
+            .execute(
+                "INSERT INTO creation_upload_sources
+                 (session_id, normalized_png, sha256, mime_type, byte_size, created_at)
+                 VALUES ('session-a', X'89', ?1, 'image/png', 1, '1')",
+                ["0".repeat(64)],
+            )
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
             .execute_batch("PRAGMA foreign_keys=OFF")
             .unwrap();
 
@@ -1718,6 +1731,7 @@ mod tests {
             ("variants", "pet_id", "pet-a"),
             ("appearance_variants", "pet_id", "pet-a"),
             ("generation_jobs", "pet_id", "pet-a"),
+            ("creation_upload_sources", "session_id", "session-a"),
             ("composer_recipes", "session_id", "session-a"),
             ("creation_sessions", "pet_id", "pet-a"),
             ("identity_profiles", "pet_id", "pet-a"),

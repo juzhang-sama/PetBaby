@@ -93,6 +93,7 @@ function uploadPorts(options: { candidateReady?: boolean; method?: CreationSnaps
     uploadStart: vi.fn<UploadCreationPorts["creation"]["uploadStart"]>(async () => "job-1"),
     uploadJobs: vi.fn<UploadCreationPorts["creation"]["uploadJobs"]>(async () => []),
     uploadSource: vi.fn<UploadCreationPorts["creation"]["uploadSource"]>(async () => null),
+    recoverFinalization: vi.fn<UploadCreationPorts["creation"]["recoverFinalization"]>(async () => ({})),
   };
   const finalize = vi.fn<UploadCreationPorts["finalize"]>(async () => ({
     ok: true as const,
@@ -502,7 +503,7 @@ describe("UploadCreationView", () => {
     await view.enter();
 
     expect(view.snapshot().step).toBe("upload");
-    expect(dom.elements.status.textContent).toContain("重新选择照片");
+    expect(dom.elements.status.textContent).toContain("放弃当前创建并开始新会话");
     expect(dom.elements.status.textContent).toContain("第三方服务暂不可用");
   });
 
@@ -713,6 +714,30 @@ describe("UploadCreationView", () => {
     expect(dom.elements.nextButton.hidden).toBe(false);
   });
 
+  it("does not overlap a retry mutation after leave and reenter until the old owner settles", async () => {
+    const core = uploadPorts({ candidateReady: true });
+    let resolveAbandon!: () => void;
+    core.creation.abandon
+      .mockImplementationOnce(() => new Promise<void>((resolve) => { resolveAbandon = resolve; }))
+      .mockResolvedValue(undefined);
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    dom.elements.retryButton.dispatch("click");
+    await vi.waitFor(() => expect(core.creation.abandon).toHaveBeenCalledOnce());
+
+    view.leave();
+    await view.enter();
+    dom.elements.retryButton.dispatch("click");
+    expect(core.creation.abandon).toHaveBeenCalledOnce();
+
+    resolveAbandon();
+    await vi.waitFor(() => expect(dom.elements.retryButton.disabled).toBe(false));
+    dom.elements.retryButton.dispatch("click");
+    await vi.waitFor(() => expect(core.creation.abandon).toHaveBeenCalledTimes(2));
+  });
+
   it("does not call finalization when set-name settles after leave", async () => {
     const core = uploadPorts({ candidateReady: true });
     let resolveName!: (value: CreationSnapshot) => void;
@@ -737,7 +762,7 @@ describe("UploadCreationView", () => {
     expect(dom.elements.stepComplete.hidden).toBe(true);
   });
 
-  it("does not let an old finalization result change a newly entered session", async () => {
+  it("waits for an unsettled finalization across leave and reenter without starting a new draft", async () => {
     const core = uploadPorts({ candidateReady: true });
     let resolveFinalize!: (value: Awaited<ReturnType<UploadCreationPorts["finalize"]>>) => void;
     core.finalize.mockImplementation(() => new Promise((resolve) => { resolveFinalize = resolve; }));
@@ -750,17 +775,95 @@ describe("UploadCreationView", () => {
     dom.elements.finishButton.dispatch("click");
     await vi.waitFor(() => expect(core.finalize).toHaveBeenCalledOnce());
 
-    const second = snapshot({ sessionId: "session-2", petId: "pet-2" });
-    core.creation.draft.mockResolvedValue(second);
-    core.creation.snapshot.mockResolvedValue(second);
-    await view.enter();
+    core.creation.snapshot.mockResolvedValue(snapshot({
+      status: "completed", lastStableStatus: "completed", currentStep: "completed",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    }));
+    const reentering = view.enter();
+    await Promise.resolve();
+    expect(core.creation.draft).toHaveBeenCalledTimes(1);
     resolveFinalize({ ok: true, requestId: "request-old", petId: "pet-1" });
-    await Promise.resolve();
-    await Promise.resolve();
+    await reentering;
 
-    expect(view.snapshot().sessionId).toBe("session-2");
-    expect(view.snapshot().step).toBe("upload");
-    expect(dom.elements.stepComplete.hidden).toBe(true);
+    expect(view.snapshot().sessionId).toBe("session-1");
+    expect(view.snapshot().step).toBe("complete");
+    expect(core.creation.start).not.toHaveBeenCalled();
+    expect(dom.elements.stepComplete.hidden).toBe(false);
+  });
+
+  it("never starts a new draft when an unsettled finalization snapshot is temporarily unavailable", async () => {
+    const core = uploadPorts({ candidateReady: true });
+    let resolveFinalize!: (value: Awaited<ReturnType<UploadCreationPorts["finalize"]>>) => void;
+    core.finalize.mockImplementation(() => new Promise((resolve) => { resolveFinalize = resolve; }));
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    dom.elements.nameInput.value = "Mimi";
+    dom.elements.nameInput.dispatch("input");
+    dom.elements.finishButton.dispatch("click");
+    await vi.waitFor(() => expect(core.finalize).toHaveBeenCalledOnce());
+    core.creation.snapshot.mockRejectedValue(new Error("database busy"));
+    core.creation.draft.mockResolvedValue(null);
+
+    const reentering = view.enter();
+    resolveFinalize({ ok: true, requestId: "request-old", petId: "pet-1" });
+    await reentering;
+
+    expect(core.creation.start).not.toHaveBeenCalled();
+    expect(dom.elements.status.textContent).toContain("database busy");
+  });
+
+  it("reconciles a finalizing draft to completed on entry", async () => {
+    const core = uploadPorts();
+    const finalizing = snapshot({
+      status: "finalizing", lastStableStatus: "candidateReady", currentStep: "finalizing",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    const completed = snapshot({
+      status: "completed", lastStableStatus: "completed", currentStep: "completed",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    core.creation.draft.mockResolvedValue(finalizing);
+    core.creation.snapshot.mockResolvedValueOnce(finalizing).mockResolvedValueOnce(completed);
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+
+    await view.enter();
+
+    expect(core.creation.recoverFinalization).toHaveBeenCalledOnce();
+    expect(view.snapshot().step).toBe("complete");
+    expect(core.creation.start).not.toHaveBeenCalled();
+  });
+
+  it("reconciles an uncommitted finalizing draft back to review when retry returns false", async () => {
+    const core = uploadPorts();
+    const finalizing = snapshot({
+      status: "finalizing", lastStableStatus: "candidateReady", currentStep: "finalizing",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    const ready = snapshot({
+      status: "candidateReady", lastStableStatus: "candidateReady", currentStep: "review",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    core.creation.draft.mockResolvedValue(finalizing);
+    core.creation.snapshot
+      .mockResolvedValueOnce(finalizing)
+      .mockResolvedValueOnce(ready)
+      .mockResolvedValueOnce(ready);
+    core.finalize.mockResolvedValue({
+      ok: false, requestId: "request-2", petId: "pet-1", code: "pet-window-unavailable", message: "window down",
+    });
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+
+    await view.enter();
+
+    expect(core.creation.recoverFinalization).toHaveBeenCalledOnce();
+    expect(core.finalize).toHaveBeenCalledWith("session-1");
+    expect(view.snapshot().step).toBe("review");
   });
 
   it("rejects abandon while direct finalization owns the same session", async () => {

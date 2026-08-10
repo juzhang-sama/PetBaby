@@ -5,7 +5,7 @@ use crate::generation::lk888::Lk888Client;
 use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
 use crate::runtime_assets::motion_profile;
 use sha2::{Digest, Sha256};
-use std::io::Write;
+use std::io::Cursor;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -27,6 +27,39 @@ pub struct DurableUploadSource {
     pub mime_type: String,
 }
 
+const MAX_UPLOAD_SOURCE_BYTES: usize = 10 * 1024 * 1024;
+const MAX_UPLOAD_WIDTH: u32 = 4096;
+const MAX_UPLOAD_HEIGHT: u32 = 4096;
+const MAX_UPLOAD_PIXELS: u64 = 16_000_000;
+const MAX_NORMALIZED_PNG_BYTES: usize = 24 * 1024 * 1024;
+
+#[derive(Clone, Copy)]
+struct UploadImageLimits {
+    max_raw_bytes: usize,
+    max_width: u32,
+    max_height: u32,
+    max_pixels: u64,
+    max_normalized_bytes: usize,
+}
+
+impl Default for UploadImageLimits {
+    fn default() -> Self {
+        Self {
+            max_raw_bytes: MAX_UPLOAD_SOURCE_BYTES,
+            max_width: MAX_UPLOAD_WIDTH,
+            max_height: MAX_UPLOAD_HEIGHT,
+            max_pixels: MAX_UPLOAD_PIXELS,
+            max_normalized_bytes: MAX_NORMALIZED_PNG_BYTES,
+        }
+    }
+}
+
+#[derive(Debug)]
+pub(crate) struct NormalizedUploadSource {
+    pub(crate) png: Vec<u8>,
+    pub(crate) sha256: String,
+}
+
 pub struct GenerationManager {
     store: Arc<Mutex<CreationStore>>,
     state_store: Arc<Mutex<crate::pets::state::StateStore>>,
@@ -46,8 +79,6 @@ pub struct GenerationManager {
     fail_next_task_attach: std::sync::atomic::AtomicBool,
     #[cfg(test)]
     fail_next_backup_cleanup: std::sync::atomic::AtomicBool,
-    #[cfg(test)]
-    fail_next_source_write: std::sync::atomic::AtomicBool,
 }
 
 impl GenerationManager {
@@ -76,8 +107,6 @@ impl GenerationManager {
             fail_next_task_attach: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             fail_next_backup_cleanup: std::sync::atomic::AtomicBool::new(false),
-            #[cfg(test)]
-            fail_next_source_write: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -116,12 +145,6 @@ impl GenerationManager {
     #[cfg(test)]
     fn fail_next_backup_cleanup(&self) {
         self.fail_next_backup_cleanup
-            .store(true, std::sync::atomic::Ordering::SeqCst);
-    }
-
-    #[cfg(test)]
-    fn fail_next_source_write(&self) {
-        self.fail_next_source_write
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -199,33 +222,29 @@ impl GenerationManager {
         session_id: &str,
         prompt: &str,
         ref_png: &[u8],
-        _ref_sha256: &str,
+        ref_sha256: &str,
     ) -> Result<String, String> {
         let job_id = new_entity_id("job");
         let _operation = self
             .mutation_gate
             .scoped(&job_id, MutationKind::Creation, session_id)?;
-        let pet_id = self
-            .store
-            .lock()
-            .map_err(|_| "store lock poisoned")?
-            .upload_session_pet(session_id)?;
-        let (source, source_created) = self.persist_upload_source(session_id, ref_png)?;
+        let source = normalize_upload_source(ref_png, ref_sha256)?;
+        let store = self.store.lock().map_err(|_| "store lock poisoned")?;
+        let pet_id = store.upload_session_pet(session_id)?;
+        store.save_upload_source(session_id, &source.png, &source.sha256, "image/png")?;
+        drop(store);
         let create_result = self
             .store
             .lock()
             .map_err(|_| "store lock poisoned".to_string())
             .and_then(|store| {
-                store.create_job_for_session(&job_id, session_id, prompt, &source.ref_sha256, None)
+                store.create_job_for_session(&job_id, session_id, prompt, &source.sha256, None)
             });
         if let Err(error) = create_result {
-            if source_created {
-                let _ = self.remove_upload_source(session_id);
-            }
             return Err(error);
         }
 
-        let task_id = match self.submit_task(prompt, &source.bytes) {
+        let task_id = match self.submit_task(prompt, &source.png) {
             Ok(task_id) => task_id,
             Err(error) => {
                 self.store
@@ -254,141 +273,16 @@ impl GenerationManager {
 
     pub fn upload_source(&self, session_id: &str) -> Result<Option<DurableUploadSource>, String> {
         validate_component(session_id, "session id")?;
-        self.store
+        let source = self
+            .store
             .lock()
             .map_err(|_| "store lock poisoned")?
-            .upload_session_pet(session_id)?;
-        let source_path = self.validated_source_path(session_id, false)?;
-        let Some(source_path) = source_path else {
-            return Ok(None);
-        };
-        let bytes = std::fs::read(&source_path).map_err(|error| error.to_string())?;
-        Ok(Some(DurableUploadSource {
-            ref_sha256: sha256_hex(&bytes),
-            mime_type: image_mime_type(&bytes)?,
-            bytes,
+            .upload_source(session_id)?;
+        Ok(source.map(|source| DurableUploadSource {
+            bytes: source.normalized_png,
+            ref_sha256: source.sha256,
+            mime_type: source.mime_type,
         }))
-    }
-
-    fn persist_upload_source(
-        &self,
-        session_id: &str,
-        bytes: &[u8],
-    ) -> Result<(DurableUploadSource, bool), String> {
-        validate_component(session_id, "session id")?;
-        let hash = sha256_hex(bytes);
-        let mime_type = image_mime_type(bytes)?;
-        if let Some(path) = self.validated_source_path(session_id, false)? {
-            let existing = std::fs::read(path).map_err(|error| error.to_string())?;
-            if existing != bytes {
-                return Err("upload session already owns a different source image".into());
-            }
-            return Ok((
-                DurableUploadSource {
-                    bytes: existing,
-                    ref_sha256: hash,
-                    mime_type,
-                },
-                false,
-            ));
-        }
-        let source_path = self
-            .validated_source_path(session_id, true)?
-            .ok_or_else(|| "source path was not created".to_string())?;
-        #[cfg(test)]
-        if self
-            .fail_next_source_write
-            .swap(false, std::sync::atomic::Ordering::SeqCst)
-        {
-            return Err("injected source write failure".into());
-        }
-        let parent = source_path
-            .parent()
-            .ok_or_else(|| "source path has no session directory".to_string())?;
-        let temp_path = parent.join(format!(".source-{}.tmp", new_entity_id("publish")));
-        let write_result = (|| -> Result<(), String> {
-            let mut file = std::fs::OpenOptions::new()
-                .write(true)
-                .create_new(true)
-                .open(&temp_path)
-                .map_err(|error| error.to_string())?;
-            file.write_all(bytes).map_err(|error| error.to_string())?;
-            file.sync_all().map_err(|error| error.to_string())?;
-            crate::platform::durable_replace_file(&temp_path, &source_path)
-        })();
-        if write_result.is_err() {
-            let _ = std::fs::remove_file(&temp_path);
-        }
-        write_result?;
-        Ok((
-            DurableUploadSource {
-                bytes: bytes.to_vec(),
-                ref_sha256: hash,
-                mime_type,
-            },
-            true,
-        ))
-    }
-
-    fn validated_source_path(
-        &self,
-        session_id: &str,
-        create_session: bool,
-    ) -> Result<Option<PathBuf>, String> {
-        let app_data_dir = self
-            .jobs_dir
-            .parent()
-            .ok_or_else(|| "jobs directory has no application data parent".to_string())?;
-        validate_regular_directory(app_data_dir, "application data directory")?;
-        let sessions_root = app_data_dir.join("creation-sessions");
-        create_or_validate_directory(&sessions_root, "creation sessions root")?;
-        let canonical_app_data = app_data_dir
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        let canonical_sessions = sessions_root
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        if canonical_sessions.parent() != Some(canonical_app_data.as_path()) {
-            return Err("creation sessions root escapes application data directory".into());
-        }
-        let session_dir = sessions_root.join(session_id);
-        match std::fs::symlink_metadata(&session_dir) {
-            Ok(_) => validate_regular_directory(&session_dir, "creation session directory")?,
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_session => {
-                std::fs::create_dir(&session_dir).map_err(|error| error.to_string())?;
-                validate_regular_directory(&session_dir, "creation session directory")?;
-                crate::platform::sync_existing_directory_entry(&session_dir)?;
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
-            Err(error) => return Err(error.to_string()),
-        }
-        let canonical_session = session_dir
-            .canonicalize()
-            .map_err(|error| error.to_string())?;
-        if canonical_session.parent() != Some(canonical_sessions.as_path()) {
-            return Err("creation session directory escapes its configured root".into());
-        }
-        let source_path = session_dir.join("source.bin");
-        match std::fs::symlink_metadata(&source_path) {
-            Ok(metadata) => {
-                if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
-                    return Err("upload source cannot be a link or reparse point".into());
-                }
-                Ok(Some(source_path))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound && create_session => {
-                Ok(Some(source_path))
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(None),
-            Err(error) => Err(error.to_string()),
-        }
-    }
-
-    fn remove_upload_source(&self, session_id: &str) -> Result<(), String> {
-        if let Some(path) = self.validated_source_path(session_id, false)? {
-            std::fs::remove_file(path).map_err(|error| error.to_string())?;
-        }
-        Ok(())
     }
 
     fn attach_upload_task(
@@ -883,38 +777,79 @@ fn combine_attach_and_preservation_error(
     }
 }
 
-fn sha256_hex(data: &[u8]) -> String {
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
     let mut hasher = Sha256::new();
     hasher.update(data);
     format!("{:x}", hasher.finalize())
 }
 
-fn image_mime_type(data: &[u8]) -> Result<String, String> {
-    match image::guess_format(data).map_err(|error| format!("invalid source image: {error}"))? {
-        image::ImageFormat::Png => Ok("image/png".into()),
-        image::ImageFormat::Jpeg => Ok("image/jpeg".into()),
-        _ => Err("upload source must be a PNG or JPEG image".into()),
-    }
+pub(crate) fn normalize_upload_source(
+    raw: &[u8],
+    claimed_sha256: &str,
+) -> Result<NormalizedUploadSource, String> {
+    normalize_upload_source_with_limits(raw, claimed_sha256, UploadImageLimits::default())
 }
 
-fn create_or_validate_directory(path: &Path, label: &str) -> Result<(), String> {
-    match std::fs::symlink_metadata(path) {
-        Ok(_) => validate_regular_directory(path, label),
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
-            std::fs::create_dir(path).map_err(|error| error.to_string())?;
-            validate_regular_directory(path, label)?;
-            crate::platform::sync_existing_directory_entry(path)
-        }
-        Err(error) => Err(error.to_string()),
+fn normalize_upload_source_with_limits(
+    raw: &[u8],
+    claimed_sha256: &str,
+    limits: UploadImageLimits,
+) -> Result<NormalizedUploadSource, String> {
+    if raw.is_empty() || raw.len() > limits.max_raw_bytes {
+        return Err(format!(
+            "upload source exceeds the raw byte limit of {} bytes",
+            limits.max_raw_bytes
+        ));
     }
-}
-
-fn validate_regular_directory(path: &Path, label: &str) -> Result<(), String> {
-    let metadata = std::fs::symlink_metadata(path).map_err(|error| error.to_string())?;
-    if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
-        return Err(format!("{label} cannot be a link or reparse point"));
+    let raw_hash = sha256_hex(raw);
+    if raw_hash != claimed_sha256 {
+        return Err("upload source hash does not match the request bytes".into());
     }
-    Ok(())
+    let format = image::guess_format(raw)
+        .map_err(|error| format!("source image type is invalid: {error}"))?;
+    if !matches!(format, image::ImageFormat::Png | image::ImageFormat::Jpeg) {
+        return Err("upload source must be a PNG or JPEG image".into());
+    }
+    let (width, height) = image::ImageReader::with_format(Cursor::new(raw), format)
+        .into_dimensions()
+        .map_err(|error| format!("source image decode failed: {error}"))?;
+    if width > limits.max_width || height > limits.max_height {
+        return Err(format!(
+            "source image dimensions exceed {}x{}",
+            limits.max_width, limits.max_height
+        ));
+    }
+    let pixels = u64::from(width) * u64::from(height);
+    if pixels > limits.max_pixels {
+        return Err(format!(
+            "source image pixel count exceeds {}",
+            limits.max_pixels
+        ));
+    }
+    let mut reader = image::ImageReader::with_format(Cursor::new(raw), format);
+    let mut decoder_limits = image::Limits::default();
+    decoder_limits.max_image_width = Some(limits.max_width);
+    decoder_limits.max_image_height = Some(limits.max_height);
+    decoder_limits.max_alloc = Some(limits.max_pixels.saturating_mul(8));
+    reader.limits(decoder_limits);
+    let decoded = reader
+        .decode()
+        .map_err(|error| format!("source image decode failed: {error}"))?;
+    let mut normalized = Cursor::new(Vec::new());
+    decoded
+        .write_to(&mut normalized, image::ImageFormat::Png)
+        .map_err(|error| format!("source PNG normalization failed: {error}"))?;
+    let png = normalized.into_inner();
+    if png.len() > limits.max_normalized_bytes {
+        return Err(format!(
+            "normalized source exceeds {} bytes",
+            limits.max_normalized_bytes
+        ));
+    }
+    Ok(NormalizedUploadSource {
+        sha256: sha256_hex(&png),
+        png,
+    })
 }
 
 fn validate_component(value: &str, label: &str) -> Result<(), String> {
@@ -1088,6 +1023,34 @@ mod tests {
         ))
         .write_to(&mut bytes, ImageFormat::Png)
         .unwrap();
+        bytes.into_inner()
+    }
+
+    fn png_with_dimensions(width: u32, height: u32) -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            width,
+            height,
+            image::Rgba([1, 2, 3, 255]),
+        ))
+        .write_to(&mut bytes, ImageFormat::Png)
+        .unwrap();
+        bytes.into_inner()
+    }
+
+    fn noisy_jpeg(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbImage::from_fn(width, height, |x, y| {
+            let seed = x.wrapping_mul(1_664_525) ^ y.wrapping_mul(1_013_904_223);
+            image::Rgb([
+                seed as u8,
+                seed.rotate_left(11) as u8,
+                seed.rotate_left(23) as u8,
+            ])
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(image)
+            .write_to(&mut bytes, ImageFormat::Jpeg)
+            .unwrap();
         bytes.into_inner()
     }
 
@@ -1347,8 +1310,12 @@ mod tests {
 
         std::thread::scope(|scope| {
             let start = scope.spawn(|| {
-                test.manager
-                    .start_for_session(&test.session_id, "p", &test.png, "h")
+                test.manager.start_for_session(
+                    &test.session_id,
+                    "p",
+                    &test.png,
+                    &sha256_hex(&test.png),
+                )
             });
             entered.wait();
             let jobs = test
@@ -1483,8 +1450,12 @@ mod tests {
 
         std::thread::scope(|scope| {
             let start = scope.spawn(|| {
-                test.manager
-                    .start_for_session(&test.session_id, "p", &test.png, "h")
+                test.manager.start_for_session(
+                    &test.session_id,
+                    "p",
+                    &test.png,
+                    &sha256_hex(&test.png),
+                )
             });
             submit_entered.wait();
             let abandon = scope.spawn(|| deletion.abandon_creation(&test.session_id));
@@ -1601,7 +1572,7 @@ mod tests {
 
         assert!(test
             .manager
-            .start_for_session(&test.session_id, "p", &test.png, "h")
+            .start_for_session(&test.session_id, "p", &test.png, &sha256_hex(&test.png))
             .is_err());
 
         let job = test
@@ -1795,7 +1766,7 @@ mod tests {
 
         let error = test
             .manager
-            .start_for_session(&test.session_id, "p", &test.png, "h")
+            .start_for_session(&test.session_id, "p", &test.png, &sha256_hex(&test.png))
             .unwrap_err();
 
         assert!(error.contains("API Key"));
@@ -1834,7 +1805,7 @@ mod tests {
 
         assert!(test
             .manager
-            .start_for_session(&test.session_id, "p", &test.png, "client-value")
+            .start_for_session(&test.session_id, "p", &test.png, &sha256_hex(&test.png))
             .unwrap_err()
             .contains("provider unavailable"));
 
@@ -1845,12 +1816,98 @@ mod tests {
             .unwrap();
         assert_eq!(source.bytes, test.png);
         assert_eq!(source.ref_sha256, sha256_hex(&test.png));
+        assert_eq!(source.mime_type, "image/png");
+    }
+
+    #[test]
+    fn upload_normalization_rejects_hash_mismatch_and_truncated_images_before_persisting() {
+        let test = manager_harness_with_job(false);
+
+        let hash_error = test
+            .manager
+            .start_for_session(&test.session_id, "p", &test.png, &"0".repeat(64))
+            .unwrap_err();
+        let truncated = b"\x89PNG\r\n\x1a\n";
+        let truncated_error = test
+            .manager
+            .start_for_session(&test.session_id, "p", truncated, &sha256_hex(truncated))
+            .unwrap_err();
+
+        assert!(hash_error.contains("request bytes"));
+        assert!(truncated_error.contains("decode"));
         assert!(test
-            .root
-            .join("creation-sessions")
-            .join(&test.session_id)
-            .join("source.bin")
-            .is_file());
+            .manager
+            .upload_source(&test.session_id)
+            .unwrap()
+            .is_none());
+        assert!(test
+            .store
+            .lock()
+            .unwrap()
+            .upload_jobs(&test.session_id)
+            .unwrap()
+            .is_empty());
+    }
+
+    #[test]
+    fn upload_normalization_enforces_raw_dimensions_pixels_and_output_limits() {
+        let oversized = vec![0_u8; MAX_UPLOAD_SOURCE_BYTES + 1];
+        assert_upload_rejected_without_persistence(oversized, "raw byte");
+
+        let too_wide = png_with_dimensions(MAX_UPLOAD_WIDTH + 1, 1);
+        assert_upload_rejected_without_persistence(too_wide, "dimensions");
+
+        let too_many_pixels = png_with_dimensions(4_001, 4_000);
+        assert_upload_rejected_without_persistence(too_many_pixels, "pixel");
+
+        let output_too_large = noisy_jpeg(3_200, 3_200);
+        assert!(output_too_large.len() < MAX_UPLOAD_SOURCE_BYTES);
+        assert_upload_rejected_without_persistence(output_too_large, "normalized");
+
+        let png = png_bytes();
+        assert!(normalize_upload_source_with_limits(
+            &png,
+            &sha256_hex(&png),
+            UploadImageLimits {
+                max_normalized_bytes: 1,
+                ..UploadImageLimits::default()
+            },
+        )
+        .unwrap_err()
+        .contains("normalized"));
+    }
+
+    fn assert_upload_rejected_without_persistence(raw: Vec<u8>, expected: &str) {
+        let test = manager_harness_with_job(false);
+        let error = test
+            .manager
+            .start_for_session(&test.session_id, "p", &raw, &sha256_hex(&raw))
+            .unwrap_err();
+        assert!(error.contains(expected), "{error}");
+        assert!(test
+            .manager
+            .upload_source(&test.session_id)
+            .unwrap()
+            .is_none());
+        assert!(test
+            .store
+            .lock()
+            .unwrap()
+            .upload_jobs(&test.session_id)
+            .unwrap()
+            .is_empty());
+        let status: (String, String) = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT status, current_step FROM creation_sessions WHERE session_id=?1",
+                [&test.session_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(status, ("draft".into(), "upload".into()));
     }
 
     #[test]
@@ -1858,9 +1915,12 @@ mod tests {
         let test = manager_harness_with_job(false);
         test.manager
             .set_submit_hook(|| Err("first provider failure".into()));
-        let _ = test
-            .manager
-            .start_for_session(&test.session_id, "p", &test.png, "ignored");
+        let _ = test.manager.start_for_session(
+            &test.session_id,
+            "p",
+            &test.png,
+            &sha256_hex(&test.png),
+        );
         let state = Arc::new(Mutex::new(StateStore::new(test.storage.clone())));
         let reopened = GenerationManager::new(
             test.store.clone(),
@@ -1888,50 +1948,16 @@ mod tests {
     }
 
     #[test]
-    fn source_write_failure_does_not_create_a_job_or_advance_the_session() {
-        let test = manager_harness_with_job(false);
-        test.manager.fail_next_source_write();
-
-        assert!(test
-            .manager
-            .start_for_session(&test.session_id, "p", &test.png, "ignored")
-            .unwrap_err()
-            .contains("source write"));
-
-        assert!(test
-            .store
-            .lock()
-            .unwrap()
-            .upload_jobs(&test.session_id)
-            .unwrap()
-            .is_empty());
-        let state: (String, String) = test
-            .storage
-            .lock()
-            .unwrap()
-            .db
-            .query_row(
-                "SELECT status, current_step FROM creation_sessions WHERE session_id=?1",
-                [&test.session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
-            )
-            .unwrap();
-        assert_eq!(state, ("draft".into(), "upload".into()));
-        assert!(test
-            .manager
-            .upload_source(&test.session_id)
-            .unwrap()
-            .is_none());
-    }
-
-    #[test]
     fn abandoning_an_upload_session_removes_its_durable_source() {
         let test = manager_harness_with_job(false);
         test.manager
             .set_submit_hook(|| Err("provider unavailable".into()));
-        let _ = test
-            .manager
-            .start_for_session(&test.session_id, "p", &test.png, "ignored");
+        let _ = test.manager.start_for_session(
+            &test.session_id,
+            "p",
+            &test.png,
+            &sha256_hex(&test.png),
+        );
         assert!(test
             .manager
             .upload_source(&test.session_id)
@@ -1942,82 +1968,19 @@ mod tests {
             .abandon_creation(&test.session_id)
             .unwrap();
 
-        assert!(!test
-            .root
-            .join("creation-sessions")
-            .join(&test.session_id)
-            .exists());
-    }
-
-    #[test]
-    fn source_persistence_rejects_a_linked_session_directory() {
-        let test = manager_harness_with_job(false);
-        let outside = test.root.join("outside");
-        std::fs::create_dir_all(&outside).unwrap();
-        let sessions = test.root.join("creation-sessions");
-        std::fs::create_dir_all(&sessions).unwrap();
-        crate::platform::create_directory_link(&outside, &sessions.join(&test.session_id));
-
-        let error = test
-            .manager
-            .start_for_session(&test.session_id, "p", &test.png, "ignored")
-            .unwrap_err();
-
-        assert!(error.contains("link or reparse point"));
-        assert!(test
-            .store
-            .lock()
-            .unwrap()
-            .upload_jobs(&test.session_id)
-            .unwrap()
-            .is_empty());
-        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
-        let _ = std::fs::remove_dir_all(sessions.join(&test.session_id));
-    }
-
-    #[test]
-    fn source_persistence_rejects_a_linked_sessions_root() {
-        let test = manager_harness_with_job(false);
-        let outside = test.root.join("outside-root");
-        std::fs::create_dir_all(&outside).unwrap();
-        let sessions = test.root.join("creation-sessions");
-        crate::platform::create_directory_link(&outside, &sessions);
-
-        let error = test
-            .manager
-            .start_for_session(&test.session_id, "p", &test.png, "ignored")
-            .unwrap_err();
-
-        assert!(error.contains("link or reparse point"));
-        assert!(test
-            .store
-            .lock()
-            .unwrap()
-            .upload_jobs(&test.session_id)
-            .unwrap()
-            .is_empty());
-        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
-        let _ = std::fs::remove_dir_all(&sessions);
-    }
-
-    #[test]
-    fn source_persistence_rejects_an_existing_source_link() {
-        let test = manager_harness_with_job(false);
-        let outside = test.root.join("outside-source");
-        std::fs::create_dir_all(&outside).unwrap();
-        let session_dir = test.root.join("creation-sessions").join(&test.session_id);
-        std::fs::create_dir_all(&session_dir).unwrap();
-        let source = session_dir.join("source.bin");
-        crate::platform::create_directory_link(&outside, &source);
-
-        let error = test
-            .manager
-            .start_for_session(&test.session_id, "p", &test.png, "ignored")
-            .unwrap_err();
-
-        assert!(error.contains("link or reparse point"));
-        assert!(std::fs::read_dir(&outside).unwrap().next().is_none());
-        let _ = std::fs::remove_dir_all(&source);
+        assert_eq!(
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM creation_upload_sources WHERE session_id=?1",
+                    [&test.session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
     }
 
     #[test]

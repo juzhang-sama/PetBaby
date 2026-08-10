@@ -249,6 +249,19 @@ pub const MIGRATIONS: &[&str] = &[
       WHERE method IN ('upload','composer')
         AND status NOT IN ('completed','abandoned');
     "#,
+    // v4: durable upload source owned by a creation session
+    r#"
+    CREATE TABLE creation_upload_sources (
+      session_id TEXT PRIMARY KEY
+        REFERENCES creation_sessions(session_id) ON DELETE CASCADE,
+      normalized_png BLOB NOT NULL,
+      sha256 TEXT NOT NULL CHECK(length(sha256) = 64),
+      mime_type TEXT NOT NULL CHECK(mime_type = 'image/png'),
+      byte_size INTEGER NOT NULL CHECK(byte_size > 0),
+      created_at TEXT NOT NULL,
+      CHECK(length(normalized_png) = byte_size)
+    );
+    "#,
 ];
 
 pub fn apply(db: &Connection) -> Result<(), String> {
@@ -340,6 +353,63 @@ mod tests {
             )
             .unwrap();
         assert_eq!(tables, 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn latest_migration_creates_session_owned_upload_source_blob_table() {
+        let (db, root) = temp_db();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        apply(&db).unwrap();
+
+        let sql: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master WHERE type='table' AND name='creation_upload_sources'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        for required in [
+            "session_id",
+            "normalized_png",
+            "sha256",
+            "mime_type",
+            "byte_size",
+            "created_at",
+        ] {
+            assert!(sql.contains(required), "missing {required}: {sql}");
+        }
+        assert!(sql.contains("REFERENCES creation_sessions"));
+        assert!(sql.contains("ON DELETE CASCADE"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upload_source_migration_rolls_back_as_one_transaction_on_conflict() {
+        let (db, root) = temp_db();
+        for migration in &MIGRATIONS[..3] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.pragma_update(None, "user_version", 3).unwrap();
+        db.execute_batch("CREATE TABLE creation_upload_sources (wrong TEXT);")
+            .unwrap();
+
+        let error = apply(&db).unwrap_err();
+
+        assert!(error.contains("migration 3"));
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 3);
+        let columns: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('creation_upload_sources')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -21,6 +21,7 @@ export interface UploadCreationPorts {
     ): Promise<string>;
     uploadJobs(sessionId: string): Promise<UploadJobRecord[]>;
     uploadSource(sessionId: string): Promise<{ dataUrl: string; refSha256: string } | null>;
+    recoverFinalization(): Promise<unknown>;
   };
   finalize(sessionId: string): Promise<PetSwitchResult>;
 }
@@ -124,6 +125,7 @@ export class UploadCreationView {
   private pollTimer: number | null = null;
   private photoBytes: Uint8Array | null = null;
   private photoObjectUrl: string | null = null;
+  private durableSourceLoaded = false;
   private photoRevision = 0;
   private readonly onNameInput = () => this.render();
   private readonly onFinishClick = (event: Event) => {
@@ -190,6 +192,8 @@ export class UploadCreationView {
   }
 
   async enter(): Promise<void> {
+    const pendingFinalization = this.finalizing;
+    const knownFinalizingSession = this.state.step === "finalizing" ? this.state.sessionId : null;
     if (!this.dom) throw new Error("上传创建页面未装配 DOM");
     this.leave();
     this.visit = this.run.enter("upload");
@@ -200,7 +204,21 @@ export class UploadCreationView {
     if (!this.run.isCurrent(visit)) return;
     if (key) this.dom.elements.apiKeyInput.value = key;
     try {
-      await this.open(visit);
+      if (pendingFinalization) {
+        await pendingFinalization.promise.catch(() => undefined);
+        if (!this.run.isCurrent(visit)) return;
+      }
+      const unsettledSession = pendingFinalization?.sessionId ?? knownFinalizingSession;
+      if (unsettledSession) {
+        const settled = await this.ports.creation.snapshot(unsettledSession).catch((error) => {
+          throw new Error(`暂时无法确认上次完成状态：${errorMessage(error)}`);
+        });
+        if (!this.run.isCurrent(visit)) return;
+        this.applySnapshot(settled);
+      } else {
+        await this.open(visit);
+      }
+      if (this.state.step === "finalizing") await this.reconcileFinalizing(visit);
     } catch (error) {
       if (this.run.isCurrent(visit)) {
         this.setStatus(`${errorMessage(error)}。请返回对应入口继续，或先放弃现有草稿。`, true);
@@ -215,7 +233,10 @@ export class UploadCreationView {
     this.dom.elements.nameError.textContent = "";
     this.render();
     if (this.state.step === "upload" && this.state.creation?.error) {
-      this.setStatus(`上次生成失败：${this.state.creation.error}。请重新选择照片后重试。`, true);
+      const next = this.photoBytes
+        ? "原照片已从本机临时存储恢复，可直接重试；如需换照片，请先放弃并开始新会话。"
+        : "照片未能恢复，请放弃当前创建并开始新会话后重新选择。";
+      this.setStatus(`上次生成失败：${this.state.creation.error}。${next}`, true);
     }
     if (this.state.step === "review") await this.showCandidate(visit);
     if (this.state.step === "generating") this.startPolling(visit);
@@ -273,6 +294,7 @@ export class UploadCreationView {
         hash,
       );
       if (!this.canApplySession(sessionId, visit)) return jobId;
+      this.durableSourceLoaded = true;
       const creation = this.state.creation
         ? { ...this.state.creation, currentStep: "generating", jobId, jobStatus: "pending" }
         : null;
@@ -368,6 +390,33 @@ export class UploadCreationView {
 
   private canApplySession(sessionId: string, visit?: number): boolean {
     return this.canApplyVisit(visit) && this.state.sessionId === sessionId;
+  }
+
+  private async reconcileFinalizing(visit: number): Promise<void> {
+    const sessionId = this.state.sessionId;
+    if (!sessionId || !this.run.isCurrent(visit)) return;
+    const token = this.run.begin(visit, "finalize", sessionId);
+    if (!token) return;
+    try {
+      await this.ports.creation.recoverFinalization();
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      let snapshot = await this.ports.creation.snapshot(sessionId);
+      if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      this.applySnapshot(snapshot);
+      if (this.state.step === "review") {
+        try {
+          await this.ports.finalize(sessionId);
+        } catch {
+          // The durable snapshot below decides whether recovery completed or returned to review.
+        }
+        if (!this.run.shouldApply(token, this.state.sessionId)) return;
+        snapshot = await this.ports.creation.snapshot(sessionId);
+        if (!this.run.shouldApply(token, this.state.sessionId)) return;
+        this.applySnapshot(snapshot);
+      }
+    } finally {
+      this.run.settle(token);
+    }
   }
 
   private async showCandidate(visit: number): Promise<void> {
@@ -486,6 +535,10 @@ export class UploadCreationView {
 
   private async readSelectedPhoto(): Promise<void> {
     if (!this.dom) return;
+    if (this.durableSourceLoaded) {
+      this.setStatus("如需换照片，请先放弃当前创建并开始新会话。", true);
+      return;
+    }
     const file = this.dom.elements.photoInput.files?.[0];
     if (!file) return;
     const revision = ++this.photoRevision;
@@ -503,6 +556,7 @@ export class UploadCreationView {
   private clearPhoto(): void {
     this.photoRevision += 1;
     this.photoBytes = null;
+    this.durableSourceLoaded = false;
     if (!this.dom) return;
     if (this.photoObjectUrl) this.dom.revokeObjectURL(this.photoObjectUrl);
     this.photoObjectUrl = null;
@@ -517,6 +571,7 @@ export class UploadCreationView {
     const source = await this.ports.creation.uploadSource(sessionId).catch(() => null);
     if (!source || revision !== this.photoRevision || !this.run.isCurrent(visit)) return;
     this.photoBytes = dataUrlBytes(source.dataUrl);
+    this.durableSourceLoaded = true;
     if (this.photoObjectUrl) this.dom.revokeObjectURL(this.photoObjectUrl);
     this.photoObjectUrl = null;
     this.dom.elements.photoPreview.src = source.dataUrl;
@@ -612,6 +667,7 @@ export class UploadCreationView {
       this.dom.elements.nameError.textContent = "";
       this.dynamicReady = false;
       this.photoBytes = retainedPhoto;
+      this.durableSourceLoaded = false;
       if (retainedPhoto && retainedPreview) {
         this.dom.elements.photoPreview.src = retainedPreview;
         this.dom.elements.photoPreview.hidden = false;
@@ -635,6 +691,8 @@ export class UploadCreationView {
     } finally {
       this.run.settle(token);
       if (this.run.isCurrent(visit)) {
+        this.render();
+      } else if (this.mounted) {
         this.render();
       }
     }

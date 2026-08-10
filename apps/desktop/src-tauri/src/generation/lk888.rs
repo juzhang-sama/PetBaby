@@ -213,6 +213,8 @@ impl Lk888Client {
 #[cfg(test)]
 mod tests {
     use base64::Engine;
+    use image::{DynamicImage, ImageFormat, RgbImage};
+    use std::io::Cursor;
     use wiremock::{
         matchers::{method, path, query_param},
         Mock, MockServer, ResponseTemplate,
@@ -248,6 +250,41 @@ mod tests {
             base64::engine::general_purpose::STANDARD.encode(png)
         );
         assert_eq!(body["params"]["images"][0], expected_url);
+    }
+
+    #[tokio::test]
+    async fn real_jpeg_is_normalized_to_a_valid_png_in_the_provider_request() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/media/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "task_id": 17 }
+            })))
+            .mount(&server)
+            .await;
+        let mut jpeg = Cursor::new(Vec::new());
+        DynamicImage::ImageRgb8(RgbImage::from_pixel(3, 2, image::Rgb([4, 5, 6])))
+            .write_to(&mut jpeg, ImageFormat::Jpeg)
+            .unwrap();
+        let jpeg = jpeg.into_inner();
+        let hash = crate::generation::tasks::sha256_hex(&jpeg);
+        let normalized = crate::generation::tasks::normalize_upload_source(&jpeg, &hash).unwrap();
+
+        let client = Lk888Client::new_with("k".into(), server.uri(), "gpt-image-2".into());
+        client
+            .submit("a cat", Some(&normalized.png), "auto")
+            .await
+            .unwrap();
+
+        let received = server.received_requests().await.unwrap();
+        let body: serde_json::Value = serde_json::from_slice(&received[0].body).unwrap();
+        let url = body["params"]["images"][0].as_str().unwrap();
+        let encoded = url.strip_prefix("data:image/png;base64,").unwrap();
+        let bytes = base64::engine::general_purpose::STANDARD
+            .decode(encoded)
+            .unwrap();
+        assert_eq!(&bytes[..8], b"\x89PNG\r\n\x1a\n");
+        image::load_from_memory_with_format(&bytes, ImageFormat::Png).unwrap();
     }
 
     #[tokio::test]

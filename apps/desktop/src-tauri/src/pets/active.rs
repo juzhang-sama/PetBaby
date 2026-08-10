@@ -319,6 +319,11 @@ impl ActivePetService {
                     return Err("creation commit changed before it could complete".into());
                 }
             }
+            tx.execute(
+                "DELETE FROM creation_upload_sources WHERE session_id=?1",
+                [session_id],
+            )
+            .map_err(|error| error.to_string())?;
         } else if let Some(variant_id) = accepted_variant_id {
             let affected = tx
                 .execute(
@@ -836,6 +841,15 @@ mod tests {
                     rusqlite::params![variant_id, session_id],
                 )
                 .unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO creation_upload_sources
+                     (session_id, normalized_png, sha256, mime_type, byte_size, created_at)
+                     VALUES (?1, X'89', ?2, 'image/png', 1, '0')",
+                    rusqlite::params![session_id, "0".repeat(64)],
+                )
+                .unwrap();
             drop(storage);
             test
         }
@@ -1011,6 +1025,19 @@ mod tests {
         assert_eq!(state.2, "completed");
         assert_eq!(state.3, "completed");
         assert_eq!(state.4, None);
+        assert_eq!(
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM creation_upload_sources WHERE session_id='session-created'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
     }
 
     #[test]
@@ -1155,6 +1182,66 @@ mod tests {
         assert_eq!(state.1, None);
         assert_eq!(state.2, "finalizing");
         assert_eq!(test.persisted_active(), None);
+        assert_eq!(
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM creation_upload_sources WHERE session_id='session-created'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
+    }
+
+    #[test]
+    fn creation_source_cleanup_failure_rolls_back_completed_state_and_preserves_source() {
+        let test = ActiveHarness::with_creation_candidate(
+            "pet-created",
+            "variant-created",
+            "session-created",
+        );
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_source_cleanup BEFORE DELETE ON creation_upload_sources
+                 BEGIN SELECT RAISE(ABORT, 'forced source cleanup failure'); END;",
+            )
+            .unwrap();
+
+        assert!(test
+            .service
+            .commit(
+                None,
+                "pet-created",
+                Some("variant-created"),
+                Some("session-created"),
+            )
+            .unwrap_err()
+            .contains("forced source cleanup failure"));
+
+        assert!(!test.variant_accepted("variant-created"));
+        let state = test.creation_state("pet-created", "session-created");
+        assert_eq!(state.0, "draft");
+        assert_eq!(state.2, "finalizing");
+        assert_eq!(
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM creation_upload_sources WHERE session_id='session-created'",
+                    [],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            1
+        );
     }
 
     #[test]

@@ -313,8 +313,10 @@ impl CreationFinalizationService {
                 match self
                     .finalization_record(&session_id)
                     .and_then(|record| self.validate_record(&record).map(|()| record))
-                    .and_then(|record| self.validate_completed_install(&record))
-                {
+                    .and_then(|record| {
+                        self.validate_completed_install(&record)?;
+                        self.clear_completed_upload_source(&record)
+                    }) {
                     Ok(()) => report.completed_session_ids.push(session_id),
                     Err(error) => report.warnings.push(format!(
                         "creation recovery skipped completed session {session_id}: {error}"
@@ -592,11 +594,12 @@ impl CreationFinalizationService {
 
     fn mark_recovered_completed(&self, record: &FinalizationRecord) -> Result<(), String> {
         let now = crate::creation::profiles::now_iso();
-        let affected = self
-            .storage
-            .lock()
-            .map_err(|_| "storage lock poisoned")?
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
             .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let affected = tx
             .execute(
                 "UPDATE creation_sessions
                  SET status='completed', last_stable_status='completed',
@@ -612,7 +615,37 @@ impl CreationFinalizationService {
         if affected != 1 {
             return Err("creation session changed while recording recovered completion".into());
         }
-        Ok(())
+        tx.execute(
+            "DELETE FROM creation_upload_sources WHERE session_id=?1",
+            [&record.session_id],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    fn clear_completed_upload_source(&self, record: &FinalizationRecord) -> Result<(), String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let completed: bool = tx
+            .query_row(
+                "SELECT status='completed' FROM creation_sessions
+                 WHERE session_id=?1 AND pet_id=?2",
+                rusqlite::params![record.session_id, record.pet_id],
+                |row| Ok(row.get::<_, i64>(0)? != 0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !completed {
+            return Err("creation session changed before completed source cleanup".into());
+        }
+        tx.execute(
+            "DELETE FROM creation_upload_sources WHERE session_id=?1",
+            [&record.session_id],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
     }
 
     fn validate_completed_install(&self, record: &FinalizationRecord) -> Result<(), String> {
@@ -1215,6 +1248,33 @@ mod tests {
                 .query_row(
                     "SELECT COUNT(*) FROM variants WHERE variant_id=?1 AND pet_id=?2",
                     rusqlite::params![self.variant_id, self.pet_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        }
+
+        fn insert_upload_source(&self) {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute(
+                    "INSERT INTO creation_upload_sources
+                     (session_id, normalized_png, sha256, mime_type, byte_size, created_at)
+                     VALUES (?1, X'89', ?2, 'image/png', 1, '0')",
+                    rusqlite::params![self.session_id, "0".repeat(64)],
+                )
+                .unwrap();
+        }
+
+        fn upload_source_count(&self) -> i64 {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM creation_upload_sources WHERE session_id=?1",
+                    [&self.session_id],
                     |row| row.get(0),
                 )
                 .unwrap()
@@ -2340,6 +2400,7 @@ mod tests {
     fn recover_reports_completed_sessions_without_cleaning_their_assets() {
         let test = FinalizationHarness::candidate_ready();
         test.complete();
+        test.insert_upload_source();
 
         let report = test.service.recover().unwrap();
 
@@ -2348,6 +2409,7 @@ mod tests {
         assert!(report.cleaned_session_ids.is_empty());
         assert!(test.assets().exists());
         assert_eq!(test.runtime_variant_count(), 1);
+        assert_eq!(test.upload_source_count(), 0);
     }
 
     #[test]
@@ -2397,6 +2459,7 @@ mod tests {
                 [&test.session_id],
             )
             .unwrap();
+        test.insert_upload_source();
 
         let first = test.service.recover().unwrap();
         let second = test.service.recover().unwrap();
@@ -2406,6 +2469,41 @@ mod tests {
         assert_eq!(test.status().0, "completed");
         assert!(test.assets().exists());
         assert_eq!(test.runtime_variant_count(), 1);
+        assert_eq!(test.upload_source_count(), 0);
+    }
+
+    #[test]
+    fn recovered_completion_rolls_back_status_when_source_cleanup_fails() {
+        let test = FinalizationHarness::candidate_ready();
+        test.complete();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='finalizing', last_stable_status='candidateReady',
+                     current_step='finalizing', completed_at=NULL
+                 WHERE session_id=?1",
+                [&test.session_id],
+            )
+            .unwrap();
+        test.insert_upload_source();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_source_cleanup BEFORE DELETE ON creation_upload_sources
+                 BEGIN SELECT RAISE(ABORT, 'forced source cleanup failure'); END;",
+            )
+            .unwrap();
+
+        let report = test.service.recover().unwrap();
+
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(test.status().0, "finalizing");
+        assert_eq!(test.upload_source_count(), 1);
     }
 
     #[test]

@@ -51,6 +51,7 @@ export function createCreationApi(invoke: InvokePort) {
       invoke<UploadJobRecord[]>("creation_upload_jobs", { sessionId }),
     uploadSource: (sessionId: string) =>
       invoke<UploadSource | null>("creation_upload_source", { sessionId }),
+    recoverFinalization: () => invoke<unknown>("creation_recover_finalization"),
   };
 }
 

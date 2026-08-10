@@ -2,6 +2,7 @@ use crate::creation::profiles;
 use crate::creation::StandardCandidate;
 use crate::storage::Storage;
 use rusqlite::{Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -14,6 +15,102 @@ pub struct CreationStore {
 impl CreationStore {
     pub fn new(storage: Arc<Mutex<Storage>>) -> Self {
         Self { storage }
+    }
+
+    pub fn save_upload_source(
+        &self,
+        session_id: &str,
+        normalized_png: &[u8],
+        sha256: &str,
+        mime_type: &str,
+    ) -> Result<(), String> {
+        if normalized_png.is_empty() || sha256_hex(normalized_png) != sha256 {
+            return Err("upload source hash does not match its normalized bytes".into());
+        }
+        if mime_type != "image/png"
+            || image::guess_format(normalized_png).ok() != Some(image::ImageFormat::Png)
+        {
+            return Err("upload source mime must match normalized PNG bytes".into());
+        }
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        require_writable_upload_session(&tx, session_id)?;
+        let existing: Option<UploadSourceRecord> = tx
+            .query_row(
+                "SELECT normalized_png, sha256, mime_type, byte_size, created_at
+                 FROM creation_upload_sources WHERE session_id=?1",
+                [session_id],
+                |row| {
+                    Ok(UploadSourceRecord {
+                        normalized_png: row.get(0)?,
+                        sha256: row.get(1)?,
+                        mime_type: row.get(2)?,
+                        byte_size: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some(existing) = existing {
+            validate_upload_source_record(&existing)?;
+            if existing.normalized_png == normalized_png
+                && existing.sha256 == sha256
+                && existing.mime_type == mime_type
+                && existing.byte_size == normalized_png.len() as i64
+            {
+                tx.commit().map_err(|error| error.to_string())?;
+                return Ok(());
+            }
+            return Err("upload session already owns a different source image".into());
+        }
+        tx.execute(
+            "INSERT INTO creation_upload_sources
+             (session_id, normalized_png, sha256, mime_type, byte_size, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6)",
+            rusqlite::params![
+                session_id,
+                normalized_png,
+                sha256,
+                mime_type,
+                normalized_png.len() as i64,
+                profiles::now_iso()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn upload_source(&self, session_id: &str) -> Result<Option<UploadSourceRecord>, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        require_writable_upload_session(&storage.db, session_id)?;
+        let record = storage
+            .db
+            .query_row(
+                "SELECT normalized_png, sha256, mime_type, byte_size, created_at
+                 FROM creation_upload_sources WHERE session_id=?1",
+                [session_id],
+                |row| {
+                    Ok(UploadSourceRecord {
+                        normalized_png: row.get(0)?,
+                        sha256: row.get(1)?,
+                        mime_type: row.get(2)?,
+                        byte_size: row.get(3)?,
+                        created_at: row.get(4)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if let Some(record) = record {
+            validate_upload_source_record(&record)?;
+            Ok(Some(record))
+        } else {
+            Ok(None)
+        }
     }
 
     pub fn create_job(
@@ -1083,6 +1180,68 @@ fn validate_candidate_paths(
     ))
 }
 
+fn require_writable_upload_session(db: &Connection, session_id: &str) -> Result<(), String> {
+    let session: Option<(String, String)> = db
+        .query_row(
+            "SELECT method, status FROM creation_sessions WHERE session_id=?1",
+            [session_id],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let (method, status) =
+        session.ok_or_else(|| format!("creation session not found: {session_id}"))?;
+    if method != "upload" {
+        return Err("upload source requires an upload session".into());
+    }
+    if matches!(status.as_str(), "completed" | "abandoned") {
+        return Err("upload source cannot belong to a terminal session".into());
+    }
+    Ok(())
+}
+
+pub(crate) fn sha256_hex(data: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(data);
+    format!("{:x}", hasher.finalize())
+}
+
+fn validate_upload_source_record(record: &UploadSourceRecord) -> Result<(), String> {
+    if sha256_hex(&record.normalized_png) != record.sha256 {
+        return Err("upload source hash metadata is corrupt".into());
+    }
+    if record.normalized_png.len() as i64 != record.byte_size {
+        return Err("upload source size metadata is corrupt".into());
+    }
+    if record.mime_type != "image/png"
+        || image::guess_format(&record.normalized_png).ok() != Some(image::ImageFormat::Png)
+    {
+        return Err("upload source mime metadata is corrupt".into());
+    }
+    let mut reader = image::ImageReader::with_format(
+        std::io::Cursor::new(&record.normalized_png),
+        image::ImageFormat::Png,
+    );
+    let mut limits = image::Limits::default();
+    limits.max_image_width = Some(4096);
+    limits.max_image_height = Some(4096);
+    limits.max_alloc = Some(128 * 1024 * 1024);
+    reader.limits(limits);
+    reader
+        .decode()
+        .map_err(|error| format!("upload source PNG data is corrupt: {error}"))?;
+    Ok(())
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct UploadSourceRecord {
+    pub normalized_png: Vec<u8>,
+    pub sha256: String,
+    pub mime_type: String,
+    pub byte_size: i64,
+    pub created_at: String,
+}
+
 #[derive(Debug, Clone, serde::Serialize)]
 #[serde(rename_all = "camelCase")]
 pub struct JobRecord {
@@ -1122,6 +1281,187 @@ mod tests {
             )
             .unwrap();
         (CreationStore::new(storage), root, pet.pet_id)
+    }
+
+    fn upload_store() -> (CreationStore, std::path::PathBuf, String, String) {
+        let (store, root, pet_id) = temp_store();
+        let session_id = format!("session-source-{pet_id}");
+        store
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO creation_sessions
+                 (session_id, pet_id, method, status, last_stable_status, current_step,
+                  schema_version, created_at, updated_at)
+                 VALUES (?1, ?2, 'upload', 'draft', 'draft', 'upload', 1, ?3, ?3)",
+                rusqlite::params![session_id, pet_id, now_iso()],
+            )
+            .unwrap();
+        (store, root, pet_id, session_id)
+    }
+
+    fn source_png(red: u8) -> Vec<u8> {
+        let image = image::RgbaImage::from_pixel(2, 2, image::Rgba([red, 2, 3, 255]));
+        let mut bytes = std::io::Cursor::new(Vec::new());
+        image::DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, image::ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn upload_source_blob_is_session_owned_and_idempotent_only_for_identical_metadata() {
+        let (store, root, _, session_id) = upload_store();
+        let bytes = source_png(1);
+        let hash = super::sha256_hex(&bytes);
+
+        store
+            .save_upload_source(&session_id, &bytes, &hash, "image/png")
+            .unwrap();
+        store
+            .save_upload_source(&session_id, &bytes, &hash, "image/png")
+            .unwrap();
+        let source = store.upload_source(&session_id).unwrap().unwrap();
+
+        assert_eq!(source.normalized_png, bytes);
+        assert_eq!(source.sha256, hash);
+        assert_eq!(source.mime_type, "image/png");
+        assert_eq!(source.byte_size, bytes.len() as i64);
+        let different = source_png(9);
+        let different_hash = super::sha256_hex(&different);
+        assert!(store
+            .save_upload_source(&session_id, &different, &different_hash, "image/png")
+            .unwrap_err()
+            .contains("different"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upload_source_read_rejects_tampered_blob_hash_size_or_mime_metadata() {
+        let cases = [
+            ("normalized_png=X'00'", "hash"),
+            (
+                "sha256='ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
+                "hash",
+            ),
+            ("byte_size=999", "size"),
+            ("mime_type='image/jpeg'", "mime"),
+        ];
+        for (update, expected) in cases {
+            let (store, root, _, session_id) = upload_store();
+            let bytes = source_png(1);
+            let hash = super::sha256_hex(&bytes);
+            store
+                .save_upload_source(&session_id, &bytes, &hash, "image/png")
+                .unwrap();
+            store
+                .storage
+                .lock()
+                .unwrap()
+                .db
+                .execute_batch(&format!(
+                    "PRAGMA ignore_check_constraints=ON;
+                     UPDATE creation_upload_sources SET {update} WHERE session_id='{session_id}';
+                     PRAGMA ignore_check_constraints=OFF;"
+                ))
+                .unwrap();
+
+            let error = store.upload_source(&session_id).unwrap_err();
+
+            assert!(error.contains(expected), "{update}: {error}");
+            let _ = std::fs::remove_dir_all(root);
+        }
+    }
+
+    #[test]
+    fn upload_source_read_rejects_jointly_tampered_metadata_and_truncated_png() {
+        let (store, root, _, session_id) = upload_store();
+        let bytes = source_png(1);
+        let hash = super::sha256_hex(&bytes);
+        store
+            .save_upload_source(&session_id, &bytes, &hash, "image/png")
+            .unwrap();
+        let truncated = b"\x89PNG\r\n\x1a\n";
+        store
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE creation_upload_sources
+                 SET normalized_png=?2, sha256=?3, mime_type='image/png', byte_size=?4
+                 WHERE session_id=?1",
+                rusqlite::params![
+                    session_id,
+                    truncated,
+                    super::sha256_hex(truncated),
+                    truncated.len() as i64
+                ],
+            )
+            .unwrap();
+
+        assert!(store
+            .upload_source(&session_id)
+            .unwrap_err()
+            .contains("PNG"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upload_source_rejects_non_upload_terminal_and_unowned_sessions() {
+        let (store, root, pet_id, session_id) = upload_store();
+        let bytes = source_png(1);
+        let hash = super::sha256_hex(&bytes);
+        store
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE creation_sessions SET method='composer' WHERE session_id=?1",
+                [&session_id],
+            )
+            .unwrap();
+        assert!(store
+            .save_upload_source(&session_id, &bytes, &hash, "image/png")
+            .unwrap_err()
+            .contains("upload"));
+        store
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE creation_sessions SET method='upload', status='completed' WHERE session_id=?1",
+                [&session_id],
+            )
+            .unwrap();
+        assert!(store
+            .save_upload_source(&session_id, &bytes, &hash, "image/png")
+            .unwrap_err()
+            .contains("terminal"));
+        assert!(store
+            .save_upload_source("session-missing", &bytes, &hash, "image/png")
+            .unwrap_err()
+            .contains("not found"));
+        assert_eq!(
+            store
+                .storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM creation_upload_sources WHERE session_id=?1",
+                    [&session_id],
+                    |row| row.get::<_, i64>(0),
+                )
+                .unwrap(),
+            0
+        );
+        assert!(!pet_id.is_empty());
+        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

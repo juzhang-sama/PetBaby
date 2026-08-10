@@ -25,10 +25,15 @@ describe("settings upload creation assembly", () => {
 
     expect(html).not.toContain('value="dog"');
     expect(html).toContain('for="pet-name"');
-    expect(html).toContain('aria-describedby="pet-name-error"');
+    expect(html).toContain('aria-describedby="pet-name-help pet-name-error"');
     expect(html).toContain("满意，出现在桌面");
-    expect(html).toContain("照片将上传到第三方生成平台");
+    expect(html).toContain("上传到第三方生成平台");
     expect(html).not.toContain('maxlength="40"');
+    expect(html).toContain('accept="image/png,image/jpeg"');
+    expect(html).toContain("1–20 个可见字符");
+    expect(html).toContain("按完整字素计");
+    expect(html).toContain("原图会仅在本机临时保存用于失败恢复");
+    expect(html).toContain("完成或放弃后删除");
   });
 
   it("loads source and candidate contracts from strongly typed backend commands", () => {

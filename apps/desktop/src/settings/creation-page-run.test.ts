@@ -55,10 +55,11 @@ describe("CreationPageRun", () => {
     const old = run.begin(firstVisit, "finalize", "session-1")!;
     run.leave();
     const currentVisit = run.enter("upload");
-    const current = run.begin(currentVisit, "retry", "session-1")!;
+    expect(run.begin(currentVisit, "retry", "session-1")).toBeNull();
 
     run.settle(old);
 
+    const current = run.begin(currentVisit, "retry", "session-1")!;
     expect(run.isMutating("session-1")).toBe(true);
     expect(run.begin(currentVisit, "abandon", "session-1")).toBeNull();
     run.settle(current);

@@ -89,4 +89,13 @@ describe("creationApi", () => {
       sessionId: "session-1",
     });
   });
+
+  it("reconciles durable finalization without client-owned arguments", async () => {
+    const invoke = vi.fn().mockResolvedValue({ completedSessionIds: [] });
+    const api = createCreationApi(invoke);
+
+    await api.recoverFinalization();
+
+    expect(invoke).toHaveBeenCalledWith("creation_recover_finalization");
+  });
 });

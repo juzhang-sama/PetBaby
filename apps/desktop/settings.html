@@ -37,13 +37,13 @@
           <div id="step-upload">
             <div class="field-group">
               <label for="photo-input">猫咪照片</label>
-              <input type="file" id="photo-input" accept="image/*" />
+              <input type="file" id="photo-input" accept="image/png,image/jpeg" />
               <p class="field-help">正面、全身清晰、背景简单的照片效果更稳定。</p>
             </div>
             <img id="photo-preview" alt="已选择的猫咪照片预览" hidden />
             <div class="privacy-note">
-              隐私提示：照片将上传到第三方生成平台（gpt-image-2）用于生成卡通形象，
-              平台侧生成结果默认保留；本地仅保存你的宠物资产。你可以随时返回或放弃创建。
+              隐私提示：原图会仅在本机临时保存用于失败恢复，完成或放弃后删除；
+              生成时照片会上传到第三方生成平台（gpt-image-2），平台侧生成结果默认保留。
             </div>
           </div>
           <div id="step-generating" hidden>
@@ -57,7 +57,8 @@
             <div class="candidate-grid" id="candidate-grid"></div>
             <div class="field-group name-field">
               <label for="pet-name">给它取个名字</label>
-              <input id="pet-name" type="text" autocomplete="off" aria-describedby="pet-name-error" />
+              <input id="pet-name" type="text" autocomplete="off" aria-describedby="pet-name-help pet-name-error" />
+              <p id="pet-name-help" class="field-help">请输入 1–20 个可见字符（按完整字素计）；最终名称以后端校验为准。</p>
               <p id="pet-name-error" class="field-error" role="alert"></p>
             </div>
             <div class="wizard-actions" id="review-actions">

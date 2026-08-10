@@ -25,8 +25,10 @@ export class CreationPageRun {
   leave(): void {
     this.visit += 1;
     this.active = false;
-    this.busy.clear();
-    this.mutations.clear();
+    const mutationOwners = new Set(this.mutations.values());
+    for (const [key, owner] of this.busy) {
+      if (!mutationOwners.has(owner)) this.busy.delete(key);
+    }
   }
 
   isCurrent(visit: number): boolean {
