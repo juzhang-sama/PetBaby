@@ -32,4 +32,51 @@ describe("CreationPageRun", () => {
     run.settle(first!);
     expect(run.begin(visit, "finalize", "session-1")).not.toBeNull();
   });
+
+  it("serializes every mutation kind for the same session", () => {
+    const run = new CreationPageRun();
+    const visit = run.enter("upload");
+    const finalize = run.begin(visit, "finalize", "session-1");
+
+    expect(finalize).not.toBeNull();
+    expect(run.begin(visit, "retry", "session-1")).toBeNull();
+    expect(run.begin(visit, "abandon", "session-1")).toBeNull();
+    expect(run.begin(visit, "submit", "session-1")).toBeNull();
+    expect(run.isMutating("session-1")).toBe(true);
+
+    run.settle(finalize!);
+    expect(run.isMutating("session-1")).toBe(false);
+    expect(run.begin(visit, "abandon", "session-1")).not.toBeNull();
+  });
+
+  it("does not let settling an old visit unlock the current visit mutation", () => {
+    const run = new CreationPageRun();
+    const firstVisit = run.enter("upload");
+    const old = run.begin(firstVisit, "finalize", "session-1")!;
+    run.leave();
+    const currentVisit = run.enter("upload");
+    const current = run.begin(currentVisit, "retry", "session-1")!;
+
+    run.settle(old);
+
+    expect(run.isMutating("session-1")).toBe(true);
+    expect(run.begin(currentVisit, "abandon", "session-1")).toBeNull();
+    run.settle(current);
+    expect(run.isMutating("session-1")).toBe(false);
+  });
+
+  it("does not let an old poll settlement unlock the current visit poll", () => {
+    const run = new CreationPageRun();
+    const firstVisit = run.enter("upload");
+    const old = run.begin(firstVisit, "poll", "session-1")!;
+    run.leave();
+    const currentVisit = run.enter("upload");
+    const current = run.begin(currentVisit, "poll", "session-1")!;
+
+    run.settle(old);
+
+    expect(run.begin(currentVisit, "poll", "session-1")).toBeNull();
+    run.settle(current);
+    expect(run.begin(currentVisit, "poll", "session-1")).not.toBeNull();
+  });
 });

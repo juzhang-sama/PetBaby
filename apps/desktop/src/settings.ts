@@ -1,7 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
 import { creationApi } from "./creation/api";
 import type { PetCatalogEntry } from "./pets/pet-catalog-contract";
-import type { MotionProfileV1 } from "./runtime/animated-image-manifest";
 import { CandidatePreviewController } from "./settings/candidate-dynamic-preview";
 import { finalizeCreation } from "./settings/creation-finalizer";
 import {
@@ -13,6 +12,7 @@ import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-vie
 import { requestPetSwitch } from "./settings/pet-switch-client";
 import {
   queryUploadCreationElements,
+  type CandidateDynamicAssets,
   UploadCreationView,
 } from "./settings/upload-creation-view";
 
@@ -186,13 +186,8 @@ const uploadView = new UploadCreationView(
     createElement: (tagName) => document.createElement(tagName),
     loadApiKey: () => invoke<string | null>("app_setting_get", { key: "lk888_api_key" }),
     saveApiKey: (value) => invoke<void>("app_setting_set", { key: "lk888_api_key", value }),
-    loadCandidate: async (jobId) => {
-      const [bodyUrl, motionProfile] = await Promise.all([
-        invoke<string>("gen_cutout_b64", { jobId }),
-        invoke<MotionProfileV1>("gen_motion_profile", { jobId }),
-      ]);
-      return { schemaVersion: 3, bodyUrl, motionProfile };
-    },
+    loadCandidate: (jobId) =>
+      invoke<CandidateDynamicAssets>("creation_upload_candidate_assets", { jobId }),
     preview: candidatePreview,
     setInterval: (callback, delayMs) => window.setInterval(callback, delayMs),
     clearInterval: (id) => window.clearInterval(id),

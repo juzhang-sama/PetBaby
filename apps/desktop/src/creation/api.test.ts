@@ -78,4 +78,15 @@ describe("creationApi", () => {
       sessionId: "session-1",
     });
   });
+
+  it("loads a durable upload source by camelCase sessionId", async () => {
+    const invoke = vi.fn().mockResolvedValue(null);
+    const api = createCreationApi(invoke);
+
+    await api.uploadSource("session-1");
+
+    expect(invoke).toHaveBeenCalledWith("creation_upload_source", {
+      sessionId: "session-1",
+    });
+  });
 });

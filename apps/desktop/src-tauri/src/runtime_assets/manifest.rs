@@ -92,6 +92,7 @@ pub fn manifest_identity(manifest: &RuntimeAssetManifest) -> (&str, &str) {
 }
 
 pub const MANIFEST_SCHEMA_VERSION: u32 = 1;
+pub const ANIMATED_IMAGE_SCHEMA_VERSION: u32 = 3;
 const SHA256_HEX: fn(&str) -> bool =
     |value| value.len() == 64 && value.bytes().all(|b| b.is_ascii_hexdigit());
 const ALLOWED_EXTENSIONS: [&str; 8] = [

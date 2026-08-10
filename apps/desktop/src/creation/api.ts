@@ -19,6 +19,11 @@ export interface UploadJobRecord {
   createdAt: string;
 }
 
+export interface UploadSource {
+  dataUrl: string;
+  refSha256: string;
+}
+
 export function createCreationApi(invoke: InvokePort) {
   return {
     start: (method: "upload" | "composer") =>
@@ -44,6 +49,8 @@ export function createCreationApi(invoke: InvokePort) {
       }),
     uploadJobs: (sessionId: string) =>
       invoke<UploadJobRecord[]>("creation_upload_jobs", { sessionId }),
+    uploadSource: (sessionId: string) =>
+      invoke<UploadSource | null>("creation_upload_source", { sessionId }),
   };
 }
 

@@ -20,6 +20,7 @@ export interface UploadCreationPorts {
       refSha256: string,
     ): Promise<string>;
     uploadJobs(sessionId: string): Promise<UploadJobRecord[]>;
+    uploadSource(sessionId: string): Promise<{ dataUrl: string; refSha256: string } | null>;
   };
   finalize(sessionId: string): Promise<PetSwitchResult>;
 }
@@ -113,8 +114,9 @@ export class UploadCreationView {
     step: "upload",
     creation: null,
   };
-  private finalizing: Promise<PetSwitchResult> | null = null;
-  private abandoning: Promise<void> | null = null;
+  private finalizing: { sessionId: string; promise: Promise<PetSwitchResult> } | null = null;
+  private abandoning: { sessionId: string; promise: Promise<void> } | null = null;
+  private submitting: { sessionId: string; promise: Promise<string> } | null = null;
   private readonly run = new CreationPageRun();
   private visit = 0;
   private mounted = false;
@@ -122,6 +124,7 @@ export class UploadCreationView {
   private pollTimer: number | null = null;
   private photoBytes: Uint8Array | null = null;
   private photoObjectUrl: string | null = null;
+  private photoRevision = 0;
   private readonly onNameInput = () => this.render();
   private readonly onFinishClick = (event: Event) => {
     event.preventDefault();
@@ -197,7 +200,7 @@ export class UploadCreationView {
     if (!this.run.isCurrent(visit)) return;
     if (key) this.dom.elements.apiKeyInput.value = key;
     try {
-      await this.open();
+      await this.open(visit);
     } catch (error) {
       if (this.run.isCurrent(visit)) {
         this.setStatus(`${errorMessage(error)}。请返回对应入口继续，或先放弃现有草稿。`, true);
@@ -205,6 +208,8 @@ export class UploadCreationView {
       }
       return;
     }
+    if (!this.run.isCurrent(visit)) return;
+    await this.restoreSourcePhoto(this.state.sessionId, visit);
     if (!this.run.isCurrent(visit)) return;
     this.dom.elements.nameInput.value = this.state.creation?.displayName ?? "";
     this.dom.elements.nameError.textContent = "";
@@ -229,79 +234,109 @@ export class UploadCreationView {
     this.clearPhoto();
   }
 
-  async start(): Promise<CreationSnapshot> {
+  async start(visit?: number): Promise<CreationSnapshot> {
     const snapshot = await this.ports.creation.start("upload");
-    this.applySnapshot(snapshot);
+    if (this.canApplyVisit(visit)) this.applySnapshot(snapshot);
     return snapshot;
   }
 
-  async open(): Promise<CreationSnapshot> {
+  async open(visit?: number): Promise<CreationSnapshot> {
     const draft = await this.ports.creation.draft();
-    if (!draft) return this.start();
+    if (!this.canApplyVisit(visit)) throw new StaleCreationOperation();
+    if (!draft) return this.start(visit);
     if (draft.method !== "upload") {
       throw new Error("已有其他创建方式的草稿，请从对应入口继续或放弃后再上传");
     }
-    return this.restore(draft.sessionId);
+    return this.restore(draft.sessionId, visit);
   }
 
-  async restore(sessionId: string): Promise<CreationSnapshot> {
+  async restore(sessionId: string, visit?: number): Promise<CreationSnapshot> {
     const snapshot = await this.ports.creation.snapshot(sessionId);
-    this.applySnapshot(snapshot);
+    if (this.canApplyVisit(visit)) this.applySnapshot(snapshot);
     return snapshot;
   }
 
-  async submit(bytes: Uint8Array): Promise<string> {
+  async submit(bytes: Uint8Array, visit?: number): Promise<string> {
     const sessionId = this.state.sessionId;
     if (!sessionId) throw new Error("请先开始上传创建");
-    const jobId = await this.ports.creation.uploadStart(
-      sessionId,
-      buildPrompt(),
-      bytesToBase64(bytes),
-      await sha256Hex(bytes),
-    );
-    const creation = this.state.creation
-      ? { ...this.state.creation, currentStep: "generating", jobId, jobStatus: "pending" }
-      : null;
-    this.state = { ...this.state, step: "generating", creation };
-    return jobId;
+    if (this.submitting?.sessionId === sessionId) return this.submitting.promise;
+    if (this.finalizing?.sessionId === sessionId || this.abandoning?.sessionId === sessionId) {
+      throw new Error("当前创建正在执行其他操作，请稍候");
+    }
+    const submitting = (async () => {
+      const hash = await sha256Hex(bytes);
+      if (!this.canApplySession(sessionId, visit)) throw new StaleCreationOperation();
+      const jobId = await this.ports.creation.uploadStart(
+        sessionId,
+        buildPrompt(),
+        bytesToBase64(bytes),
+        hash,
+      );
+      if (!this.canApplySession(sessionId, visit)) return jobId;
+      const creation = this.state.creation
+        ? { ...this.state.creation, currentStep: "generating", jobId, jobStatus: "pending" }
+        : null;
+      this.state = { ...this.state, step: "generating", creation };
+      return jobId;
+    })();
+    this.submitting = { sessionId, promise: submitting };
+    try {
+      return await submitting;
+    } finally {
+      if (this.submitting?.promise === submitting) this.submitting = null;
+    }
   }
 
   async finish(displayName: string): Promise<PetSwitchResult> {
     if (!displayName.trim()) throw new Error("请输入宠物名称");
-    if (this.finalizing) return this.finalizing;
     const sessionId = this.state.sessionId;
     if (!sessionId) throw new Error("请先开始上传创建");
+    if (this.finalizing?.sessionId === sessionId) return this.finalizing.promise;
+    if (this.abandoning?.sessionId === sessionId) {
+      throw new Error("当前创建正在放弃，不能同时完成创建");
+    }
+    if (this.submitting?.sessionId === sessionId) {
+      throw new Error("照片正在提交，不能同时完成创建");
+    }
+    const visit = this.mounted ? this.visit : undefined;
     const finishing = (async () => {
       const saved = await this.ports.creation.setName(sessionId, displayName);
+      if (!this.canApplySession(sessionId, visit)) throw new StaleCreationOperation();
       this.applySnapshot(saved);
       this.state = { ...this.state, step: "finalizing" };
       try {
         const result = await this.ports.finalize(sessionId);
-        this.state = {
-          ...this.state,
-          step: result.ok ? "complete" : "review",
-        };
+        if (this.canApplySession(sessionId, visit)) {
+          this.state = { ...this.state, step: result.ok ? "complete" : "review" };
+        }
         return result;
       } catch (error) {
-        this.state = { ...this.state, step: "review" };
+        if (this.canApplySession(sessionId, visit)) this.state = { ...this.state, step: "review" };
         throw error;
       }
     })();
-    this.finalizing = finishing;
+    this.finalizing = { sessionId, promise: finishing };
     try {
       return await finishing;
     } finally {
-      if (this.finalizing === finishing) this.finalizing = null;
+      if (this.finalizing?.promise === finishing) this.finalizing = null;
     }
   }
 
   async abandon(): Promise<void> {
-    if (this.abandoning) return this.abandoning;
     const sessionId = this.state.sessionId;
     if (!sessionId) return;
+    if (this.abandoning?.sessionId === sessionId) return this.abandoning.promise;
+    if (this.finalizing?.sessionId === sessionId) {
+      throw new Error("当前创建正在完成，不能同时放弃");
+    }
+    if (this.submitting?.sessionId === sessionId) {
+      throw new Error("照片正在提交，不能同时放弃");
+    }
+    const visit = this.mounted ? this.visit : undefined;
     const abandoning = (async () => {
       await this.ports.creation.abandon(sessionId);
-      if (this.state.sessionId === sessionId) {
+      if (this.canApplySession(sessionId, visit)) {
         this.state = {
           sessionId: null,
           method: null,
@@ -310,11 +345,11 @@ export class UploadCreationView {
         };
       }
     })();
-    this.abandoning = abandoning;
+    this.abandoning = { sessionId, promise: abandoning };
     try {
       await abandoning;
     } finally {
-      if (this.abandoning === abandoning) this.abandoning = null;
+      if (this.abandoning?.promise === abandoning) this.abandoning = null;
     }
   }
 
@@ -327,12 +362,20 @@ export class UploadCreationView {
     };
   }
 
+  private canApplyVisit(visit?: number): boolean {
+    return visit === undefined || this.run.isCurrent(visit);
+  }
+
+  private canApplySession(sessionId: string, visit?: number): boolean {
+    return this.canApplyVisit(visit) && this.state.sessionId === sessionId;
+  }
+
   private async showCandidate(visit: number): Promise<void> {
     if (!this.dom || !this.run.isCurrent(visit)) return;
     const sessionId = this.state.sessionId;
-    const jobId = this.state.creation?.candidateId ?? this.state.creation?.jobId;
+    const jobId = this.state.creation?.jobId;
     if (!sessionId || !jobId) {
-      this.setStatus("候选记录不完整，请重新选择照片生成。", true);
+      this.setStatus("候选记录缺少生成任务 jobId，请重新生成。", true);
       this.render();
       return;
     }
@@ -416,7 +459,7 @@ export class UploadCreationView {
     if (!sessionId) return;
     const token = this.run.begin(visit, "finalize", sessionId);
     if (!token) return;
-    this.dom.elements.finishButton.disabled = true;
+    this.render();
     this.dom.elements.nameError.textContent = "";
     try {
       const result = await this.finish(this.dom.elements.nameInput.value);
@@ -445,7 +488,10 @@ export class UploadCreationView {
     if (!this.dom) return;
     const file = this.dom.elements.photoInput.files?.[0];
     if (!file) return;
+    const revision = ++this.photoRevision;
+    const visit = this.visit;
     const bytes = new Uint8Array(await file.arrayBuffer());
+    if (!this.mounted || revision !== this.photoRevision || !this.run.isCurrent(visit)) return;
     this.photoBytes = bytes;
     if (this.photoObjectUrl) this.dom.revokeObjectURL(this.photoObjectUrl);
     this.photoObjectUrl = this.dom.createObjectURL(file);
@@ -455,6 +501,7 @@ export class UploadCreationView {
   }
 
   private clearPhoto(): void {
+    this.photoRevision += 1;
     this.photoBytes = null;
     if (!this.dom) return;
     if (this.photoObjectUrl) this.dom.revokeObjectURL(this.photoObjectUrl);
@@ -462,6 +509,18 @@ export class UploadCreationView {
     this.dom.elements.photoInput.value = "";
     this.dom.elements.photoPreview.removeAttribute("src");
     this.dom.elements.photoPreview.hidden = true;
+  }
+
+  private async restoreSourcePhoto(sessionId: string | null, visit: number): Promise<void> {
+    if (!this.dom || !sessionId || !this.run.isCurrent(visit)) return;
+    const revision = ++this.photoRevision;
+    const source = await this.ports.creation.uploadSource(sessionId).catch(() => null);
+    if (!source || revision !== this.photoRevision || !this.run.isCurrent(visit)) return;
+    this.photoBytes = dataUrlBytes(source.dataUrl);
+    if (this.photoObjectUrl) this.dom.revokeObjectURL(this.photoObjectUrl);
+    this.photoObjectUrl = null;
+    this.dom.elements.photoPreview.src = source.dataUrl;
+    this.dom.elements.photoPreview.hidden = false;
   }
 
   private async saveKeyFromDom(): Promise<void> {
@@ -481,9 +540,23 @@ export class UploadCreationView {
 
   private async submitFromDom(): Promise<void> {
     if (!this.dom) return;
-    const sessionId = this.state.sessionId;
     const visit = this.visit;
-    if (!sessionId) return;
+    if (!this.state.sessionId) {
+      try {
+        await this.recoverUploadDraft(visit);
+      } catch (error) {
+        if (this.run.isCurrent(visit)) {
+          this.setStatus(`暂时无法新建上传草稿：${errorMessage(error)}。请点击“上传照片，生成候选”重试。`, true);
+          this.render();
+        }
+        return;
+      }
+    }
+    const sessionId = this.state.sessionId;
+    if (!sessionId || !this.run.isCurrent(visit)) {
+      this.setStatus("暂时无法开始上传草稿，请点击“开始生成”重试。", true);
+      return;
+    }
     if (!this.photoBytes) {
       this.setStatus("请先选择一张清晰的猫咪照片。", true);
       return;
@@ -499,7 +572,7 @@ export class UploadCreationView {
     try {
       await this.dom.saveApiKey(key);
       if (!this.run.shouldApply(token, this.state.sessionId)) return;
-      await this.submit(this.photoBytes);
+      await this.submit(this.photoBytes, visit);
       if (!this.run.shouldApply(token, this.state.sessionId)) return;
       this.setStatus("照片已安全提交，正在生成会呼吸微动的候选。", false);
       this.render();
@@ -524,13 +597,13 @@ export class UploadCreationView {
     if (!sessionId || !this.run.isCurrent(visit)) return;
     const token = this.run.begin(visit, "retry", sessionId);
     if (!token) return;
-    this.dom.elements.retryButton.disabled = true;
-    this.dom.elements.finishButton.disabled = true;
-    this.dom.elements.abandonButton.disabled = true;
+    this.render();
+    const retainedPhoto = this.photoBytes;
+    const retainedPreview = this.dom.elements.photoPreview.src;
     try {
       await this.abandon();
       if (!this.run.isCurrent(visit)) return;
-      await this.start();
+      await this.start(visit);
       if (!this.run.isCurrent(visit)) return;
       this.stopPolling();
       this.dom.preview.clear();
@@ -538,21 +611,46 @@ export class UploadCreationView {
       this.dom.elements.nameInput.value = "";
       this.dom.elements.nameError.textContent = "";
       this.dynamicReady = false;
-      this.clearPhoto();
-      this.setStatus("旧候选已清理。请重新选择一张清晰照片，再重新生成。", false);
+      this.photoBytes = retainedPhoto;
+      if (retainedPhoto && retainedPreview) {
+        this.dom.elements.photoPreview.src = retainedPreview;
+        this.dom.elements.photoPreview.hidden = false;
+      }
+      this.setStatus(retainedPhoto
+        ? "旧候选已清理，原照片仍可直接重新生成。"
+        : "旧候选已清理。请重新选择一张清晰照片，再重新生成。", false);
       this.render();
     } catch (error) {
       if (this.run.isCurrent(visit)) {
-        this.setStatus(`准备重新生成失败：${errorMessage(error)}。请返回后重新进入上传创建。`, true);
+        try {
+          await this.recoverUploadDraft(visit);
+          this.setStatus(`准备重新生成未确认：${errorMessage(error)}。已重新同步本地草稿，可继续操作。`, true);
+        } catch (recoveryError) {
+          this.setStatus(
+            `准备重新生成失败：${errorMessage(error)}；${errorMessage(recoveryError)}。请点击“上传照片，生成候选”重新开始。`,
+            true,
+          );
+        }
       }
     } finally {
       this.run.settle(token);
       if (this.run.isCurrent(visit)) {
-        this.dom.elements.retryButton.disabled = false;
-        this.dom.elements.abandonButton.disabled = false;
         this.render();
       }
     }
+  }
+
+  private async recoverUploadDraft(visit: number): Promise<void> {
+    if (!this.run.isCurrent(visit)) return;
+    const draft = await this.ports.creation.draft().catch(() => null);
+    if (!this.run.isCurrent(visit)) return;
+    if (draft) {
+      if (draft.method !== "upload") throw new Error("已有其他创建方式的草稿");
+      await this.restore(draft.sessionId, visit);
+      await this.restoreSourcePhoto(draft.sessionId, visit);
+      return;
+    }
+    await this.start(visit);
   }
 
   private async abandonFromDom(): Promise<void> {
@@ -563,7 +661,7 @@ export class UploadCreationView {
     if (!this.dom.confirm("确定放弃这次创建吗？本地草稿和生成任务会被清理。")) return;
     const token = this.run.begin(visit, "abandon", sessionId);
     if (!token) return;
-    this.dom.elements.abandonButton.disabled = true;
+    this.render();
     try {
       await this.abandon();
       if (!this.run.isCurrent(visit)) return;
@@ -575,7 +673,7 @@ export class UploadCreationView {
       }
     } finally {
       this.run.settle(token);
-      if (this.run.isCurrent(visit)) this.dom.elements.abandonButton.disabled = false;
+      if (this.run.isCurrent(visit)) this.render();
     }
   }
 
@@ -588,9 +686,14 @@ export class UploadCreationView {
     elements.stepComplete.hidden = this.state.step !== "complete";
     elements.nextButton.hidden = this.state.step !== "upload";
     elements.cancelButton.hidden = this.state.step !== "generating";
+    const mutating = this.run.isMutating(this.state.sessionId);
+    elements.nextButton.disabled = mutating;
+    elements.retryButton.disabled = mutating;
+    elements.abandonButton.disabled = mutating;
     elements.finishButton.disabled = this.state.step !== "review"
       || !this.dynamicReady
-      || !elements.nameInput.value.trim();
+      || !elements.nameInput.value.trim()
+      || mutating;
     if (this.state.step === "generating") {
       const status = this.state.creation?.jobStatus ?? "pending";
       const labels: Record<string, string> = {
@@ -632,4 +735,17 @@ function stepFromSnapshot(snapshot: CreationSnapshot): UploadCreationStep {
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
+}
+
+function dataUrlBytes(dataUrl: string): Uint8Array {
+  const match = /^data:[^;,]+;base64,([A-Za-z0-9+/=]+)$/.exec(dataUrl);
+  if (!match) throw new Error("持久照片格式无效");
+  const binary = atob(match[1]!);
+  return Uint8Array.from(binary, (value) => value.charCodeAt(0));
+}
+
+class StaleCreationOperation extends Error {
+  constructor() {
+    super("创建页面已切换");
+  }
 }

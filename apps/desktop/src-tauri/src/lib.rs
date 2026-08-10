@@ -609,6 +609,31 @@ fn creation_upload_jobs(
     store.upload_jobs(&session_id)
 }
 
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadSourceResponse {
+    data_url: String,
+    ref_sha256: String,
+}
+
+#[tauri::command]
+fn creation_upload_source(
+    manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
+    session_id: String,
+) -> Result<Option<UploadSourceResponse>, String> {
+    use base64::Engine;
+    manager.upload_source(&session_id).map(|source| {
+        source.map(|source| UploadSourceResponse {
+            data_url: format!(
+                "data:{};base64,{}",
+                source.mime_type,
+                base64::engine::general_purpose::STANDARD.encode(source.bytes)
+            ),
+            ref_sha256: source.ref_sha256,
+        })
+    })
+}
+
 #[tauri::command]
 fn gen_cancel(
     manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
@@ -692,6 +717,26 @@ fn gen_motion_profile(
     let profile = generation_job_file(&data_dir, &job_id, "motion-profile.json")?;
     let json = std::fs::read_to_string(profile).map_err(|error| error.to_string())?;
     runtime_assets::motion_profile::parse_motion_profile(&json)
+}
+
+#[derive(Debug, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+struct UploadCandidateAssets {
+    schema_version: u32,
+    body_url: String,
+    motion_profile: runtime_assets::motion_profile::MotionProfileV1,
+}
+
+#[tauri::command]
+fn creation_upload_candidate_assets(
+    app: tauri::AppHandle,
+    job_id: String,
+) -> Result<UploadCandidateAssets, String> {
+    Ok(UploadCandidateAssets {
+        schema_version: runtime_assets::manifest::ANIMATED_IMAGE_SCHEMA_VERSION,
+        body_url: gen_cutout_b64(app.clone(), job_id.clone())?,
+        motion_profile: gen_motion_profile(app, job_id)?,
+    })
 }
 
 #[tauri::command]
@@ -982,6 +1027,8 @@ pub fn run() {
             creation_recover_finalization,
             creation_upload_start,
             creation_upload_jobs,
+            creation_upload_source,
+            creation_upload_candidate_assets,
             gen_start,
             gen_cancel,
             gen_list,
@@ -1096,6 +1143,8 @@ mod tests {
         let _snapshot = super::creation_snapshot;
         let _set_name = super::creation_set_name;
         let _abandon = super::creation_abandon;
+        let _upload_source = super::creation_upload_source;
+        let _candidate_assets = super::creation_upload_candidate_assets;
     }
 
     #[test]

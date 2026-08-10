@@ -3,6 +3,7 @@ import type { CreationMethod } from "../creation/contracts";
 export type CreationPageOperation = "open" | "submit" | "poll" | "preview" | "finalize" | "retry" | "abandon";
 
 export interface CreationPageOperationToken {
+  id: number;
   visit: number;
   kind: CreationPageOperation;
   sessionId: string;
@@ -11,7 +12,9 @@ export interface CreationPageOperationToken {
 export class CreationPageRun {
   private visit = 0;
   private active = false;
-  private readonly busy = new Set<string>();
+  private readonly busy = new Map<string, number>();
+  private readonly mutations = new Map<string, number>();
+  private nextTokenId = 0;
 
   enter(_method: CreationMethod): number {
     this.visit += 1;
@@ -22,6 +25,8 @@ export class CreationPageRun {
   leave(): void {
     this.visit += 1;
     this.active = false;
+    this.busy.clear();
+    this.mutations.clear();
   }
 
   isCurrent(visit: number): boolean {
@@ -34,18 +39,33 @@ export class CreationPageRun {
     sessionId: string,
   ): CreationPageOperationToken | null {
     const key = operationKey(kind, sessionId);
+    const id = ++this.nextTokenId;
     if (!this.isCurrent(visit) || this.busy.has(key)) return null;
-    this.busy.add(key);
-    return { visit, kind, sessionId };
+    if (isMutation(kind) && this.mutations.has(sessionId)) return null;
+    this.busy.set(key, id);
+    if (isMutation(kind)) this.mutations.set(sessionId, id);
+    return { id, visit, kind, sessionId };
   }
 
   settle(token: CreationPageOperationToken): void {
-    this.busy.delete(operationKey(token.kind, token.sessionId));
+    const key = operationKey(token.kind, token.sessionId);
+    if (this.busy.get(key) === token.id) this.busy.delete(key);
+    if (this.mutations.get(token.sessionId) === token.id) {
+      this.mutations.delete(token.sessionId);
+    }
+  }
+
+  isMutating(sessionId: string | null): boolean {
+    return sessionId !== null && this.mutations.has(sessionId);
   }
 
   shouldApply(token: CreationPageOperationToken, currentSessionId: string | null): boolean {
     return this.isCurrent(token.visit) && token.sessionId === currentSessionId;
   }
+}
+
+function isMutation(kind: CreationPageOperation): boolean {
+  return kind === "submit" || kind === "finalize" || kind === "retry" || kind === "abandon";
 }
 
 function operationKey(kind: CreationPageOperation, sessionId: string): string {

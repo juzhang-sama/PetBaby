@@ -28,5 +28,16 @@ describe("settings upload creation assembly", () => {
     expect(html).toContain('aria-describedby="pet-name-error"');
     expect(html).toContain("满意，出现在桌面");
     expect(html).toContain("照片将上传到第三方生成平台");
+    expect(html).not.toContain('maxlength="40"');
+  });
+
+  it("loads source and candidate contracts from strongly typed backend commands", () => {
+    const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
+    const api = readFileSync(new URL("./creation/api.ts", import.meta.url), "utf8");
+    expect(source).toContain('"creation_upload_candidate_assets"');
+    expect(api).toContain('"creation_upload_source"');
+    expect(source).not.toContain("schemaVersion: 3");
+    expect(source).not.toContain('"gen_cutout_b64"');
+    expect(source).not.toContain('"gen_motion_profile"');
   });
 });
