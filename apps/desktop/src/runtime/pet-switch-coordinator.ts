@@ -21,6 +21,22 @@ export interface PetSwitchCoordinatorPorts {
   refreshHitRegion(): Promise<void>;
 }
 
+const CREATION_ABORT_TIMEOUT_MS = 1_000;
+
+async function boundedCreationAbort(action: () => Promise<void>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      action(),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, CREATION_ABORT_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export class PetSwitchCoordinator {
   private busy = false;
 
@@ -50,14 +66,17 @@ export class PetSwitchCoordinator {
     };
     const abortThenCancel = async (error: string): Promise<void> => {
       if (cleanup !== "open") return;
-      if (request.creationSessionId) {
-        try {
-          await this.ports.abortCreation(request.creationSessionId, error);
-        } catch (abortError) {
-          this.log(request, "creation-abort-failed", abortError);
+      try {
+        if (request.creationSessionId) {
+          try {
+            await boundedCreationAbort(() => this.ports.abortCreation(request.creationSessionId!, error));
+          } catch (abortError) {
+            this.log(request, "creation-abort-failed", abortError);
+          }
         }
+      } finally {
+        await cancel();
       }
-      await cancel();
     };
     const finish = async (): Promise<string> => {
       if (cleanup !== "open") return "";
@@ -129,7 +148,12 @@ export class PetSwitchCoordinator {
         const compensation = await this.compensateCommit(request, swap.previous.petId);
         const rollbackConverged = this.rollbackSafely(request, swap);
         await this.ports.refreshHitRegion().catch(() => undefined);
-        const finalization = compensation.converged ? await finish() : "";
+        let finalization = "";
+        if (request.creationSessionId) {
+          await abortThenCancel(`候选运行时已降级为预览帧${compensation.message}`);
+        } else if (compensation.converged) {
+          finalization = await finish();
+        }
         return failure(
           request,
           "load-failed",

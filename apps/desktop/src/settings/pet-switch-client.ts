@@ -66,9 +66,11 @@ export function requestPetSwitch(
     settled = true;
     cleanup();
     resolveResult(unavailable(error));
-    void ports.cancel(requestId).catch(() => {
-      // The backend gate has a TTL fallback when explicit cancellation cannot be delivered.
-    });
+    if (options.creationSessionId === undefined) {
+      void ports.cancel(requestId).catch(() => {
+        // The backend gate has a TTL fallback when explicit cancellation cannot be delivered.
+      });
+    }
   };
 
   const request: PetSwitchRequest = {

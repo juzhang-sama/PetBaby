@@ -48,6 +48,7 @@ interface HarnessOptions {
   fallbackCheckErrorAfterCommit?: Error;
   reconciliationStatus?: "notCommitted" | "compensated" | "unknown";
   destroyOldRuntimeError?: Error;
+  abortNever?: boolean;
 }
 
 function coordinatorHarness(options: HarnessOptions = {}) {
@@ -87,7 +88,9 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     };
   });
   const cancel = vi.fn(async () => undefined);
-  const abortCreation = vi.fn(async () => undefined);
+  const abortCreation = vi.fn(async () => {
+    if (options.abortNever) await new Promise<never>(() => undefined);
+  });
   const finish = vi.fn(async () => {
     if (options.finishError) throw options.finishError;
   });
@@ -166,7 +169,10 @@ function coordinatorHarness(options: HarnessOptions = {}) {
 }
 
 describe("PetSwitchCoordinator", () => {
-  afterEach(() => vi.unstubAllGlobals());
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
 
   it("keeps the old runtime when candidate loading fails", async () => {
     const test = coordinatorHarness({ loadError: new Error("bad asset") });
@@ -440,6 +446,44 @@ describe("PetSwitchCoordinator", () => {
     expect(test.finish).toHaveBeenCalledWith("r-fallback");
     expect(test.cancel).not.toHaveBeenCalled();
     expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
+  });
+
+  it("aborts then cancels a creation that falls back after its commit", async () => {
+    const test = coordinatorHarness({ holdCommit: true });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+    const creationRequest = {
+      requestId: "r-creation-fallback",
+      petId: "pet-b",
+      acceptedVariantId: "candidate-b",
+      creationSessionId: "session-b",
+    };
+
+    const switching = test.coordinator.switch(creationRequest);
+    await test.commitStarted;
+    test.triggerCandidatePreviewFallback();
+    test.releaseCommit();
+    await expect(switching).resolves.toMatchObject({ ok: false, code: "load-failed" });
+
+    expect(test.rollbackCommit).toHaveBeenCalledWith("pet-a", creationRequest);
+    expect(test.abortCreation).toHaveBeenCalledWith("session-b", expect.stringContaining("预览"));
+    expect(test.cancel).toHaveBeenCalledWith("r-creation-fallback");
+    expect(test.finish).not.toHaveBeenCalled();
+  });
+
+  it("bounds a hung creation abort and still cancels the exact owner", async () => {
+    vi.useFakeTimers();
+    const test = coordinatorHarness({ loadError: new Error("bad asset"), abortNever: true });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+    const switching = test.coordinator.switch({
+      requestId: "r-hung-abort",
+      petId: "pet-b",
+      creationSessionId: "session-b",
+    });
+    await vi.waitFor(() => expect(test.abortCreation).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(switching).resolves.toMatchObject({ ok: false });
+    expect(test.cancel).toHaveBeenCalledWith("r-hung-abort");
   });
 
   it("reports a visible warning without rolling back when finish rejects after commit", async () => {

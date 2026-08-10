@@ -148,6 +148,26 @@ describe("requestPetSwitch", () => {
     expect(test.cancel).toHaveBeenCalledWith("request-1");
   });
 
+  it("does not auto-cancel a timed-out creation request before finalization can abort it", async () => {
+    vi.useFakeTimers();
+    const test = clientPorts();
+    vi.stubGlobal("window", globalThis);
+
+    const pending = requestPetSwitch("pet-created", {
+      requestId: "request-creation-timeout",
+      acceptedVariantId: "candidate-1",
+      creationSessionId: "session-1",
+    }, test.ports);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      requestId: "request-creation-timeout",
+      code: "pet-window-unavailable",
+    });
+    expect(test.cancel).not.toHaveBeenCalled();
+  });
+
   it("ignores duplicate matching results after the request has settled", async () => {
     const test = clientPorts();
     vi.stubGlobal("window", globalThis);

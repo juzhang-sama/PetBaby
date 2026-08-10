@@ -1,4 +1,4 @@
-import { describe, expect, it, vi } from "vitest";
+import { afterEach, describe, expect, it, vi } from "vitest";
 import type { CreationSnapshot } from "../creation/contracts";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 import { finalizeCreation, type FinalizerPorts, type PreparedCreation } from "./creation-finalizer";
@@ -48,6 +48,8 @@ function harness(input: {
 }
 
 describe("finalizeCreation", () => {
+  afterEach(() => vi.useRealTimers());
+
   it("carries one request owner from prepare through the creation switch", async () => {
     const test = harness();
     vi.spyOn(crypto, "randomUUID").mockReturnValue("request-1" as ReturnType<typeof crypto.randomUUID>);
@@ -110,6 +112,28 @@ describe("finalizeCreation", () => {
     expect(test.abort).toHaveBeenCalledWith("session-1", "desktop request timed out");
     expect(test.cancel).toHaveBeenCalledWith("request-timeout");
     expect(test.calls).toEqual(["prepare", "switch", "abort", "cancel"]);
+  });
+
+  it("bounds a hung abort and still releases the exact request owner", async () => {
+    vi.useFakeTimers();
+    const test = harness({
+      switchResult: {
+        ok: false,
+        requestId: "request-hung-abort",
+        petId: "pet-1",
+        code: "pet-window-unavailable",
+        message: "desktop timeout",
+      },
+    });
+    test.abort.mockImplementation(() => new Promise<CreationSnapshot>(() => undefined));
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("request-hung-abort" as ReturnType<typeof crypto.randomUUID>);
+
+    const pending = finalizeCreation("session-1", test.ports);
+    await vi.waitFor(() => expect(test.abort).toHaveBeenCalledOnce());
+    await vi.advanceTimersByTimeAsync(2_000);
+
+    await expect(pending).resolves.toMatchObject({ ok: false });
+    expect(test.cancel).toHaveBeenCalledWith("request-hung-abort");
   });
 
   it("does not abort a committed success that only carries a cleanup warning", async () => {

@@ -27,6 +27,22 @@ const tauriFinalizerPorts: FinalizerPorts = {
   cancel: (requestId) => invoke<void>("pet_cancel_switch", { requestId }),
 };
 
+const ABORT_TIMEOUT_MS = 1_000;
+
+async function boundedAbort(action: () => Promise<unknown>): Promise<void> {
+  let timer: ReturnType<typeof setTimeout> | undefined;
+  try {
+    await Promise.race([
+      action().catch(() => undefined),
+      new Promise<void>((resolve) => {
+        timer = setTimeout(resolve, ABORT_TIMEOUT_MS);
+      }),
+    ]);
+  } finally {
+    if (timer !== undefined) clearTimeout(timer);
+  }
+}
+
 export async function finalizeCreation(
   sessionId: string,
   ports: FinalizerPorts = tauriFinalizerPorts,
@@ -61,8 +77,11 @@ export async function finalizeCreation(
     };
   }
   if (!result.ok) {
-    await ports.abort(prepared.sessionId, result.message).catch(() => undefined);
-    await ports.cancel(requestId).catch(() => undefined);
+    try {
+      await boundedAbort(() => ports.abort(prepared.sessionId, result.message));
+    } finally {
+      await ports.cancel(requestId).catch(() => undefined);
+    }
   }
   return result;
 }
