@@ -300,4 +300,76 @@ describe("PetRuntimeSlot", () => {
     expect(oldRuntime.host.setLipSync).toHaveBeenCalledWith(0.25);
     expect(candidate.host.setLipSync).toHaveBeenCalledWith(0.75);
   });
+
+  it("keeps an activation failure pending until rollback restores a failed surface compensation", () => {
+    const root = fakeRoot();
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const slot = new PetRuntimeSlot(root, oldRuntime);
+    slot.setVisibility(true);
+    vi.mocked(root.replaceChildren)
+      .mockImplementationOnce(() => {
+        throw new Error("mount failed");
+      })
+      .mockImplementationOnce(() => {
+        throw new Error("surface restore failed");
+      });
+    const swap = slot.prepare(candidate);
+
+    expect(() => swap.activate()).toThrow("mount failed");
+    expect(slot.activePetId).toBe("old");
+    expect(candidate.host.destroy).not.toHaveBeenCalled();
+    expect(() => swap.activate()).toThrow("swap is not activatable");
+    expect(() => swap.commit()).toThrow("swap is not committable");
+
+    swap.rollback();
+    expect(root.replaceChildren).toHaveBeenLastCalledWith(oldRuntime.getSurface());
+    expect(oldRuntime.host.setVisibility).toHaveBeenLastCalledWith(true);
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("keeps an activation failure pending until rollback restores failed visibility", () => {
+    const root = fakeRoot();
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const slot = new PetRuntimeSlot(root, oldRuntime);
+    slot.setVisibility(true);
+    vi.mocked(root.replaceChildren).mockImplementationOnce(() => {
+      throw new Error("mount failed");
+    });
+    vi.mocked(oldRuntime.host.setVisibility)
+      .mockImplementationOnce(() => undefined)
+      .mockImplementationOnce(() => {
+        throw new Error("visibility restore failed");
+      });
+    const swap = slot.prepare(candidate);
+
+    expect(() => swap.activate()).toThrow("mount failed");
+    expect(candidate.host.destroy).not.toHaveBeenCalled();
+
+    swap.rollback();
+    expect(oldRuntime.host.setVisibility).toHaveBeenLastCalledWith(true);
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("keeps the original activation error while rollback retries candidate cleanup", () => {
+    const root = fakeRoot();
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const slot = new PetRuntimeSlot(root, oldRuntime);
+    vi.mocked(root.replaceChildren).mockImplementationOnce(() => {
+      throw new Error("mount failed");
+    });
+    vi.mocked(candidate.host.destroy).mockImplementationOnce(() => {
+      throw new Error("candidate cleanup failed");
+    });
+    const swap = slot.prepare(candidate);
+
+    expect(() => swap.activate()).toThrow("mount failed");
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+
+    swap.rollback();
+    expect(candidate.host.destroy).toHaveBeenCalledTimes(2);
+    expect(slot.activePetId).toBe("old");
+  });
 });

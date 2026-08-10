@@ -30,6 +30,7 @@ interface PendingRuntimeSwap {
   previous: MountedPetRuntime;
   candidate: MountedPetRuntime;
   activated: boolean;
+  activationFailed: boolean;
   settled: boolean;
   surfaceRestored: boolean;
   viewportRestored: boolean;
@@ -84,6 +85,7 @@ export class PetRuntimeSlot implements PetRenderer {
       previous: this.active,
       candidate,
       activated: false,
+      activationFailed: false,
       settled: false,
       surfaceRestored: false,
       viewportRestored: false,
@@ -96,7 +98,7 @@ export class PetRuntimeSlot implements PetRenderer {
       previous: state.previous,
       candidate,
       activate: () => {
-        if (!this.isPending(state) || state.activated || this.active !== state.previous) {
+        if (!this.isPending(state) || state.activated || state.activationFailed || this.active !== state.previous) {
           throw new Error("swap is not activatable");
         }
         try {
@@ -118,31 +120,7 @@ export class PetRuntimeSlot implements PetRenderer {
       },
       rollback: () => {
         if (state.settled || !this.isPending(state)) return;
-        const expectedActive = state.activated && !state.surfaceRestored
-          ? candidate
-          : state.previous;
-        if (this.active !== expectedActive) throw new Error("swap is not rollbackable");
-        if (state.activated) {
-          if (!state.surfaceRestored) {
-            this.root.replaceChildren(state.previous.getSurface());
-            this.active = state.previous;
-            state.surfaceRestored = true;
-          }
-          if (!state.viewportRestored) {
-            if (this.viewport) state.previous.host.resize(this.viewport);
-            state.viewportRestored = true;
-          }
-          if (!state.visibilityRestored) {
-            state.previous.host.setVisibility(this.visible);
-            state.visibilityRestored = true;
-          }
-        }
-        if (!state.candidateDestroyed) {
-          candidate.host.destroy();
-          state.candidateDestroyed = true;
-        }
-        state.settled = true;
-        this.pending = null;
+        this.rollbackState(state);
       },
     };
   }
@@ -218,21 +196,41 @@ export class PetRuntimeSlot implements PetRenderer {
   }
 
   private abortActivation(state: PendingRuntimeSwap): void {
+    state.activationFailed = true;
     this.active = state.previous;
     try {
-      this.root.replaceChildren(state.previous.getSurface());
+      this.rollbackState(state);
     } catch {
-      // Preserve the activation failure while attempting to restore the old surface.
+      // Preserve the activation failure; rollback can resume incomplete compensation.
     }
-    try {
-      state.previous.host.setVisibility(this.visible);
-    } catch {
-      // Preserve the activation failure while attempting to restore visibility.
+  }
+
+  private rollbackState(state: PendingRuntimeSwap): void {
+    const expectedActive = state.activated && !state.surfaceRestored
+      ? state.candidate
+      : state.previous;
+    if (this.active !== expectedActive) throw new Error("swap is not rollbackable");
+    if (state.activated || state.activationFailed) {
+      if (!state.surfaceRestored) {
+        this.root.replaceChildren(state.previous.getSurface());
+        this.active = state.previous;
+        state.surfaceRestored = true;
+      }
+      if (!state.viewportRestored) {
+        if (this.viewport) state.previous.host.resize(this.viewport);
+        state.viewportRestored = true;
+      }
+      if (!state.visibilityRestored) {
+        state.previous.host.setVisibility(this.visible);
+        state.visibilityRestored = true;
+      }
     }
-    this.destroyQuietly(state.candidate);
-    state.candidateDestroyed = true;
+    if (!state.candidateDestroyed) {
+      state.candidate.host.destroy();
+      state.candidateDestroyed = true;
+    }
     state.settled = true;
-    if (this.pending === state) this.pending = null;
+    this.pending = null;
   }
 
   private destroyQuietly(runtime: MountedPetRuntime): void {
