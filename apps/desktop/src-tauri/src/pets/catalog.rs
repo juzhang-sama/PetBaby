@@ -108,7 +108,7 @@ impl PetCatalogService {
             let is_current = active_pet_id == pet_id;
             entries.push(PetCatalogEntry {
                 pet_id,
-                source: "installed".into(),
+                source: "user".into(),
                 species,
                 identity_mode,
                 created_at: Some(created_at),
@@ -657,7 +657,7 @@ mod tests {
             .into_iter()
             .find(|entry| entry.pet_id == "pet-1")
             .unwrap();
-        assert_eq!(entry.source, "installed");
+        assert_eq!(entry.source, "user");
         assert_eq!(entry.species, "cat");
         assert_eq!(entry.identity_mode, "realpet");
         assert_eq!(entry.status, PetLifecycle::CompileRetryable);

@@ -1,6 +1,7 @@
 import { invoke } from "@tauri-apps/api/core";
 import { CreationFlow } from "./creation/creation-flow";
 import type { PetCatalogEntry } from "./pets/pet-catalog-contract";
+import { deleteCurrentCatalogPet } from "./settings/pet-catalog-delete-flow";
 import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-view-model";
 import { requestPetSwitch } from "./settings/pet-switch-client";
 
@@ -146,14 +147,25 @@ async function deleteCatalogPet(petId: string): Promise<void> {
   catalogBusy = "delete";
   renderCatalogRows();
   try {
+    let outcome: DeleteOutcome;
     if (entry.isCurrent) {
-      const switched = await requestPetSwitch("pet-live2d-v1");
-      if (!switched.ok) {
-        setCatalogStatus(`无法切换至默认猫，因此未删除当前宠物。请确认宠物窗口可用后重试：${switched.message}`, "error");
+      const result = await deleteCurrentCatalogPet({
+        switchToBuiltin: async () => {
+          const switched = await requestPetSwitch("pet-live2d-v1");
+          return switched.ok ? { ok: true } : { ok: false, message: switched.message };
+        },
+        remove: () => invoke<DeleteOutcome>("pet_delete_full", { petId }),
+        refresh: async () => { await renderList(); },
+      });
+      if (result.kind === "switchFailed") {
+        setCatalogStatus(`无法切换至默认猫，因此未删除当前宠物。请确认宠物窗口可用后重试：${result.message}`, "error");
         return;
       }
+      if (result.kind === "deleteFailed") throw result.error;
+      outcome = result.outcome;
+    } else {
+      outcome = await invoke<DeleteOutcome>("pet_delete_full", { petId });
     }
-    const outcome = await invoke<DeleteOutcome>("pet_delete_full", { petId });
     if (await renderList()) {
       setCatalogStatus(outcome.warning ?? "宠物已删除。", outcome.warning ? "warning" : "info");
     }
