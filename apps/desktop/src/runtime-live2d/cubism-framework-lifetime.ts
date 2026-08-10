@@ -3,6 +3,7 @@ export interface CubismFrameworkPort<Options> {
   startUp(options: Options): boolean;
   isInitialized(): boolean;
   initialize(): void;
+  dispose(): void;
 }
 
 export interface CubismFrameworkLease {
@@ -10,6 +11,8 @@ export interface CubismFrameworkLease {
 }
 
 export class WebViewCubismFrameworkLifetime<Options> {
+  private activeLeases = 0;
+
   constructor(
     private readonly framework: CubismFrameworkPort<Options>,
     private readonly options: Options,
@@ -20,9 +23,20 @@ export class WebViewCubismFrameworkLifetime<Options> {
       throw new Error("Cubism Framework 启动失败");
     }
     if (!this.framework.isInitialized()) this.framework.initialize();
+    this.activeLeases += 1;
 
-    // The Core logging callback has no corresponding removeFunction API in the
-    // pinned Emscripten wrapper, so Framework ownership belongs to the WebView.
-    return { release() {} };
+    let released = false;
+    return {
+      release: () => {
+        if (released) return;
+        released = true;
+        this.activeLeases -= 1;
+        if (this.activeLeases === 0 && this.framework.isInitialized()) {
+          // dispose releases Framework renderer caches, but deliberately do
+          // not cleanUp: Core logging has no matching removeFunction API.
+          this.framework.dispose();
+        }
+      },
+    };
   }
 }

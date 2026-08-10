@@ -14,6 +14,7 @@ afterEach(() => {
 describe("official Cubism runtime lifecycle", () => {
   it.skipIf(!hasLocalCubismSdk)("initializes again after the previous adapter is destroyed", async () => {
     let loggingRegistrations = 0;
+    const initializeAmountOfMemory = vi.fn();
     vi.stubGlobal("Live2DCubismCore", {
       Logging: {
         csmSetLogFunction: vi.fn(() => {
@@ -27,7 +28,7 @@ describe("official Cubism runtime lifecycle", () => {
         csmGetLogFunction: vi.fn(() => undefined),
       },
       Memory: {
-        initializeAmountOfMemory: vi.fn(),
+        initializeAmountOfMemory,
       },
       Version: {
         csmGetVersion: vi.fn(() => 0x05000000),
@@ -48,5 +49,6 @@ describe("official Cubism runtime lifecycle", () => {
     second.destroy();
 
     expect(loggingRegistrations).toBe(1);
+    expect(initializeAmountOfMemory).toHaveBeenCalledTimes(2);
   });
 });
