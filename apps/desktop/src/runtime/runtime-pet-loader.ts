@@ -73,13 +73,14 @@ function manifestVersionOf(value: unknown): number {
 function rejectCandidatePreviewFallback(
   runtime: PetRendererRuntime,
   manifest: unknown,
+  source: RuntimePetDescriptor["source"],
   options: RuntimePetLoadOptions,
 ): PetRendererRuntime {
   const manifestVersion = manifestVersionOf(manifest);
   if (
-    !options.allowPreviewFallback
-    && (manifestVersion === 2 || manifestVersion === 3)
+    (manifestVersion === 2 || manifestVersion === 3)
     && runtime.kind() === "static-png"
+    && (source !== "builtin" || !options.allowPreviewFallback)
   ) {
     runtime.host.destroy();
     throw new Error("preview fallback is not allowed for hot switching");
@@ -116,6 +117,7 @@ export async function loadRuntimePet(
       const loadedRuntime = rejectCandidatePreviewFallback(
         runtime,
         manifest,
+        descriptor.source,
         options,
       );
       return {
@@ -147,6 +149,7 @@ export async function loadRuntimePet(
     const loadedRuntime = rejectCandidatePreviewFallback(
       runtime,
       manifest,
+      descriptor.source,
       options,
     );
     return {

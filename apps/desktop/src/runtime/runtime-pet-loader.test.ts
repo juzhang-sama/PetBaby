@@ -1,7 +1,31 @@
 import { afterEach, describe, expect, it, vi } from "vitest";
+import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
 import { validAnimatedManifest } from "./animated-image-test-fixtures";
 import type { PetRendererRuntime } from "./pet-renderer-bootstrap";
 import { loadRuntimePet, type RuntimePetLoaderPorts } from "./runtime-pet-loader";
+
+function validLive2DManifest(petId: string): RuntimeAssetManifestV2 {
+  return {
+    schemaVersion: 2,
+    renderer: "live2d-v1",
+    petId,
+    variantId: "variant-live2d",
+    modelEntry: "model.model3.json",
+    previewImage: "preview.png",
+    files: [
+      { role: "model", relativePath: "model.model3.json", sha256: "a".repeat(64) },
+      { role: "preview", relativePath: "preview.png", sha256: "b".repeat(64) },
+    ],
+    semantics: { motions: {}, expressions: {}, hitAreas: {}, parameters: {} },
+    license: {
+      id: "test",
+      author: "test",
+      source: "test",
+      commercialUse: true,
+      redistributable: false,
+    },
+  };
+}
 
 function fakeRuntime(): PetRendererRuntime {
   return {
@@ -207,6 +231,45 @@ describe("loadRuntimePet", () => {
     )).rejects.toThrow("preview fallback is not allowed for hot switching");
 
     expect(ports.createPreviewRuntime).not.toHaveBeenCalled();
+  });
+
+  it("rejects an installed Live2D startup fallback even when preview fallback is enabled", async () => {
+    const ports = loaderPorts();
+    const fallbackRuntime = fakeRuntime();
+    fallbackRuntime.host = { destroy: vi.fn() } as unknown as PetRendererRuntime["host"];
+    ports.readInstalledManifest.mockResolvedValue(validLive2DManifest("pet-user-1"));
+    ports.createRuntime.mockResolvedValue(fallbackRuntime);
+
+    await expect(loadRuntimePet(
+      { petId: "pet-user-1", source: "installed" },
+      {} as HTMLElement,
+      ports,
+      { allowPreviewFallback: true },
+    )).rejects.toThrow("preview fallback is not allowed");
+
+    expect(fallbackRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(ports.createPreviewRuntime).not.toHaveBeenCalled();
+  });
+
+  it("allows a built-in Live2D startup fallback when preview fallback is enabled", async () => {
+    const ports = loaderPorts();
+    const fallbackRuntime = fakeRuntime();
+    fallbackRuntime.host = { destroy: vi.fn() } as unknown as PetRendererRuntime["host"];
+    ports.createBuiltinTransport.mockReturnValue({
+      readManifest: vi.fn(async () => validLive2DManifest("pet-live2d-v1")),
+      readFile: vi.fn(),
+    });
+    ports.createRuntime.mockResolvedValue(fallbackRuntime);
+    vi.stubGlobal("window", { location: { origin: "http://localhost" } });
+
+    await expect(loadRuntimePet(
+      { petId: "pet-live2d-v1", source: "builtin" },
+      {} as HTMLElement,
+      ports,
+      { allowPreviewFallback: true },
+    )).resolves.toMatchObject({ petId: "pet-live2d-v1" });
+
+    expect(fallbackRuntime.host.destroy).not.toHaveBeenCalled();
   });
 
   it("rejects an animated-image candidate that reports a static runtime", async () => {
