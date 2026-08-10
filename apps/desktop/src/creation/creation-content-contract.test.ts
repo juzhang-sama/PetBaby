@@ -1,8 +1,9 @@
 import { createHash } from "node:crypto";
-import { spawn } from "node:child_process";
+import { spawn, type ChildProcess } from "node:child_process";
 import { existsSync } from "node:fs";
 import { mkdtemp, readdir, readFile, realpath, rm, stat, writeFile } from "node:fs/promises";
 import { createServer } from "node:http";
+import { createConnection } from "node:net";
 import { tmpdir } from "node:os";
 import path from "node:path";
 import { fileURLToPath } from "node:url";
@@ -123,7 +124,7 @@ const representativeRecipes = [
   recipe({ bodyId: "body-round", earsId: "ears-round", eyesId: "eyes-amber", muzzleId: "muzzle-gentle", tailId: "tail-curl", colorId: "color-cream", patternId: "pattern-none" }),
   recipe({ bodyId: "body-slim", earsId: "ears-pointed", eyesId: "eyes-green", muzzleId: "muzzle-curious", tailId: "tail-straight", colorId: "color-gray", patternId: "pattern-tabby" }),
   recipe({ bodyId: "body-fluffy", earsId: "ears-tufted", eyesId: "eyes-gold", muzzleId: "muzzle-smile", tailId: "tail-plume", colorId: "color-orange", patternId: "pattern-calico" }),
-  recipe({ bodyId: "body-round", earsId: "ears-tufted", eyesId: "eyes-gold", muzzleId: "muzzle-sleepy", tailId: "tail-short", colorId: "color-black", patternId: "pattern-calico" }),
+  recipe({ bodyId: "body-round", earsId: "ears-tufted", eyesId: "eyes-gold", muzzleId: "muzzle-sleepy", tailId: "tail-short", colorId: "color-black", patternId: "pattern-tuxedo" }),
   recipe({ bodyId: "body-slim", earsId: "ears-round", eyesId: "eyes-violet", muzzleId: "muzzle-gentle", tailId: "tail-curl", colorId: "color-white", patternId: "pattern-spots" }),
   recipe({ bodyId: "body-fluffy", earsId: "ears-pointed", eyesId: "eyes-amber", muzzleId: "muzzle-smile", tailId: "tail-straight", colorId: "color-brown", patternId: "pattern-none" }),
   recipe({ bodyId: "body-round", earsId: "ears-folded", eyesId: "eyes-blue", muzzleId: "muzzle-curious", tailId: "tail-plume", colorId: "color-cream", patternId: "pattern-tabby" }),
@@ -147,6 +148,14 @@ function alphaStats(raster: Raster): { transparent: number; visible: number; opa
 async function renderRecipesInChrome(
   pack: ComposerPackManifest,
   recipes: readonly ComposerRecipe[],
+  options: {
+    browserPath?: string;
+    browserCandidates?: readonly string[];
+    galleryOutputPath?: string;
+    onListening?: (port: number) => void;
+    profilePrefix?: string;
+    timeoutMs?: number;
+  } = {},
 ): Promise<{ outputs: Uint8Array[]; gallery: Uint8Array }> {
   const entry = `
     import { parseComposerPack } from "./composer-pack.ts";
@@ -169,7 +178,7 @@ async function renderRecipesInChrome(
         await send("/result/" + index, blob);
       }
       const gallery = document.createElement("canvas"); gallery.width = 1024; gallery.height = 768;
-      const context = gallery.getContext("2d");
+      const context = gallery.getContext("2d"); context.imageSmoothingEnabled = false;
       for (let y = 0; y < 768; y += 16) for (let x = 0; x < 1024; x += 16) { context.fillStyle = ((x / 16 + y / 16) & 1) ? "#cccccc" : "#e8e8e8"; context.fillRect(x, y, 16, 16); }
       for (let index = 0; index < blobs.length; index += 1) { const bitmap = await createImageBitmap(blobs[index]); context.drawImage(bitmap, index % 4 * 256, Math.floor(index / 4) * 256, 256, 256); bitmap.close(); }
       const galleryBlob = await ports.toPng(gallery); await send("/gallery", galleryBlob);
@@ -191,6 +200,7 @@ async function renderRecipesInChrome(
   let browserError: string | undefined;
   let resolveFinished!: () => void;
   const finished = new Promise<void>((resolve) => { resolveFinished = resolve; });
+  let completionPosted = false;
   const server = createServer(async (request, response) => {
     const url = new URL(request.url ?? "/", "http://127.0.0.1");
     const body = async () => {
@@ -209,33 +219,140 @@ async function renderRecipesInChrome(
       if (url.pathname.startsWith("/result/")) { outputs.set(Number(url.pathname.slice(8)), await body()); response.end("ok"); return; }
       if (url.pathname === "/gallery") { gallery = await body(); response.end("ok"); return; }
       if (url.pathname === "/error") { browserError = new TextDecoder().decode(await body()); response.end("ok"); return; }
-      if (url.pathname === "/finished") { await body(); response.end("ok"); resolveFinished(); return; }
+      if (url.pathname === "/finished") { await body(); completionPosted = true; response.end("ok"); resolveFinished(); return; }
       response.statusCode = 404; response.end();
     } catch (error) { response.statusCode = 500; response.end(String(error)); }
   });
-  await new Promise<void>((resolve, reject) => { server.once("error", reject); server.listen(0, "127.0.0.1", resolve); });
-  const address = server.address();
-  if (!address || typeof address === "string") throw new Error("test server did not bind a TCP port");
-  const browser = [
-    "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
-    "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
-    "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
-  ].find(existsSync);
-  if (!browser) throw new Error("Chrome/Edge is required for production Canvas content verification");
-  const profile = await mkdtemp(path.join(tmpdir(), "pet-baby-composer-browser-"));
-  const process = spawn(browser, ["--headless=new", "--disable-gpu", "--no-sandbox", "--remote-debugging-port=0", `--user-data-dir=${profile}`, `http://127.0.0.1:${address.port}/`], { stdio: "ignore" });
+  let browserProcess: ChildProcess | undefined;
+  let profile: string | undefined;
+  let timeout: ReturnType<typeof setTimeout> | undefined;
   try {
-    await Promise.race([finished, new Promise<never>((_, reject) => setTimeout(() => reject(new Error("browser composer verification timed out")), 90_000))]);
+    const explicitBrowser = options.browserPath ?? process.env.CHROME_PATH;
+    if (explicitBrowser && !existsSync(explicitBrowser)) {
+      throw new Error(`${options.browserPath ? "browserPath" : "CHROME_PATH"} does not exist: ${explicitBrowser}`);
+    }
+    const candidates = options.browserCandidates ?? [
+      "C:\\Program Files\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files (x86)\\Google\\Chrome\\Application\\chrome.exe",
+      "C:\\Program Files\\Microsoft\\Edge\\Application\\msedge.exe",
+      "C:\\Program Files (x86)\\Microsoft\\Edge\\Application\\msedge.exe",
+      "/Applications/Google Chrome.app/Contents/MacOS/Google Chrome",
+      "/Applications/Microsoft Edge.app/Contents/MacOS/Microsoft Edge",
+      "/usr/bin/google-chrome",
+      "/usr/bin/google-chrome-stable",
+      "/usr/bin/chromium",
+      "/usr/bin/chromium-browser",
+      "/snap/bin/chromium",
+    ];
+    const browser = explicitBrowser ?? candidates.find(existsSync);
+    if (!browser) throw new Error("Chrome/Edge was not found; set CHROME_PATH to run production Canvas verification");
+
+    await new Promise<void>((resolve, reject) => {
+      const onError = (error: Error) => { server.off("listening", onListening); reject(error); };
+      const onListening = () => { server.off("error", onError); resolve(); };
+      server.once("error", onError);
+      server.once("listening", onListening);
+      server.listen(0, "127.0.0.1");
+    });
+    const address = server.address();
+    if (!address || typeof address === "string") throw new Error("test server did not bind a TCP port");
+    options.onListening?.(address.port);
+
+    const prefix = options.profilePrefix ?? "pet-baby-composer-browser-";
+    if (!prefix || path.basename(prefix) !== prefix) throw new Error(`invalid browser profile prefix: ${prefix}`);
+    profile = await mkdtemp(path.join(tmpdir(), prefix));
+    browserProcess = spawn(browser, ["--headless=new", "--disable-gpu", "--no-sandbox", "--remote-debugging-port=0", `--user-data-dir=${profile}`, `http://127.0.0.1:${address.port}/`], {
+      detached: process.platform !== "win32",
+      stdio: "ignore",
+      windowsHide: true,
+    });
+    const browserFailed = new Promise<never>((_, reject) => {
+      browserProcess!.once("error", (error) => reject(new Error(`browser failed to start: ${error.message}`)));
+      browserProcess!.once("exit", (code, signal) => {
+        if (!completionPosted) reject(new Error(`browser exited before completing (code=${String(code)}, signal=${String(signal)})`));
+      });
+    });
+    const timedOut = new Promise<never>((_, reject) => {
+      timeout = setTimeout(() => reject(new Error("browser composer verification timed out")), options.timeoutMs ?? 90_000);
+    });
+    await Promise.race([finished, browserFailed, timedOut]);
+    if (browserError) throw new Error(browserError);
+    if (outputs.size !== recipes.length || !gallery) throw new Error(`browser returned ${outputs.size}/${recipes.length} outputs and gallery=${Boolean(gallery)}`);
+    if (options.galleryOutputPath) {
+      const target = path.resolve(options.galleryOutputPath);
+      const temporaryRoot = (await realpath(tmpdir())).toLocaleLowerCase();
+      const targetDirectory = (await realpath(path.dirname(target))).toLocaleLowerCase();
+      if (targetDirectory !== temporaryRoot && !targetDirectory.startsWith(temporaryRoot + path.sep)) {
+        throw new Error(`galleryOutputPath must be inside the system temporary directory: ${target}`);
+      }
+      await writeFile(target, gallery);
+    }
+    return { outputs: recipes.map((_, index) => outputs.get(index)!), gallery };
   } finally {
-    const exited = process.exitCode === null ? new Promise<void>((resolve) => process.once("exit", () => resolve())) : Promise.resolve();
-    process.kill();
-    await Promise.race([exited, new Promise<void>((resolve) => setTimeout(resolve, 2_000))]);
-    await new Promise<void>((resolve) => server.close(() => resolve()));
-    try { await rm(profile, { recursive: true, force: true, maxRetries: 5, retryDelay: 100 }); } catch { /* Browser cleanup is best effort on Windows. */ }
+    if (timeout) clearTimeout(timeout);
+    if (browserProcess) await terminateProcessTree(browserProcess);
+    server.closeAllConnections();
+    if (server.listening) {
+      await new Promise<void>((resolve, reject) => server.close((error) => error ? reject(error) : resolve()));
+    }
+    if (profile) await rm(profile, { recursive: true, force: true, maxRetries: 10, retryDelay: 100 });
   }
-  if (browserError) throw new Error(browserError);
-  if (outputs.size !== recipes.length || !gallery) throw new Error(`browser returned ${outputs.size}/${recipes.length} outputs and gallery=${Boolean(gallery)}`);
-  return { outputs: recipes.map((_, index) => outputs.get(index)!), gallery };
+}
+
+async function waitForExit(child: ChildProcess, timeoutMs: number): Promise<boolean> {
+  if (child.exitCode !== null || child.signalCode !== null) return true;
+  return new Promise((resolve) => {
+    let settled = false;
+    const finish = (exited: boolean) => {
+      if (settled) return;
+      settled = true;
+      clearTimeout(timeout);
+      child.off("exit", onExit);
+      resolve(exited);
+    };
+    const onExit = () => finish(true);
+    const timeout = setTimeout(() => finish(false), timeoutMs);
+    child.once("exit", onExit);
+  });
+}
+
+async function runAndWait(command: string, args: readonly string[]): Promise<void> {
+  await new Promise((resolve) => {
+    const child = spawn(command, args, { stdio: "ignore", windowsHide: true });
+    const finish = () => resolve(undefined);
+    child.once("error", finish);
+    child.once("exit", finish);
+  });
+}
+
+async function terminateProcessTree(child: ChildProcess): Promise<void> {
+  if (await waitForExit(child, 1)) return;
+  if (!child.pid) return;
+  if (process.platform === "win32") {
+    await runAndWait("taskkill", ["/pid", String(child.pid), "/T", "/F"]);
+  } else {
+    try { process.kill(-child.pid, "SIGTERM"); } catch { child.kill("SIGTERM"); }
+  }
+  if (await waitForExit(child, 5_000)) return;
+  if (process.platform !== "win32") {
+    try { process.kill(-child.pid, "SIGKILL"); } catch { child.kill("SIGKILL"); }
+  } else {
+    child.kill("SIGKILL");
+  }
+  await waitForExit(child, 5_000);
+}
+
+async function canConnectTo(port: number): Promise<boolean> {
+  return new Promise((resolve) => {
+    const socket = createConnection({ host: "127.0.0.1", port });
+    const finish = (result: boolean) => {
+      socket.destroy();
+      resolve(result);
+    };
+    socket.setTimeout(1_000, () => finish(false));
+    socket.once("connect", () => finish(true));
+    socket.once("error", () => finish(false));
+  });
 }
 
 describe("production cat composer content", () => {
@@ -287,6 +404,36 @@ describe("production cat composer content", () => {
     }
   });
 
+  it("has no saturated green chroma fringe on semi-transparent silhouette edges", async () => {
+    const pack = await readProductionPack();
+    for (const relative of declaredPaths(pack)) {
+      const raster = decodeRgbaPng(await readFile(path.join(packRoot, relative)));
+      let fringePixels = 0;
+      for (let y = 1; y < raster.height - 1; y += 1) {
+        for (let x = 1; x < raster.width - 1; x += 1) {
+          const index = (y * raster.width + x) * 4;
+          const red = raster.pixels[index]!;
+          const green = raster.pixels[index + 1]!;
+          const blue = raster.pixels[index + 2]!;
+          const alpha = raster.pixels[index + 3]!;
+          if (alpha <= 4 || alpha >= 192) continue;
+          const touchesTransparent = [
+            index - 4,
+            index + 4,
+            index - raster.width * 4,
+            index + raster.width * 4,
+          ].some((neighbor) => raster.pixels[neighbor + 3]! <= 4);
+          const highest = Math.max(red, green, blue);
+          const saturation = (highest - Math.min(red, green, blue)) / Math.max(highest, 1);
+          if (touchesTransparent && green - Math.max(red, blue) >= 16 && saturation >= 0.18) {
+            fringePixels += 1;
+          }
+        }
+      }
+      expect.soft(fringePixels, `${relative} retains green/olive chroma fringe`).toBe(0);
+    }
+  });
+
   it("keeps every tail away from canvas crops and free of long flat alpha cutoffs", async () => {
     const pack = await readProductionPack();
     for (const tail of pack.tails) {
@@ -328,6 +475,45 @@ describe("production cat composer content", () => {
     }
   });
 
+  it("keeps each ear root organically curved instead of a long diagonal cut", async () => {
+    const pack = await readProductionPack();
+    for (const ear of pack.ears) {
+      const raster = decodeRgbaPng(await readFile(path.join(packRoot, ear.image)));
+      for (const side of ["left", "right"] as const) {
+        const points: Array<[number, number]> = [];
+        for (let y = 0; y < raster.height; y += 1) {
+          const row: number[] = [];
+          const start = side === "left" ? 0 : 512;
+          const end = side === "left" ? 512 : raster.width;
+          for (let x = start; x < end; x += 1) {
+            if (raster.pixels[(y * raster.width + x) * 4 + 3]! > 8) row.push(x);
+          }
+          if (row.length > 0) points.push([y, side === "left" ? row.at(-1)! : row[0]!]);
+        }
+        const root = points.slice(-50);
+        expect(root.length, `${ear.image} ${side} root samples`).toBe(50);
+        const meanY = root.reduce((sum, [y]) => sum + y, 0) / root.length;
+        const meanX = root.reduce((sum, [, x]) => sum + x, 0) / root.length;
+        const denominator = root.reduce((sum, [y]) => sum + (y - meanY) ** 2, 0);
+        const slope = root.reduce((sum, [y, x]) => sum + (y - meanY) * (x - meanX), 0) / denominator;
+        const intercept = meanX - slope * meanY;
+        const rmse = Math.sqrt(root.reduce((sum, [y, x]) => sum + (x - (slope * y + intercept)) ** 2, 0) / root.length);
+        expect.soft(rmse, `${ear.image} ${side} root is a straight alpha seam`).toBeGreaterThan(1.5);
+        const blendedDepth = points.slice(Math.floor(points.length / 3)).reduce((sum, [y, edge]) => {
+          const direction = side === "left" ? -1 : 1;
+          let blended = 0;
+          for (let distance = 0; distance < 20; distance += 1) {
+            const x = edge + direction * distance;
+            const alpha = raster.pixels[(y * raster.width + x) * 4 + 3]!;
+            if (alpha > 4 && alpha < 221) blended += 1;
+          }
+          return sum + blended;
+        }, 0) / Math.max(1, points.length - Math.floor(points.length / 3));
+        expect.soft(blendedDepth, `${ear.image} ${side} root lacks a broad feathered blend into the head`).toBeGreaterThan(8);
+      }
+    }
+  });
+
   it("has distinct authored variants and honest eye/pattern state files", async () => {
     const pack = await readProductionPack();
     const hashes = async (paths: readonly string[]) => Promise.all(paths.map(async (value) => hash(await readFile(path.join(packRoot, value)))));
@@ -359,8 +545,29 @@ describe("production cat composer content", () => {
     }
   });
 
-  it("exports 12 representative recipes through the production renderer and writes the checked gallery", async () => {
+  it("includes an explicit black+tuxedo visual stress recipe", () => {
+    expect(representativeRecipes).toContainEqual(expect.objectContaining({ colorId: "color-black", patternId: "pattern-tuxedo" }));
+  });
+
+  it("closes the server, child, timeout and browser profile when the browser exits early", async () => {
     const pack = await readProductionPack();
+    const prefix = `pet-baby-composer-cleanup-${process.pid}-${Date.now()}-`;
+    const before = (await readdir(tmpdir())).filter((entry) => entry.startsWith(prefix));
+    let listeningPort: number | undefined;
+    await expect(renderRecipesInChrome(pack, representativeRecipes.slice(0, 1), {
+      browserPath: process.execPath,
+      profilePrefix: prefix,
+      timeoutMs: 5_000,
+      onListening: (port: number) => { listeningPort = port; },
+    })).rejects.toThrow(/browser exited before completing/i);
+    expect(listeningPort).toBeDefined();
+    expect(await canConnectTo(listeningPort!)).toBe(false);
+    expect((await readdir(tmpdir())).filter((entry) => entry.startsWith(prefix))).toEqual(before);
+  }, 15_000);
+
+  it("exports 12 representative recipes and verifies the committed gallery without rewriting it", async () => {
+    const pack = await readProductionPack();
+    const galleryBefore = await stat(galleryPath);
     const hashes = new Set<string>();
     expect(new Set(representativeRecipes.map((selected) => selected.bodyId))).toEqual(new Set(expected.bodies));
     expect(new Set(representativeRecipes.map((selected) => selected.earsId))).toEqual(new Set(expected.ears));
@@ -373,7 +580,9 @@ describe("production cat composer content", () => {
       expect(validateRecipe(pack, selected)).toEqual([]);
       expect(() => motionProfileForRecipe(pack, selected)).not.toThrow();
     }
-    const browser = await renderRecipesInChrome(pack, representativeRecipes);
+    const browser = await renderRecipesInChrome(pack, representativeRecipes, {
+      galleryOutputPath: process.env.COMPOSER_GALLERY_OUTPUT,
+    });
     for (const bytes of browser.outputs) {
       const raster = decodeRgbaPng(bytes);
       expect([raster.width, raster.height]).toEqual([1024, 1024]);
@@ -383,7 +592,11 @@ describe("production cat composer content", () => {
       hashes.add(hash(bytes));
     }
     expect(hashes.size).toBe(representativeRecipes.length);
-    await writeFile(galleryPath, browser.gallery);
-    expect(decodeRgbaPng(await readFile(galleryPath))).toMatchObject({ width: 1024, height: 768 });
+    const generatedGallery = decodeRgbaPng(browser.gallery);
+    const committedGallery = decodeRgbaPng(await readFile(galleryPath));
+    expect(generatedGallery).toMatchObject({ width: 1024, height: 768 });
+    expect(committedGallery).toMatchObject({ width: generatedGallery.width, height: generatedGallery.height });
+    expect(hash(new Uint8Array(committedGallery.pixels)), "committed gallery must match the current deterministic renderer output").toBe(hash(new Uint8Array(generatedGallery.pixels)));
+    expect((await stat(galleryPath)).mtimeMs, "ordinary verification must not rewrite the tracked gallery").toBe(galleryBefore.mtimeMs);
   }, 120_000);
 });
