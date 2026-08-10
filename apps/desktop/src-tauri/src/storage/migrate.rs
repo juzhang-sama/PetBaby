@@ -60,7 +60,8 @@ pub const MIGRATIONS: &[&str] = &[
     // v3: unified creation sessions, recipes and pet creation metadata
     r#"
     ALTER TABLE pets ADD COLUMN display_name TEXT;
-    ALTER TABLE pets ADD COLUMN creation_method TEXT NOT NULL DEFAULT 'upload';
+    ALTER TABLE pets ADD COLUMN creation_method TEXT NOT NULL DEFAULT 'upload'
+      CHECK(creation_method IN ('upload','composer','adoption'));
     ALTER TABLE pets ADD COLUMN source_template_id TEXT;
     ALTER TABLE pets ADD COLUMN source_template_version INTEGER;
     ALTER TABLE pets ADD COLUMN lifecycle TEXT NOT NULL DEFAULT 'ready';
@@ -596,6 +597,66 @@ mod tests {
             [],
         )
         .unwrap();
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn database_accepts_all_supported_creation_methods() {
+        let (db, root) = temp_db();
+        apply(&db).unwrap();
+        for method in ["upload", "composer", "adoption"] {
+            db.execute(
+                "INSERT INTO pets
+                 (pet_id, schema_version, species, identity_mode, creation_method,
+                  lifecycle, created_at, updated_at)
+                 VALUES (?1, 1, 'cat', 'realpet', ?1, 'draft', '10', '10')",
+                [method],
+            )
+            .unwrap();
+        }
+        let count: i64 = db
+            .query_row("SELECT COUNT(*) FROM pets", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(count, 3);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn database_rejects_invalid_creation_method_insert() {
+        let (db, root) = temp_db();
+        apply(&db).unwrap();
+        let error = db
+            .execute(
+                "INSERT INTO pets
+                 (pet_id, schema_version, species, identity_mode, creation_method,
+                  lifecycle, created_at, updated_at)
+                 VALUES ('pet-a', 1, 'cat', 'realpet', 'invalid', 'draft', '10', '10')",
+                [],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("CHECK constraint failed"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn database_rejects_invalid_creation_method_update() {
+        let (db, root) = temp_db();
+        apply(&db).unwrap();
+        db.execute(
+            "INSERT INTO pets
+             (pet_id, schema_version, species, identity_mode, creation_method,
+              lifecycle, created_at, updated_at)
+             VALUES ('pet-a', 1, 'cat', 'realpet', 'upload', 'draft', '10', '10')",
+            [],
+        )
+        .unwrap();
+        let error = db
+            .execute(
+                "UPDATE pets SET creation_method='invalid' WHERE pet_id='pet-a'",
+                [],
+            )
+            .unwrap_err();
+        assert!(error.to_string().contains("CHECK constraint failed"));
         let _ = std::fs::remove_dir_all(root);
     }
 }

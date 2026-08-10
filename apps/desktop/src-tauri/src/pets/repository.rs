@@ -41,7 +41,7 @@ impl PetRepository {
                     species: parse_species(&species),
                     identity_mode: parse_mode(&mode),
                     display_name: row.get(3)?,
-                    creation_method: parse_creation_method(&method),
+                    creation_method: parse_creation_method_column(&method, 4)?,
                     source_template_id: row.get(5)?,
                     source_template_version: row.get(6)?,
                     lifecycle: row.get(7)?,
@@ -151,7 +151,7 @@ impl PetRepository {
                     species: parse_species(&species),
                     identity_mode: parse_mode(&mode),
                     display_name: row.get(4)?,
-                    creation_method: parse_creation_method(&method),
+                    creation_method: parse_creation_method_column(&method, 5)?,
                     source_template_id: row.get(6)?,
                     source_template_version: row.get(7)?,
                     lifecycle: row.get(8)?,
@@ -334,6 +334,12 @@ mod tests {
         assert_eq!(pet.source_template_version, None);
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn unknown_creation_method_is_an_explicit_parse_error() {
+        let error = parse_creation_method("corrupt").unwrap_err();
+        assert!(error.contains("unknown creation method"));
+    }
 }
 
 fn creation_method_value(method: CreationMethod) -> &'static str {
@@ -352,10 +358,21 @@ fn method_for_identity_mode(mode: IdentityMode) -> CreationMethod {
     }
 }
 
-fn parse_creation_method(value: &str) -> CreationMethod {
+fn parse_creation_method(value: &str) -> Result<CreationMethod, String> {
     match value {
-        "composer" => CreationMethod::Composer,
-        "adoption" => CreationMethod::Adoption,
-        _ => CreationMethod::Upload,
+        "upload" => Ok(CreationMethod::Upload),
+        "composer" => Ok(CreationMethod::Composer),
+        "adoption" => Ok(CreationMethod::Adoption),
+        _ => Err(format!("unknown creation method: {value}")),
     }
+}
+
+fn parse_creation_method_column(value: &str, column: usize) -> rusqlite::Result<CreationMethod> {
+    parse_creation_method(value).map_err(|error| {
+        rusqlite::Error::FromSqlConversionFailure(
+            column,
+            rusqlite::types::Type::Text,
+            Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+        )
+    })
 }
