@@ -24,7 +24,12 @@ impl CreationStore {
         sha256: &str,
         mime_type: &str,
     ) -> Result<(), String> {
-        if normalized_png.is_empty() || sha256_hex(normalized_png) != sha256 {
+        if normalized_png.is_empty()
+            || normalized_png.len() > crate::generation::tasks::MAX_NORMALIZED_PNG_BYTES
+        {
+            return Err("normalized upload source must be between 1 byte and 24 MiB".into());
+        }
+        if sha256_hex(normalized_png) != sha256 {
             return Err("upload source hash does not match its normalized bytes".into());
         }
         if mime_type != "image/png"
@@ -38,25 +43,8 @@ impl CreationStore {
             .transaction()
             .map_err(|error| error.to_string())?;
         require_writable_upload_session(&tx, session_id)?;
-        let existing: Option<UploadSourceRecord> = tx
-            .query_row(
-                "SELECT normalized_png, sha256, mime_type, byte_size, created_at
-                 FROM creation_upload_sources WHERE session_id=?1",
-                [session_id],
-                |row| {
-                    Ok(UploadSourceRecord {
-                        normalized_png: row.get(0)?,
-                        sha256: row.get(1)?,
-                        mime_type: row.get(2)?,
-                        byte_size: row.get(3)?,
-                        created_at: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
+        let existing = load_upload_source_record(&tx, session_id)?;
         if let Some(existing) = existing {
-            validate_upload_source_record(&existing)?;
             if existing.normalized_png == normalized_png
                 && existing.sha256 == sha256
                 && existing.mime_type == mime_type
@@ -85,32 +73,15 @@ impl CreationStore {
     }
 
     pub fn upload_source(&self, session_id: &str) -> Result<Option<UploadSourceRecord>, String> {
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        require_writable_upload_session(&storage.db, session_id)?;
-        let record = storage
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
             .db
-            .query_row(
-                "SELECT normalized_png, sha256, mime_type, byte_size, created_at
-                 FROM creation_upload_sources WHERE session_id=?1",
-                [session_id],
-                |row| {
-                    Ok(UploadSourceRecord {
-                        normalized_png: row.get(0)?,
-                        sha256: row.get(1)?,
-                        mime_type: row.get(2)?,
-                        byte_size: row.get(3)?,
-                        created_at: row.get(4)?,
-                    })
-                },
-            )
-            .optional()
+            .transaction()
             .map_err(|error| error.to_string())?;
-        if let Some(record) = record {
-            validate_upload_source_record(&record)?;
-            Ok(Some(record))
-        } else {
-            Ok(None)
-        }
+        require_writable_upload_session(&tx, session_id)?;
+        let record = load_upload_source_record(&tx, session_id)?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(record)
     }
 
     pub fn create_job(
@@ -1206,12 +1177,72 @@ pub(crate) fn sha256_hex(data: &[u8]) -> String {
     format!("{:x}", hasher.finalize())
 }
 
-fn validate_upload_source_record(record: &UploadSourceRecord) -> Result<(), String> {
-    if sha256_hex(&record.normalized_png) != record.sha256 {
-        return Err("upload source hash metadata is corrupt".into());
+struct UploadSourceMetadata {
+    blob_length: i64,
+    sha256: String,
+    mime_type: String,
+    byte_size: i64,
+    created_at: String,
+}
+
+fn load_upload_source_record(
+    db: &Connection,
+    session_id: &str,
+) -> Result<Option<UploadSourceRecord>, String> {
+    let metadata: Option<UploadSourceMetadata> = db
+        .query_row(
+            "SELECT length(normalized_png), sha256, mime_type, byte_size, created_at
+             FROM creation_upload_sources WHERE session_id=?1",
+            [session_id],
+            |row| {
+                Ok(UploadSourceMetadata {
+                    blob_length: row.get(0)?,
+                    sha256: row.get(1)?,
+                    mime_type: row.get(2)?,
+                    byte_size: row.get(3)?,
+                    created_at: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    let Some(metadata) = metadata else {
+        return Ok(None);
+    };
+    let max = crate::generation::tasks::MAX_NORMALIZED_PNG_BYTES as i64;
+    if metadata.byte_size <= 0 || metadata.byte_size > max || metadata.blob_length > max {
+        return Err("upload source size must be between 1 byte and 24 MiB".into());
     }
+    if metadata.blob_length != metadata.byte_size {
+        return Err("upload source size metadata is corrupt".into());
+    }
+    if metadata.mime_type != "image/png" {
+        return Err("upload source mime metadata is corrupt".into());
+    }
+    let normalized_png: Vec<u8> = db
+        .query_row(
+            "SELECT normalized_png FROM creation_upload_sources WHERE session_id=?1",
+            [session_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    let record = UploadSourceRecord {
+        normalized_png,
+        sha256: metadata.sha256,
+        mime_type: metadata.mime_type,
+        byte_size: metadata.byte_size,
+        created_at: metadata.created_at,
+    };
+    validate_upload_source_record(&record)?;
+    Ok(Some(record))
+}
+
+fn validate_upload_source_record(record: &UploadSourceRecord) -> Result<(), String> {
     if record.normalized_png.len() as i64 != record.byte_size {
         return Err("upload source size metadata is corrupt".into());
+    }
+    if sha256_hex(&record.normalized_png) != record.sha256 {
+        return Err("upload source hash metadata is corrupt".into());
     }
     if record.mime_type != "image/png"
         || image::guess_format(&record.normalized_png).ok() != Some(image::ImageFormat::Png)
@@ -1341,7 +1372,7 @@ mod tests {
     #[test]
     fn upload_source_read_rejects_tampered_blob_hash_size_or_mime_metadata() {
         let cases = [
-            ("normalized_png=X'00'", "hash"),
+            ("normalized_png=X'00'", "size"),
             (
                 "sha256='ffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffffff'",
                 "hash",
@@ -1406,6 +1437,36 @@ mod tests {
             .upload_source(&session_id)
             .unwrap_err()
             .contains("PNG"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upload_source_rejects_declared_oversize_before_blob_validation() {
+        let (store, root, _, session_id) = upload_store();
+        let bytes = source_png(1);
+        let hash = super::sha256_hex(&bytes);
+        store
+            .save_upload_source(&session_id, &bytes, &hash, "image/png")
+            .unwrap();
+        store
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(&format!(
+                "PRAGMA ignore_check_constraints=ON;
+                 UPDATE creation_upload_sources SET byte_size=25165825
+                 WHERE session_id='{session_id}';
+                 PRAGMA ignore_check_constraints=OFF;"
+            ))
+            .unwrap();
+
+        let error = store.upload_source(&session_id).unwrap_err();
+
+        assert!(
+            error.contains("24 MiB"),
+            "unexpected validation priority: {error}"
+        );
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -593,11 +593,32 @@ fn creation_upload_start(
     ref_png_b64: String,
     ref_sha256: String,
 ) -> Result<String, String> {
-    use base64::Engine;
-    let png = base64::engine::general_purpose::STANDARD
-        .decode(ref_png_b64)
-        .map_err(|error| format!("bad base64: {error}"))?;
+    let png = decode_creation_upload_source(&ref_png_b64)?;
     manager.start_for_session(&session_id, &prompt, &png, &ref_sha256)
+}
+
+fn decode_creation_upload_source(encoded: &str) -> Result<Vec<u8>, String> {
+    use base64::Engine;
+    use generation::tasks::{MAX_UPLOAD_SOURCE_BASE64_BYTES, MAX_UPLOAD_SOURCE_BYTES};
+    if encoded.len() > MAX_UPLOAD_SOURCE_BASE64_BYTES {
+        return Err("upload source exceeds the 10 MiB raw byte limit".into());
+    }
+    if encoded.len() % 4 == 0 {
+        let padding = if encoded.ends_with("==") {
+            2
+        } else if encoded.ends_with('=') {
+            1
+        } else {
+            0
+        };
+        let decoded_len = encoded.len() / 4 * 3 - padding;
+        if decoded_len > MAX_UPLOAD_SOURCE_BYTES {
+            return Err("upload source exceeds the 10 MiB raw byte limit".into());
+        }
+    }
+    base64::engine::general_purpose::STANDARD
+        .decode(encoded)
+        .map_err(|error| format!("bad base64: {error}"))
 }
 
 #[tauri::command]
@@ -1050,6 +1071,66 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn upload_source_base64_preflight_allows_exact_raw_limit_and_rejects_one_more() {
+        use base64::Engine;
+        let exact = base64::engine::general_purpose::STANDARD.encode(
+            vec![0_u8; crate::generation::tasks::MAX_UPLOAD_SOURCE_BYTES],
+        );
+        let over = base64::engine::general_purpose::STANDARD.encode(vec![
+            0_u8;
+            crate::generation::tasks::MAX_UPLOAD_SOURCE_BYTES
+                + 1
+        ]);
+
+        assert_eq!(
+            super::decode_creation_upload_source(&exact).unwrap().len(),
+            crate::generation::tasks::MAX_UPLOAD_SOURCE_BYTES
+        );
+        assert!(super::decode_creation_upload_source(&over)
+            .unwrap_err()
+            .contains("10 MiB"));
+    }
+
+    #[test]
+    fn oversized_invalid_upload_base64_is_rejected_before_decode_or_database_work() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-upload-preflight-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let storage = Storage::open(&root).unwrap();
+        let before: i64 = storage
+            .db
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM creation_upload_sources)
+                      + (SELECT COUNT(*) FROM generation_jobs)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let encoded = "!".repeat(crate::generation::tasks::MAX_UPLOAD_SOURCE_BASE64_BYTES + 1);
+
+        let error = super::decode_creation_upload_source(&encoded).unwrap_err();
+
+        let after: i64 = storage
+            .db
+            .query_row(
+                "SELECT (SELECT COUNT(*) FROM creation_upload_sources)
+                      + (SELECT COUNT(*) FROM generation_jobs)",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        assert!(error.contains("10 MiB"));
+        assert!(!error.contains("bad base64"));
+        assert_eq!(after, before);
+        drop(storage);
+        let _ = std::fs::remove_dir_all(root);
+    }
 
     #[test]
     fn public_switch_write_commands_require_request_ids() {

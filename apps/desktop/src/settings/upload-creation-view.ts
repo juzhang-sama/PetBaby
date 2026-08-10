@@ -1,4 +1,4 @@
-import type { UploadJobRecord } from "../creation/api";
+import type { RecoveryReport, UploadJobRecord } from "../creation/api";
 import type { CreationMethod, CreationSnapshot } from "../creation/contracts";
 import { buildPrompt, sha256Hex } from "../creation/creation-flow";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
@@ -21,12 +21,14 @@ export interface UploadCreationPorts {
     ): Promise<string>;
     uploadJobs(sessionId: string): Promise<UploadJobRecord[]>;
     uploadSource(sessionId: string): Promise<{ dataUrl: string; refSha256: string } | null>;
-    recoverFinalization(): Promise<unknown>;
+    recoverFinalization(): Promise<RecoveryReport>;
   };
   finalize(sessionId: string): Promise<PetSwitchResult>;
 }
 
 export type UploadCreationStep = "upload" | "generating" | "review" | "finalizing" | "complete";
+
+export const MAX_UPLOAD_PHOTO_BYTES = 10 * 1024 * 1024;
 
 export interface UploadCreationViewSnapshot {
   sessionId: string | null;
@@ -194,6 +196,10 @@ export class UploadCreationView {
   async enter(): Promise<void> {
     const pendingFinalization = this.finalizing;
     const knownFinalizingSession = this.state.step === "finalizing" ? this.state.sessionId : null;
+    const knownMutationSession = this.run.isMutating(this.state.sessionId) ? this.state.sessionId : null;
+    const knownFinalizeOwner = this.run.isRunning("finalize", this.state.sessionId)
+      ? this.state.sessionId
+      : null;
     if (!this.dom) throw new Error("上传创建页面未装配 DOM");
     this.leave();
     this.visit = this.run.enter("upload");
@@ -208,9 +214,16 @@ export class UploadCreationView {
         await pendingFinalization.promise.catch(() => undefined);
         if (!this.run.isCurrent(visit)) return;
       }
-      const unsettledSession = pendingFinalization?.sessionId ?? knownFinalizingSession;
+      const finalizationSession = pendingFinalization?.sessionId
+        ?? knownFinalizingSession
+        ?? knownFinalizeOwner;
+      const unsettledSession = finalizationSession ?? knownMutationSession;
       if (unsettledSession) {
-        const settled = await this.ports.creation.snapshot(unsettledSession).catch((error) => {
+        await this.run.waitForMutation(unsettledSession);
+        if (!this.run.isCurrent(visit)) return;
+      }
+      if (finalizationSession) {
+        const settled = await this.ports.creation.snapshot(finalizationSession).catch((error) => {
           throw new Error(`暂时无法确认上次完成状态：${errorMessage(error)}`);
         });
         if (!this.run.isCurrent(visit)) return;
@@ -321,7 +334,7 @@ export class UploadCreationView {
       throw new Error("照片正在提交，不能同时完成创建");
     }
     const visit = this.mounted ? this.visit : undefined;
-    const finishing = (async () => {
+    return this.trackFinalization(sessionId, async () => {
       const saved = await this.ports.creation.setName(sessionId, displayName);
       if (!this.canApplySession(sessionId, visit)) throw new StaleCreationOperation();
       this.applySnapshot(saved);
@@ -336,13 +349,7 @@ export class UploadCreationView {
         if (this.canApplySession(sessionId, visit)) this.state = { ...this.state, step: "review" };
         throw error;
       }
-    })();
-    this.finalizing = { sessionId, promise: finishing };
-    try {
-      return await finishing;
-    } finally {
-      if (this.finalizing?.promise === finishing) this.finalizing = null;
-    }
+    });
   }
 
   async abandon(): Promise<void> {
@@ -392,26 +399,52 @@ export class UploadCreationView {
     return this.canApplyVisit(visit) && this.state.sessionId === sessionId;
   }
 
+  private trackFinalization(
+    sessionId: string,
+    operation: () => Promise<PetSwitchResult>,
+  ): Promise<PetSwitchResult> {
+    if (this.finalizing?.sessionId === sessionId) return this.finalizing.promise;
+    if (this.finalizing) return Promise.reject(new Error("另一创建会话正在完成，请稍候"));
+    const promise = operation();
+    this.finalizing = { sessionId, promise };
+    void promise.then(
+      () => { if (this.finalizing?.promise === promise) this.finalizing = null; },
+      () => { if (this.finalizing?.promise === promise) this.finalizing = null; },
+    );
+    return promise;
+  }
+
   private async reconcileFinalizing(visit: number): Promise<void> {
     const sessionId = this.state.sessionId;
     if (!sessionId || !this.run.isCurrent(visit)) return;
-    const token = this.run.begin(visit, "finalize", sessionId);
-    if (!token) return;
+    let token = this.run.begin(visit, "finalize", sessionId);
+    if (!token) {
+      await this.run.waitForMutation(sessionId);
+      if (!this.run.isCurrent(visit)) return;
+      token = this.run.begin(visit, "finalize", sessionId);
+      if (!token) throw new Error("完成操作尚未收敛，请稍后重试");
+    }
     try {
-      await this.ports.creation.recoverFinalization();
+      const report = await this.ports.creation.recoverFinalization();
       if (!this.run.shouldApply(token, this.state.sessionId)) return;
       let snapshot = await this.ports.creation.snapshot(sessionId);
       if (!this.run.shouldApply(token, this.state.sessionId)) return;
+      assertRecoveryConverged(report, snapshot, sessionId);
       this.applySnapshot(snapshot);
       if (this.state.step === "review") {
+        let finalizerError: unknown = null;
         try {
-          await this.ports.finalize(sessionId);
-        } catch {
-          // The durable snapshot below decides whether recovery completed or returned to review.
+          await this.trackFinalization(sessionId, () => this.ports.finalize(sessionId));
+        } catch (error) {
+          finalizerError = error;
         }
         if (!this.run.shouldApply(token, this.state.sessionId)) return;
         snapshot = await this.ports.creation.snapshot(sessionId);
         if (!this.run.shouldApply(token, this.state.sessionId)) return;
+        if (snapshot.status === "finalizing") {
+          const detail = finalizerError ? `：${errorMessage(finalizerError)}` : "";
+          throw new Error(`完成操作仍未收敛${detail}，请稍后重试`);
+        }
         this.applySnapshot(snapshot);
       }
     } finally {
@@ -489,7 +522,12 @@ export class UploadCreationView {
         await this.showCandidate(visit);
       } else if (this.state.step === "upload" && snapshot.error) {
         this.stopPolling();
-        this.setStatus(`生成失败：${snapshot.error}。请重新选择照片后重试。`, true);
+        await this.restoreSourcePhoto(sessionId, visit);
+        if (!this.run.shouldApply(token, this.state.sessionId)) return;
+        const next = this.durableSourceLoaded
+          ? "原图已在本机临时保存，可直接重试；如需换图，请先放弃并开始新会话。"
+          : "请重试；如需换图，请先放弃当前会话。";
+        this.setStatus(`生成失败：${snapshot.error}。${next}`, true);
       }
     } catch (error) {
       if (this.run.shouldApply(token, this.state.sessionId)) {
@@ -541,6 +579,10 @@ export class UploadCreationView {
     }
     const file = this.dom.elements.photoInput.files?.[0];
     if (!file) return;
+    if (file.size !== undefined && file.size > MAX_UPLOAD_PHOTO_BYTES) {
+      this.setStatus("照片过大，请选择不超过 10 MiB 的 PNG 或 JPEG。", true);
+      return;
+    }
     const revision = ++this.photoRevision;
     const visit = this.visit;
     const bytes = new Uint8Array(await file.arrayBuffer());
@@ -634,7 +676,12 @@ export class UploadCreationView {
       this.startPolling(visit);
     } catch (error) {
       if (this.run.shouldApply(token, this.state.sessionId)) {
-        this.setStatus(`提交生成失败：${errorMessage(error)}。照片和草稿仍在，可直接重试。`, true);
+        await this.restoreSourcePhoto(sessionId, visit);
+        if (!this.run.shouldApply(token, this.state.sessionId)) return;
+        const next = this.durableSourceLoaded
+          ? "原图已在本机临时保存，可直接重试；如需换图，请先放弃并开始新会话。"
+          : "草稿仍在，请重试；如需换图，请先放弃当前会话。";
+        this.setStatus(`提交生成失败：${errorMessage(error)}。${next}`, true);
       }
     } finally {
       this.run.settle(token);
@@ -700,7 +747,7 @@ export class UploadCreationView {
 
   private async recoverUploadDraft(visit: number): Promise<void> {
     if (!this.run.isCurrent(visit)) return;
-    const draft = await this.ports.creation.draft().catch(() => null);
+    const draft = await this.ports.creation.draft();
     if (!this.run.isCurrent(visit)) return;
     if (draft) {
       if (draft.method !== "upload") throw new Error("已有其他创建方式的草稿");
@@ -789,6 +836,28 @@ function stepFromSnapshot(snapshot: CreationSnapshot): UploadCreationStep {
     return "review";
   }
   return snapshot.currentStep === "generating" ? "generating" : "upload";
+}
+
+function assertRecoveryConverged(
+  report: RecoveryReport,
+  snapshot: CreationSnapshot,
+  sessionId: string,
+): void {
+  const warning = report.warnings.length > 0 ? `；${report.warnings.join("；")}` : "";
+  if (report.cleanedSessionIds.includes(sessionId)) {
+    throw new Error(`完成恢复清理了当前创建，请重新开始${warning}`);
+  }
+  if (report.completedSessionIds.includes(sessionId) && snapshot.status !== "completed") {
+    throw new Error(`完成恢复报告与当前状态不一致，请稍后重试${warning}`);
+  }
+  if (report.retryableSessionIds.includes(sessionId)
+    && snapshot.status !== "candidateReady"
+    && snapshot.status !== "retryableFailure") {
+    throw new Error(`完成恢复尚未回到可重试状态，请稍后重试${warning}`);
+  }
+  if (snapshot.status === "finalizing") {
+    throw new Error(`完成恢复后仍在完成中，请稍后重试${warning}`);
+  }
 }
 
 function errorMessage(error: unknown): string {

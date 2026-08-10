@@ -13,7 +13,7 @@ class FakeElement {
   textContent = "";
   value = "";
   src = "";
-  files: Array<{ arrayBuffer(): Promise<ArrayBuffer> }> | null = null;
+  files: Array<{ size?: number; arrayBuffer(): Promise<ArrayBuffer> }> | null = null;
   style = { display: "" };
   classList = { toggle: vi.fn() };
   children: unknown[] = [];
@@ -93,7 +93,9 @@ function uploadPorts(options: { candidateReady?: boolean; method?: CreationSnaps
     uploadStart: vi.fn<UploadCreationPorts["creation"]["uploadStart"]>(async () => "job-1"),
     uploadJobs: vi.fn<UploadCreationPorts["creation"]["uploadJobs"]>(async () => []),
     uploadSource: vi.fn<UploadCreationPorts["creation"]["uploadSource"]>(async () => null),
-    recoverFinalization: vi.fn<UploadCreationPorts["creation"]["recoverFinalization"]>(async () => ({})),
+    recoverFinalization: vi.fn<UploadCreationPorts["creation"]["recoverFinalization"]>(async () => ({
+      completedSessionIds: [], retryableSessionIds: [], cleanedSessionIds: [], warnings: [],
+    })),
   };
   const finalize = vi.fn<UploadCreationPorts["finalize"]>(async () => ({
     ok: true as const,
@@ -333,6 +335,32 @@ describe("UploadCreationView", () => {
     expect(view.snapshot().step).toBe("generating");
     expect(dom.preview.show).not.toHaveBeenCalled();
     expect(dom.ports.clearInterval).toHaveBeenCalledWith(7);
+  });
+
+  it("explains that a failed poll can reuse the durable original or abandon before changing it", async () => {
+    const core = uploadPorts();
+    const generating = snapshot({ currentStep: "generating", jobId: "job-1", jobStatus: "running" });
+    const failed = snapshot({
+      status: "retryableFailure", lastStableStatus: "draft", currentStep: "upload",
+      jobId: "job-1", jobStatus: "failed", error: "provider down",
+    });
+    core.creation.draft.mockResolvedValue(generating);
+    core.creation.snapshot.mockResolvedValueOnce(generating).mockResolvedValueOnce(failed);
+    core.creation.uploadSource.mockResolvedValue({
+      dataUrl: "data:image/png;base64,YWJj",
+      refSha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+    });
+    let poll!: () => void;
+    const dom = domPorts({ setInterval: vi.fn((callback) => { poll = callback; return 1; }) });
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+
+    poll();
+    await vi.waitFor(() => expect(dom.elements.status.textContent).toContain("provider down"));
+
+    expect(dom.elements.status.textContent).toContain("原图");
+    expect(dom.elements.status.textContent).toContain("先放弃");
   });
 
   it("destroys a pending dynamic preview when leaving and never revives its DOM", async () => {
@@ -714,6 +742,43 @@ describe("UploadCreationView", () => {
     expect(dom.elements.nextButton.hidden).toBe(false);
   });
 
+  it("does not start a new upload session when draft lookup rejects from submit", async () => {
+    const core = uploadPorts();
+    core.creation.draft.mockRejectedValue(new Error("database busy"));
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    core.creation.start.mockClear();
+
+    dom.elements.nextButton.dispatch("click");
+    await vi.waitFor(() => expect(core.creation.draft).toHaveBeenCalledTimes(2));
+
+    expect(core.creation.start).not.toHaveBeenCalled();
+    expect(dom.elements.status.textContent).toContain("database busy");
+  });
+
+  it("does not start twice when retry response recovery cannot read the durable draft", async () => {
+    const core = uploadPorts({ candidateReady: true });
+    core.creation.draft
+      .mockResolvedValueOnce(snapshot({
+        status: "candidateReady", lastStableStatus: "candidateReady", currentStep: "review",
+        jobId: "job-1", candidateId: "candidate-1",
+      }))
+      .mockRejectedValueOnce(new Error("database busy"));
+    core.creation.start.mockRejectedValue(new Error("response lost"));
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+
+    dom.elements.retryButton.dispatch("click");
+    await vi.waitFor(() => expect(core.creation.draft).toHaveBeenCalledTimes(2));
+
+    expect(core.creation.start).toHaveBeenCalledOnce();
+    expect(dom.elements.status.textContent).toContain("database busy");
+  });
+
   it("does not overlap a retry mutation after leave and reenter until the old owner settles", async () => {
     const core = uploadPorts({ candidateReady: true });
     let resolveAbandon!: () => void;
@@ -728,11 +793,13 @@ describe("UploadCreationView", () => {
     await vi.waitFor(() => expect(core.creation.abandon).toHaveBeenCalledOnce());
 
     view.leave();
-    await view.enter();
-    dom.elements.retryButton.dispatch("click");
+    const reentering = view.enter();
+    await Promise.resolve();
     expect(core.creation.abandon).toHaveBeenCalledOnce();
 
     resolveAbandon();
+    await reentering;
+    expect(core.creation.draft).toHaveBeenCalledTimes(2);
     await vi.waitFor(() => expect(dom.elements.retryButton.disabled).toBe(false));
     dom.elements.retryButton.dispatch("click");
     await vi.waitFor(() => expect(core.creation.abandon).toHaveBeenCalledTimes(2));
@@ -789,6 +856,40 @@ describe("UploadCreationView", () => {
     expect(view.snapshot().step).toBe("complete");
     expect(core.creation.start).not.toHaveBeenCalled();
     expect(dom.elements.stepComplete.hidden).toBe(false);
+  });
+
+  it("waits for the DOM mutation token after the tracked finish promise has resolved", async () => {
+    const core = uploadPorts({ candidateReady: true });
+    const completed = snapshot({
+      status: "completed", lastStableStatus: "completed", currentStep: "completed",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    const dom = domPorts();
+    let view!: UploadCreationView;
+    let okReads = 0;
+    let reentering: Promise<void> | undefined;
+    core.finalize.mockImplementation(async () => ({
+      get ok() {
+        okReads += 1;
+        if (okReads === 2) reentering = view.enter();
+        return true as const;
+      },
+      requestId: "request-1",
+      petId: "pet-1",
+    }));
+    view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    core.creation.snapshot.mockResolvedValue(completed);
+    dom.elements.nameInput.value = "Mimi";
+    dom.elements.nameInput.dispatch("input");
+
+    dom.elements.finishButton.dispatch("click");
+    await vi.waitFor(() => expect(reentering).toBeDefined());
+    await reentering;
+
+    expect(core.creation.draft).toHaveBeenCalledOnce();
+    expect(view.snapshot().step).toBe("complete");
   });
 
   it("never starts a new draft when an unsettled finalization snapshot is temporarily unavailable", async () => {
@@ -864,6 +965,160 @@ describe("UploadCreationView", () => {
     expect(core.creation.recoverFinalization).toHaveBeenCalledOnce();
     expect(core.finalize).toHaveBeenCalledWith("session-1");
     expect(view.snapshot().step).toBe("review");
+  });
+
+  it("shares an automatic finalizer with leave and reenter until it settles", async () => {
+    const core = uploadPorts();
+    const finalizing = snapshot({
+      status: "finalizing", lastStableStatus: "candidateReady", currentStep: "finalizing",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    const ready = snapshot({
+      status: "candidateReady", lastStableStatus: "candidateReady", currentStep: "review",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    core.creation.draft.mockResolvedValue(finalizing);
+    core.creation.recoverFinalization.mockResolvedValue({
+      completedSessionIds: [], retryableSessionIds: ["session-1"], cleanedSessionIds: [], warnings: [],
+    });
+    core.creation.snapshot.mockResolvedValueOnce(finalizing).mockResolvedValue(ready);
+    let resolveFinalize!: (value: Awaited<ReturnType<UploadCreationPorts["finalize"]>>) => void;
+    core.finalize.mockImplementation(() => new Promise((resolve) => { resolveFinalize = resolve; }));
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    const first = view.enter();
+    await vi.waitFor(() => expect(core.finalize).toHaveBeenCalledOnce());
+
+    let secondSettled = false;
+    const second = view.enter().then(() => { secondSettled = true; });
+    await Promise.resolve();
+    expect(core.creation.draft).toHaveBeenCalledOnce();
+    expect(core.finalize).toHaveBeenCalledOnce();
+    expect(secondSettled).toBe(false);
+    resolveFinalize({
+      ok: false, requestId: "request-2", petId: "pet-1",
+      code: "pet-window-unavailable", message: "window down",
+    });
+    await Promise.all([first, second]);
+
+    expect(core.finalize).toHaveBeenCalledOnce();
+    expect(view.snapshot().step).toBe("review");
+  });
+
+  it("reports a retryable recovery error when finalization remains finalizing", async () => {
+    const core = uploadPorts();
+    const finalizing = snapshot({
+      status: "finalizing", lastStableStatus: "candidateReady", currentStep: "finalizing",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    core.creation.draft.mockResolvedValue(finalizing);
+    core.creation.snapshot.mockResolvedValue(finalizing);
+    core.creation.recoverFinalization.mockResolvedValue({
+      completedSessionIds: [], retryableSessionIds: ["session-1"], cleanedSessionIds: [],
+      warnings: ["session-1 recovery warning"],
+    });
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+
+    await view.enter();
+
+    expect(core.finalize).not.toHaveBeenCalled();
+    expect(dom.elements.status.textContent).toMatch(/仍.*完成|重试/);
+    expect(dom.elements.status.textContent).toContain("recovery warning");
+  });
+
+  it("returns to review when an automatic finalizer errors after retryable recovery", async () => {
+    const core = uploadPorts();
+    const finalizing = snapshot({
+      status: "finalizing", lastStableStatus: "candidateReady", currentStep: "finalizing",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    const ready = snapshot({
+      status: "candidateReady", lastStableStatus: "candidateReady", currentStep: "review",
+      displayName: "Mimi", jobId: "job-1", candidateId: "candidate-1",
+    });
+    core.creation.draft.mockResolvedValue(finalizing);
+    core.creation.recoverFinalization.mockResolvedValue({
+      completedSessionIds: [], retryableSessionIds: ["session-1"], cleanedSessionIds: [], warnings: [],
+    });
+    core.creation.snapshot
+      .mockResolvedValueOnce(finalizing)
+      .mockResolvedValueOnce(ready)
+      .mockResolvedValueOnce(ready);
+    core.finalize.mockRejectedValue(new Error("window response lost"));
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+
+    await view.enter();
+
+    expect(core.finalize).toHaveBeenCalledOnce();
+    expect(view.snapshot().step).toBe("review");
+  });
+
+  it("restores the durable normalized source immediately after upload start fails", async () => {
+    const core = uploadPorts();
+    core.creation.uploadSource
+      .mockResolvedValueOnce(null)
+      .mockResolvedValueOnce({
+        dataUrl: "data:image/png;base64,YWJj",
+        refSha256: "ba7816bf8f01cfea414140de5dae2223b00361a396177a9cb410ff61f20015ad",
+      });
+    core.creation.uploadStart.mockRejectedValue(new Error("provider down"));
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    dom.elements.photoInput.files = [{
+      size: 3,
+      arrayBuffer: async () => new TextEncoder().encode("raw").buffer,
+    }];
+    dom.elements.photoInput.dispatch("change");
+    await vi.waitFor(() => expect(dom.ports.createObjectURL).toHaveBeenCalledOnce());
+    dom.elements.apiKeyInput.value = "key";
+
+    dom.elements.nextButton.dispatch("click");
+    await vi.waitFor(() => expect(core.creation.uploadSource).toHaveBeenCalledTimes(2));
+
+    expect(dom.elements.photoPreview.src).toBe("data:image/png;base64,YWJj");
+    expect(dom.elements.status.textContent).toMatch(/原图|直接重试/);
+    dom.elements.photoInput.files = [{ size: 1, arrayBuffer: vi.fn(async () => new Uint8Array([1]).buffer) }];
+    dom.elements.photoInput.dispatch("change");
+    expect(dom.elements.status.textContent).toContain("先放弃");
+  });
+
+  it("rejects an oversized photo before arrayBuffer allocation without changing preview state", async () => {
+    const core = uploadPorts();
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    const read = vi.fn(async () => new Uint8Array([1]).buffer);
+    dom.elements.photoInput.files = [{ size: 10 * 1024 * 1024 + 1, arrayBuffer: read }];
+
+    dom.elements.photoInput.dispatch("change");
+    await vi.waitFor(() => expect(dom.elements.status.textContent).toMatch(/10\s*MiB|过大/));
+
+    expect(read).not.toHaveBeenCalled();
+    expect(dom.ports.createObjectURL).not.toHaveBeenCalled();
+    expect(dom.elements.photoPreview.hidden).toBe(true);
+  });
+
+  it("allows a photo at the exact raw byte limit to reach arrayBuffer", async () => {
+    const core = uploadPorts();
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    const read = vi.fn(async () => new Uint8Array([1]).buffer);
+    dom.elements.photoInput.files = [{ size: 10 * 1024 * 1024, arrayBuffer: read }];
+
+    dom.elements.photoInput.dispatch("change");
+    await vi.waitFor(() => expect(read).toHaveBeenCalledOnce());
+
+    expect(dom.ports.createObjectURL).toHaveBeenCalledOnce();
   });
 
   it("rejects abandon while direct finalization owns the same session", async () => {

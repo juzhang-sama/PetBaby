@@ -27,11 +27,12 @@ pub struct DurableUploadSource {
     pub mime_type: String,
 }
 
-const MAX_UPLOAD_SOURCE_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_UPLOAD_SOURCE_BYTES: usize = 10 * 1024 * 1024;
+pub(crate) const MAX_UPLOAD_SOURCE_BASE64_BYTES: usize = MAX_UPLOAD_SOURCE_BYTES.div_ceil(3) * 4;
 const MAX_UPLOAD_WIDTH: u32 = 4096;
 const MAX_UPLOAD_HEIGHT: u32 = 4096;
 const MAX_UPLOAD_PIXELS: u64 = 16_000_000;
-const MAX_NORMALIZED_PNG_BYTES: usize = 24 * 1024 * 1024;
+pub(crate) const MAX_NORMALIZED_PNG_BYTES: usize = 24 * 1024 * 1024;
 
 #[derive(Clone, Copy)]
 struct UploadImageLimits {

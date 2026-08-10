@@ -80,4 +80,21 @@ describe("CreationPageRun", () => {
     run.settle(current);
     expect(run.begin(currentVisit, "poll", "session-1")).not.toBeNull();
   });
+
+  it("lets a new visit await the exact cross-visit mutation owner", async () => {
+    const run = new CreationPageRun();
+    const oldVisit = run.enter("upload");
+    const owner = run.begin(oldVisit, "finalize", "session-1")!;
+    run.leave();
+    run.enter("upload");
+    let settled = false;
+
+    const waiting = run.waitForMutation("session-1").then(() => { settled = true; });
+    await Promise.resolve();
+    expect(settled).toBe(false);
+
+    run.settle(owner);
+    await waiting;
+    expect(settled).toBe(true);
+  });
 });

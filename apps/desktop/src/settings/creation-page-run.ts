@@ -14,6 +14,7 @@ export class CreationPageRun {
   private active = false;
   private readonly busy = new Map<string, number>();
   private readonly mutations = new Map<string, number>();
+  private readonly mutationWaiters = new Map<string, Set<() => void>>();
   private nextTokenId = 0;
 
   enter(_method: CreationMethod): number {
@@ -54,11 +55,27 @@ export class CreationPageRun {
     if (this.busy.get(key) === token.id) this.busy.delete(key);
     if (this.mutations.get(token.sessionId) === token.id) {
       this.mutations.delete(token.sessionId);
+      const waiters = this.mutationWaiters.get(token.sessionId);
+      this.mutationWaiters.delete(token.sessionId);
+      for (const resolve of waiters ?? []) resolve();
     }
+  }
+
+  waitForMutation(sessionId: string): Promise<void> {
+    if (!this.mutations.has(sessionId)) return Promise.resolve();
+    return new Promise((resolve) => {
+      const waiters = this.mutationWaiters.get(sessionId) ?? new Set<() => void>();
+      waiters.add(resolve);
+      this.mutationWaiters.set(sessionId, waiters);
+    });
   }
 
   isMutating(sessionId: string | null): boolean {
     return sessionId !== null && this.mutations.has(sessionId);
+  }
+
+  isRunning(kind: CreationPageOperation, sessionId: string | null): boolean {
+    return sessionId !== null && this.busy.has(operationKey(kind, sessionId));
   }
 
   shouldApply(token: CreationPageOperationToken, currentSessionId: string | null): boolean {

@@ -24,6 +24,13 @@ export interface UploadSource {
   refSha256: string;
 }
 
+export interface RecoveryReport {
+  completedSessionIds: string[];
+  retryableSessionIds: string[];
+  cleanedSessionIds: string[];
+  warnings: string[];
+}
+
 export function createCreationApi(invoke: InvokePort) {
   return {
     start: (method: "upload" | "composer") =>
@@ -51,7 +58,7 @@ export function createCreationApi(invoke: InvokePort) {
       invoke<UploadJobRecord[]>("creation_upload_jobs", { sessionId }),
     uploadSource: (sessionId: string) =>
       invoke<UploadSource | null>("creation_upload_source", { sessionId }),
-    recoverFinalization: () => invoke<unknown>("creation_recover_finalization"),
+    recoverFinalization: () => invoke<RecoveryReport>("creation_recover_finalization"),
   };
 }
 
