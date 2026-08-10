@@ -1,5 +1,6 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
-import type { CreationSnapshot } from "./contracts";
+import type { MotionProfileV1 } from "../runtime/animated-image-manifest";
+import type { ComposerRecipe, CreationSnapshot } from "./contracts";
 
 export type InvokePort = <T>(
   command: string,
@@ -31,6 +32,12 @@ export interface RecoveryReport {
   warnings: string[];
 }
 
+export interface ComposerCandidateProjection {
+  snapshot: CreationSnapshot;
+  bodyUrl: string;
+  motionProfile: MotionProfileV1;
+}
+
 export function createCreationApi(invoke: InvokePort) {
   return {
     start: (method: "upload" | "composer") =>
@@ -42,6 +49,10 @@ export function createCreationApi(invoke: InvokePort) {
       invoke<CreationSnapshot>("creation_set_name", { sessionId, displayName }),
     abandon: (sessionId: string) =>
       invoke<void>("creation_abandon", { sessionId }),
+    composerSave: (sessionId: string, recipe: ComposerRecipe, currentStep: string) =>
+      invoke<CreationSnapshot>("creation_composer_save", { sessionId, recipe, currentStep }),
+    composerCandidate: (sessionId: string, pngB64: string) =>
+      invoke<ComposerCandidateProjection>("creation_composer_candidate", { sessionId, pngB64 }),
     uploadStart: (
       sessionId: string,
       prompt: string,

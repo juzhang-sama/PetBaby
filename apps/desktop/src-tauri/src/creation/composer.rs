@@ -662,13 +662,75 @@ pub fn validate_recipe(pack: &ComposerPackManifest, recipe: &ComposerRecipe) -> 
     }
 }
 
+pub fn load_production_pack(content_root: &ContentRoot) -> Result<ComposerPackManifest, String> {
+    let manifest = content_root
+        .as_path()
+        .join("composer")
+        .join("cat-cute-v1")
+        .join("manifest.json");
+    let metadata = std::fs::symlink_metadata(&manifest)
+        .map_err(|error| format!("composer manifest is unavailable: {error}"))?;
+    if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+        return Err("composer manifest must be a regular trusted file".into());
+    }
+    let pack = parse_pack(
+        &std::fs::read_to_string(&manifest)
+            .map_err(|error| format!("composer manifest cannot be read: {error}"))?,
+    )?;
+    validate_pack(&pack, content_root)?;
+    Ok(pack)
+}
+
+pub fn motion_profile_for_recipe(
+    pack: &ComposerPackManifest,
+    recipe: &ComposerRecipe,
+) -> Result<crate::runtime_assets::motion_profile::MotionProfileV1, String> {
+    validate_recipe(pack, recipe)?;
+    let body = pack
+        .bodies
+        .iter()
+        .find(|body| body.id == recipe.body_id)
+        .ok_or_else(|| format!("bodyId does not exist: {}", recipe.body_id))?;
+    let width = f64::from(pack.canvas.width);
+    let height = f64::from(pack.canvas.height);
+    let profile = crate::runtime_assets::motion_profile::MotionProfileV1 {
+        profile_version: 1,
+        engine_profile: "life-v1".into(),
+        alpha_bounds: crate::runtime_assets::motion_profile::NormalizedRect {
+            left: (body.alpha_bounds.left / width) as f32,
+            top: (body.alpha_bounds.top / height) as f32,
+            right: (body.alpha_bounds.right / width) as f32,
+            bottom: (body.alpha_bounds.bottom / height) as f32,
+        },
+        breath_zone: crate::runtime_assets::motion_profile::NormalizedRect {
+            left: (body.breath_zone.left / width) as f32,
+            top: (body.breath_zone.top / height) as f32,
+            right: (body.breath_zone.right / width) as f32,
+            bottom: (body.breath_zone.bottom / height) as f32,
+        },
+        sway_pivot: crate::runtime_assets::motion_profile::NormalizedPoint {
+            x: (body.sway_pivot.x / width) as f32,
+            y: (body.sway_pivot.y / height) as f32,
+        },
+    };
+    let encoded = serde_json::to_string(&profile).map_err(|error| error.to_string())?;
+    crate::runtime_assets::motion_profile::parse_motion_profile(&encoded)
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::creation::domain::ComposerRecipe;
+    use crate::creation::domain::{ComposerRecipe, CreationMethod};
+    use crate::creation::service::CreationService;
+    use crate::pets::active::{ActivePetService, BUILTIN_PET_ID};
+    use crate::pets::deletion::PetDeletionService;
+    use crate::pets::mutation::PetMutationGate;
+    use crate::pets::{ActivePetSession, SharedActivePetSession};
+    use crate::storage::Storage;
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
+    use std::sync::{Arc, Mutex};
 
     static NONCE: AtomicU64 = AtomicU64::new(0);
 
@@ -739,6 +801,235 @@ mod tests {
             color_id: "color-cream".into(),
             pattern_id: "pattern-none".into(),
         }
+    }
+
+    struct ComposerServiceHarness {
+        root: PathBuf,
+        storage: Arc<Mutex<Storage>>,
+        service: CreationService,
+        gate: Arc<PetMutationGate>,
+    }
+
+    impl Drop for ComposerServiceHarness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl ComposerServiceHarness {
+        fn new() -> Self {
+            let root = temp_root("service");
+            let storage = Arc::new(Mutex::new(Storage::open(&root.join("pets")).unwrap()));
+            let session: SharedActivePetSession = Arc::new(Mutex::new(ActivePetSession::new()));
+            session
+                .lock()
+                .unwrap()
+                .set_active(BUILTIN_PET_ID.into())
+                .unwrap();
+            let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+            let active = Arc::new(ActivePetService::new(
+                storage.clone(),
+                session,
+                root.join("pets"),
+                gate.clone(),
+            ));
+            let deletion = Arc::new(PetDeletionService::new(
+                storage.clone(),
+                active,
+                root.clone(),
+                gate.clone(),
+            ));
+            let content =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+            let content_root = crate::creation::content::test_content_root(&content).unwrap();
+            let service = CreationService::new(
+                storage.clone(),
+                root.clone(),
+                deletion,
+                content_root,
+                gate.clone(),
+            );
+            Self {
+                root,
+                storage,
+                service,
+                gate,
+            }
+        }
+
+        fn reopen(&self) -> CreationService {
+            let session: SharedActivePetSession = Arc::new(Mutex::new(ActivePetSession::new()));
+            session
+                .lock()
+                .unwrap()
+                .set_active(BUILTIN_PET_ID.into())
+                .unwrap();
+            let active = Arc::new(ActivePetService::new(
+                self.storage.clone(),
+                session,
+                self.root.join("pets"),
+                self.gate.clone(),
+            ));
+            let deletion = Arc::new(PetDeletionService::new(
+                self.storage.clone(),
+                active,
+                self.root.clone(),
+                self.gate.clone(),
+            ));
+            let content =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+            CreationService::new(
+                self.storage.clone(),
+                self.root.clone(),
+                deletion,
+                crate::creation::content::test_content_root(&content).unwrap(),
+                self.gate.clone(),
+            )
+        }
+    }
+
+    fn production_recipe(body_id: &str) -> ComposerRecipe {
+        let content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+        let manifest = content.join("composer/cat-cute-v1/manifest.json");
+        let pack = parse_pack(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        let body = pack.bodies.iter().find(|body| body.id == body_id).unwrap();
+        ComposerRecipe {
+            recipe_version: 1,
+            pack_id: pack.pack_id,
+            pack_version: pack.pack_version,
+            layer_contract_version: pack.layer_contract_version,
+            body_id: body.id.clone(),
+            ears_id: body.defaults.ears_id.clone(),
+            eyes_id: body.defaults.eyes_id.clone(),
+            muzzle_id: body.defaults.muzzle_id.clone(),
+            tail_id: body.defaults.tail_id.clone(),
+            color_id: body.defaults.color_id.clone(),
+            pattern_id: body.defaults.pattern_id.clone(),
+        }
+    }
+
+    #[test]
+    fn first_body_selection_persists_a_complete_recipe_after_service_reopen() {
+        let test = ComposerServiceHarness::new();
+        let session = test.service.start(CreationMethod::Composer).unwrap();
+        let recipe = production_recipe("body-round");
+
+        let saved = test
+            .service
+            .save_composer_recipe(&session.session_id, &recipe, "ears")
+            .unwrap();
+        assert_eq!(saved.recipe, Some(recipe.clone()));
+        assert_eq!(saved.current_step, "ears");
+
+        let reopened = test.reopen();
+        let restored = reopened.snapshot(&session.session_id).unwrap();
+        assert_eq!(restored.recipe, Some(recipe));
+        assert_eq!(restored.current_step, "ears");
+    }
+
+    #[test]
+    fn invalid_or_incompatible_recipe_does_not_advance_the_draft() {
+        let test = ComposerServiceHarness::new();
+        let session = test.service.start(CreationMethod::Composer).unwrap();
+        let mut recipe = production_recipe("body-round");
+        recipe.ears_id = "ears-pointed".into();
+
+        assert!(test
+            .service
+            .save_composer_recipe(&session.session_id, &recipe, "eyes")
+            .is_err());
+        let restored = test.service.snapshot(&session.session_id).unwrap();
+        assert_eq!(restored.recipe, None);
+        assert_eq!(restored.current_step, "composer");
+    }
+
+    #[test]
+    fn composer_save_rejects_wrong_method_illegal_step_unknown_pack_and_locked_sessions() {
+        let valid = production_recipe("body-round");
+
+        let illegal_step = ComposerServiceHarness::new();
+        let draft = illegal_step
+            .service
+            .start(CreationMethod::Composer)
+            .unwrap();
+        assert!(illegal_step
+            .service
+            .save_composer_recipe(&draft.session_id, &valid, "review")
+            .is_err());
+        assert_eq!(
+            illegal_step
+                .service
+                .snapshot(&draft.session_id)
+                .unwrap()
+                .recipe,
+            None
+        );
+
+        let wrong_method = ComposerServiceHarness::new();
+        let upload = wrong_method.service.start(CreationMethod::Upload).unwrap();
+        assert!(wrong_method
+            .service
+            .save_composer_recipe(&upload.session_id, &valid, "ears")
+            .is_err());
+        assert_eq!(
+            wrong_method
+                .service
+                .snapshot(&upload.session_id)
+                .unwrap()
+                .recipe,
+            None
+        );
+
+        let unknown_pack = ComposerServiceHarness::new();
+        let draft = unknown_pack
+            .service
+            .start(CreationMethod::Composer)
+            .unwrap();
+        let mut invalid = valid.clone();
+        invalid.pack_id = "untrusted-pack".into();
+        assert!(unknown_pack
+            .service
+            .save_composer_recipe(&draft.session_id, &invalid, "ears")
+            .is_err());
+        assert_eq!(
+            unknown_pack
+                .service
+                .snapshot(&draft.session_id)
+                .unwrap()
+                .recipe,
+            None
+        );
+
+        let locked = ComposerServiceHarness::new();
+        let draft = locked.service.start(CreationMethod::Composer).unwrap();
+        locked
+            .service
+            .save_composer_recipe(&draft.session_id, &valid, "ears")
+            .unwrap();
+        locked
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='candidateReady', last_stable_status='candidateReady', current_step='review'
+                 WHERE session_id=?1",
+                [&draft.session_id],
+            )
+            .unwrap();
+        assert!(locked
+            .service
+            .save_composer_recipe(&draft.session_id, &valid, "eyes")
+            .is_err());
+        assert_eq!(
+            locked
+                .service
+                .snapshot(&draft.session_id)
+                .unwrap()
+                .current_step,
+            "review"
+        );
     }
 
     fn asset_paths(value: &Value) -> Vec<String> {

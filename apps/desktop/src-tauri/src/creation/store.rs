@@ -468,6 +468,120 @@ impl CreationStore {
         })
     }
 
+    pub fn record_local_candidate(
+        &self,
+        session_id: &str,
+        body_path: &Path,
+        motion_profile_path: &Path,
+    ) -> Result<StandardCandidate, String> {
+        let body_path = body_path
+            .canonicalize()
+            .map_err(|error| format!("composer candidate body is unavailable: {error}"))?;
+        let motion_profile_path = motion_profile_path
+            .canonicalize()
+            .map_err(|error| format!("composer motion profile is unavailable: {error}"))?;
+        let candidate_dir = body_path
+            .parent()
+            .ok_or("composer candidate body has no candidate directory")?;
+        if body_path.file_name().and_then(|name| name.to_str()) != Some("body.png")
+            || motion_profile_path
+                .file_name()
+                .and_then(|name| name.to_str())
+                != Some("motion-profile.json")
+            || motion_profile_path.parent() != Some(candidate_dir)
+        {
+            return Err("composer candidate uses non-standard files".into());
+        }
+        for (path, label) in [
+            (&body_path, "composer candidate body"),
+            (&motion_profile_path, "composer motion profile"),
+        ] {
+            let metadata = std::fs::symlink_metadata(path)
+                .map_err(|error| format!("{label} is unavailable: {error}"))?;
+            if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+                return Err(format!("{label} must be a regular file"));
+            }
+        }
+        let candidate_id = crate::creation::domain::new_entity_id("candidate");
+        let created_at = profiles::now_iso();
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let session: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT pet_id, method, status FROM creation_sessions WHERE session_id=?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (pet_id, method, status) =
+            session.ok_or_else(|| format!("creation session not found: {session_id}"))?;
+        if method != "composer" || status != "draft" {
+            return Err("local candidate requires an editable composer draft".into());
+        }
+        let has_recipe: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM composer_recipes WHERE session_id=?1)",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !has_recipe {
+            return Err("composer candidate requires a saved recipe".into());
+        }
+        let current_candidate: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM appearance_variants WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if current_candidate != 0 {
+            return Err("composer session already has a current candidate".into());
+        }
+        tx.execute(
+            "INSERT INTO appearance_variants
+             (variant_id, pet_id, job_id, session_id, image_path, cutout_path,
+              motion_profile_path, quality, accepted, created_at)
+             VALUES (?1, ?2, NULL, ?3, ?4, ?4, ?5, 'acceptable', 0, ?6)",
+            rusqlite::params![
+                candidate_id,
+                pet_id,
+                session_id,
+                body_path.to_string_lossy(),
+                motion_profile_path.to_string_lossy(),
+                created_at,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let affected = tx
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='candidateReady', last_stable_status='candidateReady',
+                     current_step='review', error=NULL, updated_at=?3
+                 WHERE session_id=?1 AND pet_id=?2 AND method='composer' AND status='draft'",
+                rusqlite::params![session_id, pet_id, created_at],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("composer session is no longer eligible for a candidate".into());
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(StandardCandidate {
+            candidate_id,
+            session_id: session_id.into(),
+            pet_id,
+            job_id: None,
+            body_path: body_path.to_string_lossy().into_owned(),
+            motion_profile_path: motion_profile_path.to_string_lossy().into_owned(),
+            quality: "acceptable".into(),
+            created_at,
+        })
+    }
+
     pub fn fail_upload_job(
         &self,
         job_id: &str,
@@ -617,11 +731,12 @@ impl CreationStore {
             "SELECT av.variant_id, av.session_id, av.pet_id, av.job_id, av.cutout_path,
                     av.motion_profile_path, av.quality, av.created_at
              FROM appearance_variants av
-             JOIN generation_jobs gj ON gj.job_id=av.job_id
+             LEFT JOIN generation_jobs gj ON gj.job_id=av.job_id
              JOIN creation_sessions cs ON cs.session_id=av.session_id
              WHERE av.session_id=?1 AND av.pet_id=cs.pet_id
-               AND gj.session_id=av.session_id AND gj.pet_id=av.pet_id
-               AND gj.status='success' AND cs.status!='abandoned'
+               AND (av.job_id IS NULL OR
+                    (gj.session_id=av.session_id AND gj.pet_id=av.pet_id AND gj.status='success'))
+               AND cs.status!='abandoned'
                AND av.cutout_path IS NOT NULL AND av.motion_profile_path IS NOT NULL
                AND av.motion_profile_path!=''
              ORDER BY av.created_at DESC, av.rowid DESC LIMIT 1",

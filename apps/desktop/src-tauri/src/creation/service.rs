@@ -1,10 +1,15 @@
+use crate::creation::content::ContentRoot;
 use crate::creation::domain::{
     new_entity_id, ComposerRecipe, CreationMethod, CreationSessionStatus, CreationSnapshot,
 };
 use crate::creation::name::normalize_display_name;
+use crate::creation::{candidate, composer, CreationStore};
 use crate::pets::deletion::SharedPetDeletionService;
+use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
 use crate::pets::repository::PetRepository;
+use crate::runtime_assets::motion_profile::MotionProfileV1;
 use crate::storage::Storage;
+use base64::Engine as _;
 use rusqlite::{Connection, OptionalExtension};
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
@@ -15,6 +20,22 @@ pub struct CreationService {
     storage: Arc<Mutex<Storage>>,
     app_data_dir: PathBuf,
     deletion: SharedPetDeletionService,
+    content_root: ContentRoot,
+    mutation_gate: SharedPetMutationGate,
+}
+
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct ComposerCandidateProjection {
+    pub snapshot: CreationSnapshot,
+    pub body_url: String,
+    pub motion_profile: MotionProfileV1,
+}
+
+#[derive(Debug, Clone, Default)]
+pub struct ComposerOrphanRecoveryReport {
+    pub recovered_count: usize,
+    pub warnings: Vec<String>,
 }
 
 impl CreationService {
@@ -22,11 +43,15 @@ impl CreationService {
         storage: Arc<Mutex<Storage>>,
         app_data_dir: PathBuf,
         deletion: SharedPetDeletionService,
+        content_root: ContentRoot,
+        mutation_gate: SharedPetMutationGate,
     ) -> Self {
         Self {
             storage,
             app_data_dir,
             deletion,
+            content_root,
+            mutation_gate,
         }
     }
 
@@ -142,6 +167,244 @@ impl CreationService {
         tx.commit().map_err(|error| error.to_string())?;
         drop(storage);
         self.snapshot(session_id)
+    }
+
+    pub fn save_composer_recipe(
+        &self,
+        session_id: &str,
+        recipe: &ComposerRecipe,
+        current_step: &str,
+    ) -> Result<CreationSnapshot, String> {
+        validate_component(session_id, "session id")?;
+        validate_composer_step(current_step)?;
+        let observed = self.snapshot(session_id)?;
+        let request_id = new_entity_id("composer-save");
+        let _operation =
+            self.mutation_gate
+                .scoped(&request_id, MutationKind::Creation, &observed.pet_id)?;
+        let now = crate::creation::profiles::now_iso();
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let session: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT pet_id, method, status FROM creation_sessions WHERE session_id=?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (pet_id, method, status) = session
+            .ok_or_else(|| format!("creation session not found or abandoned: {session_id}"))?;
+        if pet_id != observed.pet_id || method != "composer" || status != "draft" {
+            return Err("recipe save requires an editable composer draft".into());
+        }
+
+        let pack = composer::load_production_pack(&self.content_root)?;
+        composer::validate_recipe(&pack, recipe)?;
+        let first_save: bool = tx
+            .query_row(
+                "SELECT NOT EXISTS(SELECT 1 FROM composer_recipes WHERE session_id=?1)",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if first_save && current_step != "ears" {
+            return Err("the first body selection must advance to ears".into());
+        }
+
+        tx.execute(
+            "INSERT INTO composer_recipes
+             (session_id, recipe_version, pack_id, pack_version, layer_contract_version,
+              body_id, ears_id, eyes_id, muzzle_id, tail_id, color_id, pattern_id, updated_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, ?10, ?11, ?12, ?13)
+             ON CONFLICT(session_id) DO UPDATE SET
+               recipe_version=excluded.recipe_version, pack_id=excluded.pack_id,
+               pack_version=excluded.pack_version,
+               layer_contract_version=excluded.layer_contract_version,
+               body_id=excluded.body_id, ears_id=excluded.ears_id,
+               eyes_id=excluded.eyes_id, muzzle_id=excluded.muzzle_id,
+               tail_id=excluded.tail_id, color_id=excluded.color_id,
+               pattern_id=excluded.pattern_id, updated_at=excluded.updated_at",
+            rusqlite::params![
+                session_id,
+                recipe.recipe_version,
+                recipe.pack_id,
+                recipe.pack_version,
+                recipe.layer_contract_version,
+                recipe.body_id,
+                recipe.ears_id,
+                recipe.eyes_id,
+                recipe.muzzle_id,
+                recipe.tail_id,
+                recipe.color_id,
+                recipe.pattern_id,
+                now,
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let affected = tx
+            .execute(
+                "UPDATE creation_sessions SET current_step=?2, error=NULL, updated_at=?3
+                 WHERE session_id=?1 AND pet_id=?4 AND method='composer' AND status='draft'",
+                rusqlite::params![session_id, current_step, now, pet_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("composer draft changed while its recipe was being saved".into());
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        drop(storage);
+        self.snapshot(session_id)
+    }
+
+    pub fn store_composer_candidate(
+        &self,
+        session_id: &str,
+        png_b64: &str,
+    ) -> Result<ComposerCandidateProjection, String> {
+        validate_component(session_id, "session id")?;
+        let decoded = candidate::decode_composer_png(png_b64)?;
+        let observed = self.snapshot(session_id)?;
+        let request_id = new_entity_id("composer-candidate");
+        let _operation =
+            self.mutation_gate
+                .scoped(&request_id, MutationKind::Creation, &observed.pet_id)?;
+        let stable = self.snapshot(session_id)?;
+        if stable.pet_id != observed.pet_id || stable.method != CreationMethod::Composer {
+            return Err("candidate requires its original composer session".into());
+        }
+        let existing_candidate = stable.status == CreationSessionStatus::CandidateReady
+            || (stable.status == CreationSessionStatus::RetryableFailure
+                && stable.last_stable_status == CreationSessionStatus::CandidateReady
+                && stable.candidate_id.is_some());
+        if stable.status != CreationSessionStatus::Draft && !existing_candidate {
+            return Err("composer session is not eligible for a candidate".into());
+        }
+        let recipe = stable
+            .recipe
+            .clone()
+            .ok_or_else(|| "composer candidate requires a saved recipe".to_string())?;
+        let pack = composer::load_production_pack(&self.content_root)?;
+        composer::validate_recipe(&pack, &recipe)?;
+        let motion_profile = composer::motion_profile_for_recipe(&pack, &recipe)?;
+        let mut published = candidate::publish_composer_candidate(
+            &self.app_data_dir,
+            session_id,
+            &decoded.bytes,
+            &motion_profile,
+            &recipe,
+        )?;
+
+        let snapshot = if existing_candidate {
+            stable
+        } else {
+            let store = CreationStore::new(self.storage.clone());
+            match store.record_local_candidate(
+                session_id,
+                &published.body_path,
+                &published.motion_profile_path,
+            ) {
+                Ok(_) => {
+                    // The database now owns this exact published candidate. Commit the
+                    // filesystem guard before any fallible post-commit projection read,
+                    // so a read error cannot roll back files referenced by durable rows.
+                    published.commit();
+                    self.snapshot(session_id)?
+                }
+                Err(error) => {
+                    let rollback = published.rollback();
+                    return Err(match rollback {
+                        Ok(()) => error,
+                        Err(rollback) => format!("{error}; candidate rollback failed: {rollback}"),
+                    });
+                }
+            }
+        };
+        published.commit();
+        Ok(ComposerCandidateProjection {
+            snapshot,
+            body_url: format!(
+                "data:image/png;base64,{}",
+                base64::engine::general_purpose::STANDARD.encode(&decoded.bytes)
+            ),
+            motion_profile,
+        })
+    }
+
+    pub fn recover_composer_orphans(&self) -> Result<ComposerOrphanRecoveryReport, String> {
+        let sessions: Vec<(String, String)> = {
+            let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+            let mut statement = storage
+                .db
+                .prepare(
+                    "SELECT cs.session_id, cs.pet_id
+                     FROM creation_sessions cs
+                     WHERE cs.method='composer' AND cs.status='draft'
+                       AND EXISTS (SELECT 1 FROM composer_recipes cr
+                                   WHERE cr.session_id=cs.session_id)
+                       AND NOT EXISTS (SELECT 1 FROM appearance_variants av
+                                       WHERE av.session_id=cs.session_id)
+                     ORDER BY cs.rowid",
+                )
+                .map_err(|error| error.to_string())?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .map_err(|error| error.to_string())?
+                .collect::<Result<Vec<_>, _>>()
+                .map_err(|error| error.to_string())?;
+            rows
+        };
+        if sessions.is_empty() {
+            return Ok(ComposerOrphanRecoveryReport::default());
+        }
+        let mut report = ComposerOrphanRecoveryReport::default();
+        let pack = match composer::load_production_pack(&self.content_root) {
+            Ok(pack) => pack,
+            Err(error) => {
+                report.warnings.push(format!(
+                    "trusted composer pack unavailable during orphan recovery: {error}"
+                ));
+                return Ok(report);
+            }
+        };
+        for (session_id, pet_id) in sessions {
+            let result = (|| {
+                let request_id = new_entity_id("composer-recover");
+                let _operation =
+                    self.mutation_gate
+                        .scoped(&request_id, MutationKind::Creation, &pet_id)?;
+                let snapshot = self.snapshot(&session_id)?;
+                if snapshot.status != CreationSessionStatus::Draft
+                    || snapshot.method != CreationMethod::Composer
+                    || snapshot.pet_id != pet_id
+                    || snapshot.candidate_id.is_some()
+                {
+                    return Ok(false);
+                }
+                let recipe = snapshot
+                    .recipe
+                    .ok_or_else(|| "composer recovery lost its durable recipe".to_string())?;
+                composer::validate_recipe(&pack, &recipe)?;
+                let profile = composer::motion_profile_for_recipe(&pack, &recipe)?;
+                candidate::recover_exact_composer_orphan(
+                    &self.app_data_dir,
+                    &session_id,
+                    &profile,
+                    &recipe,
+                )
+            })();
+            match result {
+                Ok(true) => report.recovered_count += 1,
+                Ok(false) => {}
+                Err(error) => report
+                    .warnings
+                    .push(format!("composer orphan {session_id}: {error}")),
+            }
+        }
+        Ok(report)
     }
 
     pub fn abandon(&self, session_id: &str) -> Result<(), String> {
@@ -342,6 +605,17 @@ fn validate_component(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+fn validate_composer_step(value: &str) -> Result<(), String> {
+    if matches!(
+        value,
+        "body" | "ears" | "eyes" | "muzzle" | "tail" | "coat" | "name" | "preview"
+    ) {
+        Ok(())
+    } else {
+        Err("invalid composer current step".into())
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -390,9 +664,17 @@ mod tests {
                 storage.clone(),
                 active,
                 root.clone(),
-                gate,
+                gate.clone(),
             ));
-            let service = CreationService::new(storage.clone(), root.clone(), deletion);
+            let content =
+                PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+            let service = CreationService::new(
+                storage.clone(),
+                root.clone(),
+                deletion,
+                crate::creation::content::test_content_root(&content).unwrap(),
+                gate,
+            );
             Self {
                 root,
                 storage,
@@ -528,6 +810,8 @@ mod tests {
             test.storage.clone(),
             test.root.clone(),
             test.service.deletion.clone(),
+            test.service.content_root.clone(),
+            test.service.mutation_gate.clone(),
         );
         assert_eq!(reopened.draft().unwrap(), Some(draft));
     }

@@ -77,6 +77,43 @@
           <button id="wizard-cancel" type="button" hidden>返回我的宠物</button>
         </div>
       </div>
+
+      <section id="composer-creation-workspace" class="composer-workbench" aria-labelledby="composer-title" hidden>
+        <header class="composer-heading">
+          <p class="wizard-kicker">引导组合 · 猫咪工作台</p>
+          <h2 id="composer-title">亲手组合一只会呼吸的猫</h2>
+          <p>每次选择都会保存到本机。只有“已保存”时，关闭后才能从同一步继续。</p>
+        </header>
+        <div class="composer-layout">
+          <div class="composer-stage" aria-label="猫咪组合实时预览">
+            <canvas data-composer-canvas width="1024" height="1024"></canvas>
+            <span class="composer-stage-label">LIVE PET WORKBENCH · 1024</span>
+          </div>
+          <div class="composer-controls">
+            <nav class="composer-step-rail" data-composer-steps aria-label="组合步骤"></nav>
+            <div class="composer-save-line">
+              <strong data-composer-save aria-live="polite">尚未开始</strong>
+              <span data-composer-message role="status" aria-live="polite">请选择身体底型开始组合。</span>
+            </div>
+            <div class="composer-options" data-composer-options aria-label="当前步骤可选内容"></div>
+            <div class="composer-navigation">
+              <button type="button" data-composer-previous>上一步</button>
+              <button type="button" data-composer-next>下一步</button>
+              <button type="button" class="primary" data-composer-candidate disabled>生成动态预览</button>
+            </div>
+            <div class="composer-finish">
+              <div class="candidate-preview" data-composer-dynamic role="img" aria-label="呼吸微动动态预览"></div>
+              <label for="composer-pet-name">给它取个名字</label>
+              <input id="composer-pet-name" data-composer-name type="text" autocomplete="off" aria-describedby="composer-name-help" />
+              <p id="composer-name-help" class="field-help">请输入 1–20 个字符（按完整 Unicode 字素计）；最终名称以后端校验为准。</p>
+              <div class="composer-navigation">
+                <button type="button" class="primary" data-composer-finish disabled>满意，出现在桌面</button>
+                <button type="button" class="danger" data-composer-abandon>放弃组合</button>
+              </div>
+            </div>
+          </div>
+        </div>
+      </section>
     </div>
 
     <script type="module" src="/src/settings.ts"></script>

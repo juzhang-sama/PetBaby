@@ -54,6 +54,36 @@ describe("creationApi", () => {
     });
   });
 
+  it("sends only the recipe mutation contract for composer saves", async () => {
+    const invoke = vi.fn().mockResolvedValue({ sessionId: "session-1" });
+    const api = createCreationApi(invoke);
+    const recipe = {
+      recipeVersion: 1, packId: "cat-cute-v1", packVersion: 1, layerContractVersion: 1,
+      bodyId: "body-round", earsId: "ears-round", eyesId: "eyes-amber",
+      muzzleId: "muzzle-gentle", tailId: "tail-curl", colorId: "color-cream",
+      patternId: "pattern-none",
+    };
+
+    await api.composerSave("session-1", recipe, "ears");
+
+    expect(invoke).toHaveBeenCalledWith("creation_composer_save", {
+      sessionId: "session-1", recipe, currentStep: "ears",
+    });
+  });
+
+  it("cannot inject motion paths or ownership into composer candidate storage", async () => {
+    const invoke = vi.fn().mockResolvedValue({ snapshot: { sessionId: "session-1" } });
+    const api = createCreationApi(invoke);
+
+    await api.composerCandidate("session-1", "encoded-png");
+
+    expect(invoke).toHaveBeenCalledWith("creation_composer_candidate", {
+      sessionId: "session-1",
+      pngB64: "encoded-png",
+    });
+    expect(Object.keys(vi.mocked(invoke).mock.calls[0]![1]!)).toEqual(["sessionId", "pngB64"]);
+  });
+
   it("starts upload generation with camelCase session ownership arguments", async () => {
     const invoke = vi.fn().mockResolvedValue("job-1");
     const api = createCreationApi(invoke);

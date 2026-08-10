@@ -18,6 +18,7 @@ use pets::{
     mutation::{PetMutationGate, SharedPetMutationGate},
 };
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
+use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
 use windowing::{normalize_spans, scale_spans, HitRegionEvidence, HitRegionPayload};
@@ -374,6 +375,25 @@ fn creation_set_name(
     display_name: String,
 ) -> Result<creation::domain::CreationSnapshot, String> {
     service.set_name(&session_id, &display_name)
+}
+
+#[tauri::command]
+fn creation_composer_save(
+    service: tauri::State<'_, creation::SharedCreationService>,
+    session_id: String,
+    recipe: creation::domain::ComposerRecipe,
+    current_step: String,
+) -> Result<creation::domain::CreationSnapshot, String> {
+    service.save_composer_recipe(&session_id, &recipe, &current_step)
+}
+
+#[tauri::command]
+fn creation_composer_candidate(
+    service: tauri::State<'_, creation::SharedCreationService>,
+    session_id: String,
+    png_b64: String,
+) -> Result<creation::service::ComposerCandidateProjection, String> {
+    service.store_composer_candidate(&session_id, &png_b64)
 }
 
 #[tauri::command]
@@ -846,22 +866,36 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
-fn run_startup_recovery<Cleanup, Recover, Restore>(
+fn run_startup_recovery<Cleanup, Composer, Recover, Restore>(
     cleanup_quarantine: Cleanup,
+    recover_composer: Composer,
     recover_finalization: Recover,
     restore_active: Restore,
 ) -> Result<creation::finalization::RecoveryReport, String>
 where
     Cleanup: FnOnce() -> Result<(), String>,
+    Composer: FnOnce() -> Result<creation::service::ComposerOrphanRecoveryReport, String>,
     Recover: FnOnce() -> Result<creation::finalization::RecoveryReport, String>,
     Restore: FnOnce() -> Result<(), String>,
 {
     let cleanup_warning = cleanup_quarantine().err();
+    let composer_recovery = recover_composer();
     let mut recovery = recover_finalization()?;
     if let Some(error) = cleanup_warning {
         recovery
             .warnings
             .push(format!("quarantine cleanup failed: {error}"));
+    }
+    match composer_recovery {
+        Ok(composer) => recovery.warnings.extend(
+            composer
+                .warnings
+                .into_iter()
+                .map(|warning| format!("composer orphan recovery: {warning}")),
+        ),
+        Err(error) => recovery
+            .warnings
+            .push(format!("composer orphan recovery failed: {error}")),
     }
     restore_active()?;
     Ok(recovery)
@@ -918,6 +952,20 @@ pub fn run() {
                 data_dir.clone(),
                 mutation_gate.clone(),
             ));
+            let resource_dir = app
+                .path()
+                .resource_dir()
+                .map_err(|error| error.to_string())?;
+            let development_public = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public");
+            let content_root =
+                creation::content::resolve_content_root(&resource_dir, &development_public)?;
+            let creation_service = Arc::new(creation::CreationService::new(
+                storage.clone(),
+                data_dir.clone(),
+                deletion.clone(),
+                content_root,
+                mutation_gate.clone(),
+            ));
             let finalization = Arc::new(
                 creation::finalization::CreationFinalizationService::new(
                     storage.clone(),
@@ -930,11 +978,12 @@ pub fn run() {
             );
             let recovery = run_startup_recovery(
                 || deletion.cleanup_quarantine(),
+                || creation_service.recover_composer_orphans(),
                 || finalization.recover(),
                 || active.restore().map(|_| ()),
             )?;
             for warning in recovery.warnings {
-                eprintln!("[desktop-pet] creation finalization recovery: {warning}");
+                eprintln!("[desktop-pet] startup recovery: {warning}");
             }
             let catalog = Arc::new(PetCatalogService::new(
                 storage.clone(),
@@ -945,11 +994,6 @@ pub fn run() {
             app.manage(mutation_gate.clone() as SharedPetMutationGate);
             app.manage(finalization as creation::finalization::SharedCreationFinalizationService);
             app.manage(catalog as SharedPetCatalogService);
-            let creation_service = Arc::new(creation::CreationService::new(
-                storage.clone(),
-                data_dir.clone(),
-                deletion.clone(),
-            ));
             app.manage(deletion as SharedPetDeletionService);
             app.manage(creation_service as creation::SharedCreationService);
             app.manage(Arc::new(Mutex::new(pets::repository::PetRepository::new(
@@ -1031,6 +1075,8 @@ pub fn run() {
             creation_draft,
             creation_snapshot,
             creation_set_name,
+            creation_composer_save,
+            creation_composer_candidate,
             creation_abandon,
             creation_prepare_finalize,
             creation_abort_finalize,
@@ -1224,6 +1270,8 @@ mod tests {
         let _draft = super::creation_draft;
         let _snapshot = super::creation_snapshot;
         let _set_name = super::creation_set_name;
+        let _composer_save = super::creation_composer_save;
+        let _composer_candidate = super::creation_composer_candidate;
         let _abandon = super::creation_abandon;
         let _upload_source = super::creation_upload_source;
         let _upload_retry = super::creation_upload_retry;
@@ -1238,13 +1286,17 @@ mod tests {
     }
 
     #[test]
-    fn startup_recovers_quarantine_and_finalization_before_restoring_the_active_pet() {
+    fn startup_recovers_quarantine_composer_and_finalization_before_restoring_the_active_pet() {
         let events = std::sync::Mutex::new(Vec::new());
 
         let report = super::run_startup_recovery(
             || {
                 events.lock().unwrap().push("quarantine");
                 Ok(())
+            },
+            || {
+                events.lock().unwrap().push("composer");
+                Ok(creation::service::ComposerOrphanRecoveryReport::default())
             },
             || {
                 events.lock().unwrap().push("finalization");
@@ -1260,7 +1312,32 @@ mod tests {
         assert!(report.warnings.is_empty());
         assert_eq!(
             *events.lock().unwrap(),
-            vec!["quarantine", "finalization", "active"]
+            vec!["quarantine", "composer", "finalization", "active"]
+        );
+    }
+
+    #[test]
+    fn startup_reports_composer_recovery_failure_without_blocking_later_recovery() {
+        let events = std::sync::Mutex::new(Vec::new());
+
+        let report = super::run_startup_recovery(
+            || Ok(()),
+            || Err("composer database busy".into()),
+            || {
+                events.lock().unwrap().push("finalization");
+                Ok(creation::finalization::RecoveryReport::default())
+            },
+            || {
+                events.lock().unwrap().push("active");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert_eq!(*events.lock().unwrap(), vec!["finalization", "active"]);
+        assert_eq!(
+            report.warnings,
+            vec!["composer orphan recovery failed: composer database busy"]
         );
     }
 

@@ -1,0 +1,643 @@
+import { readFileSync } from "node:fs";
+import { fileURLToPath } from "node:url";
+import { describe, expect, it, vi } from "vitest";
+import type { ComposerRecipe, CreationSnapshot } from "../creation/contracts";
+import { parseComposerPack } from "../creation/composer-pack";
+import type { MotionProfileV1 } from "../runtime/animated-image-manifest";
+import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
+import {
+  ComposerCreationView,
+  composerOptionLabel,
+  type ComposerCreationPorts,
+} from "./composer-creation-view";
+
+function pack() {
+  const path = fileURLToPath(new URL("../../public/creation-content/composer/cat-cute-v1/manifest.json", import.meta.url));
+  return parseComposerPack(JSON.parse(readFileSync(path, "utf8")));
+}
+
+function snapshot(overrides: Partial<CreationSnapshot> = {}): CreationSnapshot {
+  return {
+    sessionId: "session-composer",
+    petId: "pet-composer",
+    method: "composer",
+    status: "draft",
+    lastStableStatus: "draft",
+    currentStep: "ears",
+    displayName: null,
+    jobId: null,
+    jobStatus: null,
+    candidateId: null,
+    recipe: null,
+    error: null,
+    ...overrides,
+  };
+}
+
+function motionProfile(): MotionProfileV1 {
+  return {
+    profileVersion: 1,
+    engineProfile: "life-v1",
+    alphaBounds: { left: 0.1, top: 0.05, right: 0.9, bottom: 0.98 },
+    breathZone: { left: 0.26, top: 0.5, right: 0.76, bottom: 0.9 },
+    swayPivot: { x: 0.5, y: 0.76 },
+  };
+}
+
+function composerPorts(options: { draft?: CreationSnapshot | null } = {}) {
+  let durable = options.draft ?? null;
+  const recoverFinalization = vi.fn(async () => ({
+    completedSessionIds: [] as string[],
+    retryableSessionIds: [] as string[],
+    cleanedSessionIds: [] as string[],
+    warnings: [] as string[],
+  }));
+  const creation: ComposerCreationPorts["creation"] = {
+    start: vi.fn(async () => {
+      durable = snapshot({ currentStep: "composer" });
+      return durable;
+    }),
+    draft: vi.fn(async () => durable),
+    snapshot: vi.fn(async () => {
+      if (!durable) throw new Error("missing session");
+      return durable;
+    }),
+    composerSave: vi.fn(async (_sessionId: string, recipe: ComposerRecipe, currentStep: string) => {
+      if (!durable) throw new Error("missing session");
+      durable = { ...durable, recipe: { ...recipe }, currentStep };
+      return durable;
+    }),
+    composerCandidate: vi.fn(async () => {
+      if (!durable) throw new Error("missing session");
+      durable = durable.status === "retryableFailure"
+        ? { ...durable, currentStep: "review", candidateId: "candidate-1" }
+        : { ...durable, status: "candidateReady", currentStep: "review", candidateId: "candidate-1" };
+      return {
+        snapshot: durable,
+        bodyUrl: "data:image/png;base64,candidate",
+        motionProfile: motionProfile(),
+      };
+    }),
+    setName: vi.fn(async (_sessionId: string, displayName: string) => {
+      if (!durable) throw new Error("missing session");
+      durable = { ...durable, displayName };
+      return durable;
+    }),
+    abandon: vi.fn(async () => undefined),
+    recoverFinalization,
+  };
+  const ports: ComposerCreationPorts = {
+    creation,
+    loadPack: vi.fn(async () => pack()),
+    render: vi.fn(async () => undefined),
+    exportPng: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
+    blobToBase64: vi.fn(async () => "encoded-png"),
+    preview: { show: vi.fn(async () => undefined), clear: vi.fn() },
+    finalize: vi.fn(async (): Promise<PetSwitchResult> => {
+      if (durable) durable = {
+        ...durable,
+        status: "completed",
+        lastStableStatus: "completed",
+        currentStep: "completed",
+      };
+      return { ok: true, requestId: "request-1", petId: "pet-composer" };
+    }),
+    confirm: vi.fn(() => true),
+  };
+  return {
+    ports,
+    creation,
+    recoverFinalization,
+    durable: () => durable,
+    setDurable: (value: CreationSnapshot | null) => { durable = value; },
+  };
+}
+
+describe("ComposerCreationView", () => {
+  it("starts only after the first body selection and autosaves every valid selection", async () => {
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    expect(test.creation.start).not.toHaveBeenCalled();
+
+    await view.selectBody("body-round");
+    await view.select("ears", "ears-folded");
+
+    expect(test.creation.start).toHaveBeenCalledTimes(1);
+    expect(test.creation.composerSave).toHaveBeenCalledTimes(2);
+    expect(test.creation.composerSave).toHaveBeenLastCalledWith(
+      "session-composer",
+      expect.objectContaining({ bodyId: "body-round", earsId: "ears-folded" }),
+      "eyes",
+    );
+    expect(view.saveState()).toBe("saved");
+  });
+
+  it("restores the same durable recipe and current step in a new view instance", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    await first.select("ears", "ears-folded");
+
+    const second = new ComposerCreationView(test.ports);
+    await second.open();
+    expect(second.recipe()?.earsId).toBe("ears-folded");
+    expect(second.currentStep()).toBe("eyes");
+    expect(second.sessionId()).toBe("session-composer");
+  });
+
+  it("coalesces concurrent first body selections into one composer session", async () => {
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+
+    await Promise.all([
+      view.selectBody("body-round"),
+      view.selectBody("body-round"),
+    ]);
+
+    expect(test.creation.start).toHaveBeenCalledTimes(1);
+    expect(test.creation.composerSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("serializes different selections so a slow old save cannot overwrite the latest recipe", async () => {
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    let releaseFirst!: () => void;
+    const originalSave = test.creation.composerSave;
+    vi.mocked(test.creation.composerSave).mockImplementationOnce(async (...args) => {
+      await new Promise<void>((resolve) => { releaseFirst = resolve; });
+      return originalSave(...args);
+    });
+
+    const first = view.select("ears", "ears-folded");
+    const second = view.select("ears", "ears-tufted");
+    await vi.waitFor(() => expect(releaseFirst).toBeTypeOf("function"));
+    releaseFirst();
+    await Promise.all([first, second]);
+
+    expect(test.durable()?.recipe?.earsId).toBe("ears-tufted");
+    expect(view.recipe()?.earsId).toBe("ears-tufted");
+  });
+
+  it("keeps a failed local selection dirty and says 未保存 until retry succeeds", async () => {
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    vi.mocked(test.creation.composerSave).mockRejectedValueOnce(new Error("disk full"));
+
+    await expect(view.select("ears", "ears-folded")).rejects.toThrow("disk full");
+    expect(view.recipe()?.earsId).toBe("ears-folded");
+    expect(view.saveState()).toBe("unsaved");
+    expect(view.statusText()).toContain("未保存");
+    expect(view.canCreateCandidate()).toBe(false);
+
+    await view.retrySave();
+    expect(view.saveState()).toBe("saved");
+    expect(view.canCreateCandidate()).toBe(true);
+  });
+
+  it("ignores a late restore from an old visit", async () => {
+    const test = composerPorts();
+    let resolveDraft!: (value: CreationSnapshot | null) => void;
+    vi.mocked(test.creation.draft).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveDraft = resolve;
+    }));
+    const view = new ComposerCreationView(test.ports);
+    const oldOpen = view.open();
+    await vi.waitFor(() => expect(test.creation.draft).toHaveBeenCalledTimes(1));
+    view.destroy();
+    await view.open();
+    resolveDraft(snapshot({ recipe: null, currentStep: "ears" }));
+    await oldOpen;
+
+    expect(view.sessionId()).toBeNull();
+  });
+
+  it("exports once, stores a trusted candidate, mounts dynamic preview, names and finalizes", async () => {
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    const root = {} as HTMLElement;
+
+    await view.createCandidate(root);
+    const result = await view.finish("团子");
+
+    expect(test.ports.exportPng).toHaveBeenCalledTimes(1);
+    expect(test.creation.composerCandidate).toHaveBeenCalledWith("session-composer", "encoded-png");
+    expect(test.ports.preview.show).toHaveBeenCalledWith(
+      root,
+      "data:image/png;base64,candidate",
+      motionProfile(),
+    );
+    expect(test.creation.setName).toHaveBeenCalledWith("session-composer", "团子");
+    expect(test.ports.finalize).toHaveBeenCalledWith("session-composer");
+    expect(result.ok).toBe(true);
+  });
+
+  it("keeps candidateReady when dynamic mount fails and retries preview without rewriting candidate", async () => {
+    const test = composerPorts();
+    vi.mocked(test.ports.preview.show).mockRejectedValueOnce(new Error("renderer unavailable"));
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    const root = {} as HTMLElement;
+
+    await expect(view.createCandidate(root)).rejects.toThrow("renderer unavailable");
+    expect(view.creationSnapshot()?.status).toBe("candidateReady");
+    expect(view.canFinish()).toBe(false);
+    await view.retryPreview(root);
+
+    expect(test.creation.composerCandidate).toHaveBeenCalledTimes(1);
+    expect(test.ports.preview.show).toHaveBeenCalledTimes(2);
+    expect(view.canFinish()).toBe(true);
+  });
+
+  it("reopens candidateReady at preview and idempotently restores its trusted dynamic projection", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    await first.createCandidate({} as HTMLElement);
+    first.destroy();
+
+    const reopened = new ComposerCreationView(test.ports);
+    await reopened.open();
+    expect(reopened.currentStep()).toBe("preview");
+    expect(reopened.canCreateCandidate()).toBe(true);
+
+    const root = {} as HTMLElement;
+    await reopened.createCandidate(root);
+    expect(test.creation.composerCandidate).toHaveBeenCalledTimes(2);
+    expect(test.ports.preview.show).toHaveBeenLastCalledWith(
+      root,
+      "data:image/png;base64,candidate",
+      motionProfile(),
+    );
+    expect(reopened.canFinish()).toBe(true);
+  });
+
+  it("keeps review on finalize false and reconciles a completed response-loss snapshot", async () => {
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    await view.createCandidate({} as HTMLElement);
+    vi.mocked(test.ports.finalize).mockResolvedValueOnce({
+      ok: false,
+      requestId: "request-false",
+      petId: "pet-composer",
+      code: "pet-window-unavailable",
+      message: "window unavailable",
+    });
+    expect((await view.finish("团子")).ok).toBe(false);
+    expect(view.creationSnapshot()?.status).toBe("candidateReady");
+
+    vi.mocked(test.ports.finalize).mockRejectedValueOnce(new Error("response lost"));
+    vi.mocked(test.creation.snapshot).mockResolvedValueOnce(snapshot({
+      status: "completed",
+      lastStableStatus: "completed",
+      currentStep: "completed",
+      candidateId: "candidate-1",
+    }));
+    expect((await view.finish("团子")).ok).toBe(true);
+  });
+
+  it("keeps one finalization owner while destroy and reenter wait for its durable result", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    await first.createCandidate({} as HTMLElement);
+    let resolveFinalize!: () => void;
+    vi.mocked(test.ports.finalize).mockImplementationOnce(() => {
+      test.setDurable(snapshot({
+        status: "finalizing",
+        lastStableStatus: "candidateReady",
+        currentStep: "finalizing",
+        candidateId: "candidate-1",
+        recipe: test.durable()?.recipe ?? null,
+      }));
+      return new Promise<PetSwitchResult>((resolve) => {
+        resolveFinalize = () => {
+          test.setDurable(snapshot({
+            status: "completed",
+            lastStableStatus: "completed",
+            currentStep: "completed",
+            candidateId: "candidate-1",
+            recipe: test.durable()?.recipe ?? null,
+          }));
+          resolve({ ok: true, requestId: "request-finish", petId: "pet-composer" });
+        };
+      });
+    });
+
+    const finishing = first.finish("团子");
+    await vi.waitFor(() => expect(resolveFinalize).toBeTypeOf("function"));
+    first.destroy();
+    const reopened = new ComposerCreationView(test.ports);
+    let opened = false;
+    const opening = reopened.open().then(() => { opened = true; });
+    await new Promise((resolve) => setTimeout(resolve, 20));
+    expect(opened).toBe(false);
+    expect(test.creation.draft).toHaveBeenCalledTimes(1);
+    resolveFinalize();
+    await Promise.all([finishing, opening]);
+
+    expect(test.ports.finalize).toHaveBeenCalledTimes(1);
+    expect(reopened.sessionId()).toBeNull();
+  });
+
+  it("recovers a durable finalizing session before restoring the composer view", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    await first.createCandidate({} as HTMLElement);
+    test.setDurable(snapshot({
+      status: "finalizing",
+      lastStableStatus: "candidateReady",
+      currentStep: "finalizing",
+      candidateId: "candidate-1",
+      recipe: test.durable()?.recipe ?? null,
+    }));
+    vi.mocked(test.recoverFinalization).mockImplementationOnce(async () => {
+      test.setDurable(snapshot({
+        status: "retryableFailure",
+        lastStableStatus: "candidateReady",
+        currentStep: "review",
+        candidateId: "candidate-1",
+        recipe: test.durable()?.recipe ?? null,
+      }));
+      return {
+        completedSessionIds: [], retryableSessionIds: ["session-composer"],
+        cleanedSessionIds: ["session-composer"], warnings: [],
+      };
+    });
+
+    const reopened = new ComposerCreationView(test.ports);
+    await reopened.open();
+
+    expect(test.recoverFinalization).toHaveBeenCalledTimes(1);
+    expect(reopened.creationSnapshot()?.status).toBe("retryableFailure");
+    expect(reopened.currentStep()).toBe("preview");
+  });
+
+  it("restores retryable candidateReady through the trusted projection and retries finish", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    await first.createCandidate({} as HTMLElement);
+    test.setDurable(snapshot({
+      status: "retryableFailure",
+      lastStableStatus: "candidateReady",
+      currentStep: "review",
+      candidateId: "candidate-1",
+      recipe: test.durable()?.recipe ?? null,
+    }));
+    first.destroy();
+
+    const reopened = new ComposerCreationView(test.ports);
+    await reopened.open();
+    await reopened.createCandidate({} as HTMLElement);
+
+    expect(reopened.creationSnapshot()?.status).toBe("retryableFailure");
+    expect(reopened.canFinish()).toBe(true);
+    await reopened.finish("团子");
+    expect(reopened.creationSnapshot()?.status).toBe("completed");
+  });
+
+  it("recovers finalizing through restore(sessionId), not only through draft open", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    await first.createCandidate({} as HTMLElement);
+    test.setDurable(snapshot({
+      status: "finalizing",
+      lastStableStatus: "candidateReady",
+      currentStep: "finalizing",
+      candidateId: "candidate-1",
+      recipe: test.durable()?.recipe ?? null,
+    }));
+    vi.mocked(test.recoverFinalization).mockImplementationOnce(async () => {
+      test.setDurable(snapshot({
+        status: "retryableFailure",
+        lastStableStatus: "candidateReady",
+        currentStep: "review",
+        candidateId: "candidate-1",
+        recipe: test.durable()?.recipe ?? null,
+      }));
+      return {
+        completedSessionIds: [], retryableSessionIds: ["session-composer"],
+        cleanedSessionIds: ["session-composer"], warnings: [],
+      };
+    });
+
+    const restored = new ComposerCreationView(test.ports);
+    await restored.restore("session-composer");
+
+    expect(test.recoverFinalization).toHaveBeenCalledTimes(1);
+    expect(restored.creationSnapshot()?.status).toBe("retryableFailure");
+    expect(restored.currentStep()).toBe("preview");
+  });
+
+  it("destroys preview exactly once and ignores a late candidate result", async () => {
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    let resolveCandidate!: (value: Awaited<ReturnType<typeof test.creation.composerCandidate>>) => void;
+    vi.mocked(test.creation.composerCandidate).mockImplementationOnce(() => new Promise((resolve) => {
+      resolveCandidate = resolve;
+    }));
+    const pending = view.createCandidate({} as HTMLElement);
+    await vi.waitFor(() => expect(resolveCandidate).toBeTypeOf("function"));
+    view.destroy();
+    view.destroy();
+    resolveCandidate({
+      snapshot: snapshot({ status: "candidateReady", currentStep: "review", candidateId: "candidate-1" }),
+      bodyUrl: "data:image/png;base64,candidate",
+      motionProfile: motionProfile(),
+    });
+    await pending;
+
+    expect(test.ports.preview.clear).toHaveBeenCalledTimes(1);
+    expect(test.ports.preview.show).not.toHaveBeenCalled();
+  });
+
+  it("clears a preview that finishes mounting after its visit was destroyed", async () => {
+    const test = composerPorts();
+    const events: string[] = [];
+    let resolveShow!: () => void;
+    vi.mocked(test.ports.preview.show).mockImplementationOnce(() => new Promise<void>((resolve) => {
+      resolveShow = () => {
+        events.push("show-complete");
+        resolve();
+      };
+    }));
+    vi.mocked(test.ports.preview.clear).mockImplementation(() => { events.push("clear"); });
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+
+    const pending = view.createCandidate({} as HTMLElement);
+    await vi.waitFor(() => expect(resolveShow).toBeTypeOf("function"));
+    view.destroy();
+    resolveShow();
+    await pending;
+    await vi.waitFor(() => expect(events.at(-1)).toBe("clear"));
+  });
+
+  it("shares the session save owner across view instances before restoring durable state", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    let releaseSave!: () => void;
+    const originalSave = test.creation.composerSave;
+    vi.mocked(test.creation.composerSave).mockImplementationOnce(async (...args) => {
+      await new Promise<void>((resolve) => { releaseSave = resolve; });
+      return originalSave(...args);
+    });
+
+    const oldSelection = first.select("ears", "ears-folded");
+    await vi.waitFor(() => expect(releaseSave).toBeTypeOf("function"));
+    first.destroy();
+    const reopened = new ComposerCreationView(test.ports);
+    const opening = reopened.open();
+    await vi.waitFor(() => expect(test.creation.draft).toHaveBeenCalledTimes(2));
+    releaseSave();
+    await Promise.all([oldSelection, opening]);
+
+    expect(reopened.recipe()?.earsId).toBe("ears-folded");
+    expect(reopened.currentStep()).toBe("eyes");
+  });
+
+  it("lets an initial body mutation finish under the shared owner after destroy and reenter", async () => {
+    const test = composerPorts();
+    let resolveStart!: () => void;
+    vi.mocked(test.creation.start).mockImplementationOnce(() => new Promise<CreationSnapshot>((resolve) => {
+      resolveStart = () => {
+        const started = snapshot({ currentStep: "composer" });
+        test.setDurable(started);
+        resolve(started);
+      };
+    }));
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    const initialSelection = first.selectBody("body-round");
+    await vi.waitFor(() => expect(resolveStart).toBeTypeOf("function"));
+    first.destroy();
+
+    const reopened = new ComposerCreationView(test.ports);
+    const opening = reopened.open();
+    resolveStart();
+    await Promise.all([initialSelection, opening]);
+
+    expect(test.creation.start).toHaveBeenCalledTimes(1);
+    expect(test.creation.composerSave).toHaveBeenCalledTimes(1);
+    expect(reopened.recipe()?.bodyId).toBe("body-round");
+    expect(reopened.currentStep()).toBe("ears");
+  });
+
+  it("serializes abandon behind an in-flight candidate for the same session", async () => {
+    const test = composerPorts();
+    const events: string[] = [];
+    const originalCandidate = test.creation.composerCandidate;
+    let resolveCandidate!: () => void;
+    vi.mocked(test.creation.composerCandidate).mockImplementationOnce((...args) => {
+      events.push("candidate-start");
+      return new Promise((resolve, reject) => {
+        resolveCandidate = () => {
+          events.push("candidate-complete");
+          originalCandidate(...args).then(resolve, reject);
+        };
+      });
+    });
+    vi.mocked(test.creation.abandon).mockImplementationOnce(async () => {
+      events.push("abandon");
+    });
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+
+    const candidate = view.createCandidate({} as HTMLElement);
+    await vi.waitFor(() => expect(resolveCandidate).toBeTypeOf("function"));
+    const abandoning = view.abandon();
+    await Promise.resolve();
+    expect(test.creation.abandon).not.toHaveBeenCalled();
+    resolveCandidate();
+    await Promise.all([candidate, abandoning]);
+
+    expect(events).toEqual(["candidate-start", "candidate-complete", "abandon"]);
+    expect(view.sessionId()).toBeNull();
+  });
+
+  it("does not restore an abandoned session when abandon settles across destroy and reentry", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    let resolveAbandon!: () => void;
+    vi.mocked(test.creation.abandon).mockImplementationOnce(() => new Promise<void>((resolve) => {
+      resolveAbandon = () => {
+        test.setDurable(snapshot({
+          status: "abandoned",
+          lastStableStatus: "abandoned",
+          currentStep: "abandoned",
+          recipe: null,
+        }));
+        resolve();
+      };
+    }));
+
+    const abandoning = first.abandon();
+    await vi.waitFor(() => expect(resolveAbandon).toBeTypeOf("function"));
+    first.destroy();
+    const reopened = new ComposerCreationView(test.ports);
+    const opening = reopened.open();
+    resolveAbandon();
+    await Promise.all([abandoning, opening]);
+
+    expect(reopened.sessionId()).toBeNull();
+    expect(reopened.recipe()).toBeNull();
+  });
+
+  it("uses one preview canvas contract with accessible option and step controls", () => {
+    const html = readFileSync(fileURLToPath(new URL("../../settings.html", import.meta.url)), "utf8");
+    const css = readFileSync(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8");
+    expect(html.match(/<canvas[^>]+data-composer-canvas/g)).toHaveLength(1);
+    expect(html).toContain("aria-live=\"polite\"");
+    expect(html).toContain("data-composer-steps");
+    expect(css).toContain(":focus-visible");
+    expect(css).toContain("prefers-reduced-motion");
+    expect(css).toContain("@media (max-width:");
+  });
+
+  it("uses truthful naming guidance and readable localized full-canvas part thumbnails", () => {
+    const html = readFileSync(fileURLToPath(new URL("../../settings.html", import.meta.url)), "utf8");
+    const css = readFileSync(fileURLToPath(new URL("../styles.css", import.meta.url)), "utf8");
+    expect(html).not.toMatch(/data-composer-name[^>]+maxlength=/);
+    expect(html).toContain("1–20 个字符");
+
+    const manifest = pack();
+    const officialIds = [
+      ...manifest.bodies, ...manifest.ears, ...manifest.eyes, ...manifest.muzzles,
+      ...manifest.tails, ...manifest.colors, ...manifest.patterns,
+    ].map((item) => item.id);
+    for (const id of officialIds) {
+      expect(composerOptionLabel(id), id).toMatch(/[\u3400-\u9fff]/u);
+    }
+    expect(composerOptionLabel("future-part")).toBe("未知选项");
+    expect(css).toContain(".composer-option-thumbnail");
+    expect(css).toContain("data-composer-kind=\"ears\"");
+    expect(css).toContain("transform: scale(");
+  });
+});
