@@ -15,6 +15,7 @@ export interface PetSwitchCoordinatorPorts {
   commit(request: PetSwitchRequest): Promise<void>;
   rollbackCommit(previousPetId: string, request: PetSwitchRequest): Promise<CommitCompensation>;
   reconcileCommit(previousPetId: string, request: PetSwitchRequest): Promise<CommitReconciliation>;
+  abortCreation(sessionId: string, error: string): Promise<void>;
   cancel(requestId: string): Promise<void>;
   finish(requestId: string): Promise<void>;
   refreshHitRegion(): Promise<void>;
@@ -47,6 +48,17 @@ export class PetSwitchCoordinator {
         this.log(request, "cancel-failed", error);
       }
     };
+    const abortThenCancel = async (error: string): Promise<void> => {
+      if (cleanup !== "open") return;
+      if (request.creationSessionId) {
+        try {
+          await this.ports.abortCreation(request.creationSessionId, error);
+        } catch (abortError) {
+          this.log(request, "creation-abort-failed", abortError);
+        }
+      }
+      await cancel();
+    };
     const finish = async (): Promise<string> => {
       if (cleanup !== "open") return "";
       try {
@@ -75,7 +87,7 @@ export class PetSwitchCoordinator {
       if (runtime.isPreviewFallback?.()) {
         const rollbackConverged = this.rollbackSafely(request, swap);
         await this.ports.refreshHitRegion().catch(() => undefined);
-        await cancel();
+        await abortThenCancel("候选运行时已降级为预览帧");
         return failure(
           request,
           "load-failed",
@@ -98,9 +110,14 @@ export class PetSwitchCoordinator {
           this.log(request, "commit-reconciliation-failed", reconciliationError);
           reconciliation = { status: "unknown", warning: messageOf(reconciliationError) };
         }
-        if (reconciliation.status === "notCommitted") await cancel();
-        const finalization = reconciliation.status === "compensated" ? await finish() : "";
         const warning = reconciliation.warning ? `；对账提示：${reconciliation.warning}` : "";
+        let finalization = "";
+        if (request.creationSessionId) {
+          await abortThenCancel(`${messageOf(error)}${warning}`);
+        } else {
+          if (reconciliation.status === "notCommitted") await cancel();
+          if (reconciliation.status === "compensated") finalization = await finish();
+        }
         return failure(
           request,
           "persist-failed",
@@ -120,15 +137,18 @@ export class PetSwitchCoordinator {
         );
       }
 
+      let cleanupWarning = "";
       try {
         swap.commit();
       } catch (error) {
         this.log(request, "cleanup", error);
+        cleanupWarning = `旧运行时清理失败：${messageOf(error)}`;
       }
       const finalization = await finish();
       this.log(request, "complete");
-      return finalization
-        ? { ok: true, requestId: request.requestId, petId: request.petId, warning: finalization.slice(1) }
+      const warning = [cleanupWarning, finalization.replace(/^；/, "")].filter(Boolean).join("；");
+      return warning
+        ? { ok: true, requestId: request.requestId, petId: request.petId, warning }
         : { ok: true, requestId: request.requestId, petId: request.petId };
     } catch (error) {
       this.log(request, "failed", error);
@@ -138,9 +158,13 @@ export class PetSwitchCoordinator {
       if (committed && swap) {
         const compensation = await this.compensateCommit(request, swap.previous.petId);
         compensationMessage = compensation.message;
-        if (compensation.converged) compensationMessage += await finish();
+        if (request.creationSessionId) {
+          await abortThenCancel(`${messageOf(error)}${compensationMessage}`);
+        } else if (compensation.converged) {
+          compensationMessage += await finish();
+        }
       } else {
-        await cancel();
+        await abortThenCancel(messageOf(error));
       }
       return failure(
         request,

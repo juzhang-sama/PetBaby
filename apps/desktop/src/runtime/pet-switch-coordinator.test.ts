@@ -87,6 +87,7 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     };
   });
   const cancel = vi.fn(async () => undefined);
+  const abortCreation = vi.fn(async () => undefined);
   const finish = vi.fn(async () => {
     if (options.finishError) throw options.finishError;
   });
@@ -134,6 +135,7 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     probe,
     commit: commitSelection,
     rollbackCommit,
+    abortCreation,
     cancel,
     finish,
     reconcileCommit,
@@ -141,6 +143,7 @@ function coordinatorHarness(options: HarnessOptions = {}) {
   });
   return {
     candidate,
+    abortCreation,
     cancel,
     commitSelection,
     commitStarted,
@@ -201,6 +204,43 @@ describe("PetSwitchCoordinator", () => {
 
     expect(test.cancel).toHaveBeenCalledWith("r-probe");
     expect(test.cancel).toHaveBeenCalledOnce();
+    expect(test.finish).not.toHaveBeenCalled();
+  });
+
+  it("aborts the exact creation session before cancelling a failed creation request", async () => {
+    const test = coordinatorHarness({ loadError: new Error("bad asset") });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch({
+      requestId: "r-creation-load",
+      petId: "pet-b",
+      acceptedVariantId: "variant-b",
+      creationSessionId: "session-b",
+    })).resolves.toMatchObject({ ok: false });
+
+    expect(test.abortCreation).toHaveBeenCalledWith("session-b", "bad asset");
+    expect(test.cancel).toHaveBeenCalledWith("r-creation-load");
+    expect(test.abortCreation.mock.invocationCallOrder[0]).toBeLessThan(
+      test.cancel.mock.invocationCallOrder[0]!,
+    );
+  });
+
+  it("fact-checks a creation commit with abort before releasing an unknown request", async () => {
+    const test = coordinatorHarness({
+      commitError: new Error("transport state unknown"),
+      reconciliationStatus: "unknown",
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch({
+      requestId: "r-creation-unknown",
+      petId: "pet-b",
+      acceptedVariantId: "variant-b",
+      creationSessionId: "session-b",
+    })).resolves.toMatchObject({ ok: false, code: "persist-failed" });
+
+    expect(test.abortCreation).toHaveBeenCalledWith("session-b", expect.stringContaining("unknown"));
+    expect(test.cancel).toHaveBeenCalledWith("r-creation-unknown");
     expect(test.finish).not.toHaveBeenCalled();
   });
 
@@ -343,6 +383,7 @@ describe("PetSwitchCoordinator", () => {
     await expect(test.coordinator.switch(request("pet-b"))).resolves.toMatchObject({
       ok: true,
       petId: "pet-b",
+      warning: expect.stringContaining("destroy failed"),
     });
     expect(test.commitSelection).toHaveBeenCalledOnce();
     expect(test.finish).toHaveBeenCalledOnce();

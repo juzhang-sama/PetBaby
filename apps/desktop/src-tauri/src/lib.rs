@@ -403,6 +403,31 @@ fn creation_abandon(
 }
 
 #[tauri::command]
+fn creation_prepare_finalize(
+    service: tauri::State<'_, creation::finalization::SharedCreationFinalizationService>,
+    session_id: String,
+    request_id: String,
+) -> Result<creation::domain::PreparedCreation, String> {
+    service.prepare(&session_id, &request_id)
+}
+
+#[tauri::command]
+fn creation_abort_finalize(
+    service: tauri::State<'_, creation::finalization::SharedCreationFinalizationService>,
+    session_id: String,
+    error: String,
+) -> Result<creation::domain::CreationSnapshot, String> {
+    service.abort(&session_id, &error)
+}
+
+#[tauri::command]
+fn creation_recover_finalization(
+    service: tauri::State<'_, creation::finalization::SharedCreationFinalizationService>,
+) -> Result<creation::finalization::RecoveryReport, String> {
+    service.recover()
+}
+
+#[tauri::command]
 fn pet_prepare_switch(
     state: tauri::State<'_, SharedActivePetService>,
     request_id: String,
@@ -427,8 +452,12 @@ fn pet_commit_switch(
     accepted_variant_id: Option<String>,
     creation_session_id: Option<String>,
 ) -> Result<(), String> {
-    let _ = creation_session_id;
-    state.commit_switch(&request_id, &pet_id, accepted_variant_id.as_deref())
+    state.commit_switch(
+        &request_id,
+        &pet_id,
+        accepted_variant_id.as_deref(),
+        creation_session_id.as_deref(),
+    )
 }
 
 #[tauri::command]
@@ -440,12 +469,12 @@ fn pet_rollback_switch(
     accepted_variant_id: Option<String>,
     creation_session_id: Option<String>,
 ) -> Result<CommitCompensation, String> {
-    let _ = creation_session_id;
     state.rollback_switch(
         &request_id,
         &previous_pet_id,
         &pet_id,
         accepted_variant_id.as_deref(),
+        creation_session_id.as_deref(),
     )
 }
 
@@ -458,12 +487,12 @@ fn pet_reconcile_switch_commit(
     accepted_variant_id: Option<String>,
     creation_session_id: Option<String>,
 ) -> Result<CommitReconciliation, String> {
-    let _ = creation_session_id;
     state.reconcile_commit(
         &request_id,
         &previous_pet_id,
         &pet_id,
         accepted_variant_id.as_deref(),
+        creation_session_id.as_deref(),
     )
 }
 
@@ -805,6 +834,13 @@ pub fn run() {
                 pets_dir.clone(),
                 mutation_gate.clone(),
             ));
+            let finalization = Arc::new(creation::finalization::CreationFinalizationService::new(
+                storage.clone(),
+                data_dir.clone(),
+                data_dir.join("jobs"),
+                mutation_gate.clone(),
+                active.switch_transaction(),
+            ));
             active.restore()?;
             let catalog = Arc::new(PetCatalogService::new(
                 storage.clone(),
@@ -820,8 +856,13 @@ pub fn run() {
             if let Err(error) = deletion.cleanup_quarantine() {
                 eprintln!("[desktop-pet] quarantine cleanup failed: {error}");
             }
-            app.manage(active as SharedActivePetService);
+            let recovery = finalization.recover()?;
+            for warning in recovery.warnings {
+                eprintln!("[desktop-pet] creation finalization recovery: {warning}");
+            }
+            app.manage(active.clone() as SharedActivePetService);
             app.manage(mutation_gate.clone() as SharedPetMutationGate);
+            app.manage(finalization as creation::finalization::SharedCreationFinalizationService);
             app.manage(catalog as SharedPetCatalogService);
             let creation_service = Arc::new(creation::CreationService::new(
                 storage.clone(),
@@ -912,6 +953,9 @@ pub fn run() {
             creation_snapshot,
             creation_set_name,
             creation_abandon,
+            creation_prepare_finalize,
+            creation_abort_finalize,
+            creation_recover_finalization,
             creation_upload_start,
             creation_upload_jobs,
             gen_start,
@@ -1028,6 +1072,13 @@ mod tests {
         let _snapshot = super::creation_snapshot;
         let _set_name = super::creation_set_name;
         let _abandon = super::creation_abandon;
+    }
+
+    #[test]
+    fn creation_finalization_commands_are_available() {
+        let _prepare = super::creation_prepare_finalize;
+        let _abort = super::creation_abort_finalize;
+        let _recover = super::creation_recover_finalization;
     }
 
     #[test]

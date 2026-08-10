@@ -1,5 +1,6 @@
 pub mod candidate;
 pub mod domain;
+pub mod finalization;
 pub mod name;
 pub mod profiles;
 pub mod service;

@@ -732,7 +732,9 @@ mod tests {
         test.insert_candidate("job-1", "pet-1", false);
         test.insert_runtime_variant("job-1", "pet-1");
         test.write_current_asset("pet-1", "job-1");
-        test.active.commit(None, "pet-1", Some("job-1")).unwrap();
+        test.active
+            .commit(None, "pet-1", Some("job-1"), None)
+            .unwrap();
 
         let entry = test
             .service

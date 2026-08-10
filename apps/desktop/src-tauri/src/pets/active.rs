@@ -67,7 +67,7 @@ pub struct ActivePetService {
     session: SharedActivePetSession,
     pets_dir: PathBuf,
     mutation_gate: SharedPetMutationGate,
-    switch_transaction: Mutex<()>,
+    switch_transaction: Arc<Mutex<()>>,
     reconciliation_cache: Mutex<Option<CachedReconciliation>>,
     #[cfg(test)]
     after_owner_pin_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -87,13 +87,17 @@ impl ActivePetService {
             session,
             pets_dir,
             mutation_gate,
-            switch_transaction: Mutex::new(()),
+            switch_transaction: Arc::new(Mutex::new(())),
             reconciliation_cache: Mutex::new(None),
             #[cfg(test)]
             after_owner_pin_hook: Mutex::new(None),
             #[cfg(test)]
             before_reconciliation_cache_hook: Mutex::new(None),
         }
+    }
+
+    pub fn switch_transaction(&self) -> Arc<Mutex<()>> {
+        self.switch_transaction.clone()
     }
 
     pub fn restore(&self) -> Result<String, String> {
@@ -143,8 +147,14 @@ impl ActivePetService {
         request_id: &str,
         pet_id: &str,
         accepted_variant_id: Option<&str>,
+        creation_session_id: Option<&str>,
     ) -> Result<(), String> {
-        self.commit(Some(request_id), pet_id, accepted_variant_id)
+        self.commit(
+            Some(request_id),
+            pet_id,
+            accepted_variant_id,
+            creation_session_id,
+        )
     }
 
     pub fn rollback_switch(
@@ -153,6 +163,7 @@ impl ActivePetService {
         previous_pet_id: &str,
         pet_id: &str,
         accepted_variant_id: Option<&str>,
+        creation_session_id: Option<&str>,
     ) -> Result<CommitCompensation, String> {
         let _switch_transaction = self
             .switch_transaction
@@ -164,10 +175,14 @@ impl ActivePetService {
         #[cfg(test)]
         self.run_after_owner_pin_hook();
 
-        if let Err(error) = self
-            .describe(previous_pet_id)
-            .and_then(|_| self.rollback_database(previous_pet_id, pet_id, accepted_variant_id))
-        {
+        if let Err(error) = self.describe(previous_pet_id).and_then(|_| {
+            self.rollback_database(
+                previous_pet_id,
+                pet_id,
+                accepted_variant_id,
+                creation_session_id,
+            )
+        }) {
             return Ok(CommitCompensation {
                 status: CommitCompensationStatus::Unknown,
                 warning: Some(error),
@@ -198,6 +213,7 @@ impl ActivePetService {
         request_id: Option<&str>,
         pet_id: &str,
         accepted_variant_id: Option<&str>,
+        creation_session_id: Option<&str>,
     ) -> Result<(), String> {
         let _switch_transaction = self
             .switch_transaction
@@ -231,7 +247,79 @@ impl ActivePetService {
                 return Err("installed pet is unavailable".into());
             }
         }
-        if let Some(variant_id) = accepted_variant_id {
+        if let Some(session_id) = creation_session_id {
+            let variant_id = accepted_variant_id
+                .ok_or_else(|| "creation commit requires an accepted variant".to_string())?;
+            let facts: Option<(String, String, String, Option<String>, i64, String)> = tx
+                .query_row(
+                    "SELECT cs.status, cs.last_stable_status, p.lifecycle, p.display_name,
+                            av.accepted, rv.pet_id
+                     FROM creation_sessions cs
+                     JOIN pets p ON p.pet_id=cs.pet_id
+                     JOIN appearance_variants av
+                       ON av.session_id=cs.session_id AND av.pet_id=cs.pet_id
+                     JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
+                     WHERE cs.session_id=?1 AND cs.pet_id=?2 AND av.variant_id=?3",
+                    rusqlite::params![session_id, pet_id, variant_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                            row.get(5)?,
+                        ))
+                    },
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            let (status, last_stable, lifecycle, display_name, accepted, runtime_pet_id) = facts
+                .ok_or_else(|| "creation session, pet, and variant do not match".to_string())?;
+            let name = display_name
+                .as_deref()
+                .ok_or_else(|| "creation pet name has not been saved".to_string())?;
+            if crate::creation::name::normalize_display_name(name)? != name {
+                return Err("creation pet name is not stored in normalized form".into());
+            }
+            if runtime_pet_id != pet_id || last_stable != "candidateReady" && status != "completed"
+            {
+                return Err("creation commit facts are inconsistent".into());
+            }
+            let already_completed = status == "completed" && lifecycle == "ready" && accepted == 1;
+            if !already_completed {
+                if status != "finalizing" || lifecycle != "draft" || accepted != 0 {
+                    return Err("creation session is not finalizing its draft pet".into());
+                }
+                let now = crate::creation::profiles::now_iso();
+                let accepted_count = tx
+                    .execute(
+                        "UPDATE appearance_variants SET accepted=1
+                         WHERE variant_id=?1 AND pet_id=?2 AND session_id=?3 AND accepted=0",
+                        rusqlite::params![variant_id, pet_id, session_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let pet_count = tx
+                    .execute(
+                        "UPDATE pets SET lifecycle='ready', completed_at=?2, updated_at=?2
+                         WHERE pet_id=?1 AND lifecycle='draft' AND display_name IS NOT NULL",
+                        rusqlite::params![pet_id, now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let session_count = tx
+                    .execute(
+                        "UPDATE creation_sessions
+                         SET status='completed', last_stable_status='completed',
+                             current_step='completed', error=NULL, completed_at=?2, updated_at=?2
+                         WHERE session_id=?1 AND pet_id=?3 AND status='finalizing'",
+                        rusqlite::params![session_id, now, pet_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if accepted_count != 1 || pet_count != 1 || session_count != 1 {
+                    return Err("creation commit changed before it could complete".into());
+                }
+            }
+        } else if let Some(variant_id) = accepted_variant_id {
             let affected = tx
                 .execute(
                     "UPDATE appearance_variants SET accepted = 1
@@ -265,6 +353,7 @@ impl ActivePetService {
         previous_pet_id: &str,
         pet_id: &str,
         accepted_variant_id: Option<&str>,
+        creation_session_id: Option<&str>,
     ) -> Result<(), String> {
         let _switch_transaction = self
             .switch_transaction
@@ -279,7 +368,12 @@ impl ActivePetService {
         #[cfg(test)]
         self.run_after_owner_pin_hook();
         self.describe(previous_pet_id)?;
-        self.rollback_database(previous_pet_id, pet_id, accepted_variant_id)?;
+        self.rollback_database(
+            previous_pet_id,
+            pet_id,
+            accepted_variant_id,
+            creation_session_id,
+        )?;
         self.sync_session(previous_pet_id)
     }
 
@@ -289,6 +383,7 @@ impl ActivePetService {
         previous_pet_id: &str,
         pet_id: &str,
         accepted_variant_id: Option<&str>,
+        creation_session_id: Option<&str>,
     ) -> Result<CommitReconciliation, String> {
         let _switch_transaction = self
             .switch_transaction
@@ -335,10 +430,14 @@ impl ActivePetService {
                 warning: Some("persisted active pet is neither previous nor target".into()),
             });
         }
-        if let Err(error) = self
-            .describe(previous_pet_id)
-            .and_then(|_| self.rollback_database(previous_pet_id, pet_id, accepted_variant_id))
-        {
+        if let Err(error) = self.describe(previous_pet_id).and_then(|_| {
+            self.rollback_database(
+                previous_pet_id,
+                pet_id,
+                accepted_variant_id,
+                creation_session_id,
+            )
+        }) {
             return Ok(CommitReconciliation {
                 status: CommitReconciliationStatus::Unknown,
                 warning: Some(error),
@@ -389,6 +488,7 @@ impl ActivePetService {
         previous_pet_id: &str,
         pet_id: &str,
         accepted_variant_id: Option<&str>,
+        creation_session_id: Option<&str>,
     ) -> Result<(), String> {
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let tx = storage
@@ -407,7 +507,67 @@ impl ActivePetService {
         if !already_rolled_back && current.as_deref() != Some(pet_id) {
             return Err("active pet changed before switch rollback".into());
         }
-        if let Some(variant_id) = accepted_variant_id {
+        if let Some(session_id) = creation_session_id {
+            let variant_id = accepted_variant_id
+                .ok_or_else(|| "creation rollback requires an accepted variant".to_string())?;
+            let facts: Option<(String, String, i64)> = tx
+                .query_row(
+                    "SELECT cs.status, p.lifecycle, av.accepted
+                     FROM creation_sessions cs
+                     JOIN pets p ON p.pet_id=cs.pet_id
+                     JOIN appearance_variants av
+                       ON av.session_id=cs.session_id AND av.pet_id=cs.pet_id
+                     JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
+                     WHERE cs.session_id=?1 AND cs.pet_id=?2 AND av.variant_id=?3",
+                    rusqlite::params![session_id, pet_id, variant_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?;
+            let (session_status, lifecycle, accepted) = facts
+                .ok_or_else(|| "creation session, pet, and variant do not match".to_string())?;
+            let already_compensated = already_rolled_back
+                && session_status == "candidateReady"
+                && lifecycle == "draft"
+                && accepted == 0;
+            if !already_compensated {
+                if already_rolled_back
+                    || session_status != "completed"
+                    || lifecycle != "ready"
+                    || accepted != 1
+                {
+                    return Err("creation state changed before switch rollback".into());
+                }
+                let now = crate::creation::profiles::now_iso();
+                let variant_count = tx
+                    .execute(
+                        "UPDATE appearance_variants SET accepted=0
+                         WHERE variant_id=?1 AND pet_id=?2 AND session_id=?3 AND accepted=1",
+                        rusqlite::params![variant_id, pet_id, session_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let pet_count = tx
+                    .execute(
+                        "UPDATE pets SET lifecycle='draft', completed_at=NULL, updated_at=?2
+                         WHERE pet_id=?1 AND lifecycle='ready'",
+                        rusqlite::params![pet_id, now],
+                    )
+                    .map_err(|error| error.to_string())?;
+                let session_count = tx
+                    .execute(
+                        "UPDATE creation_sessions
+                         SET status='candidateReady', last_stable_status='candidateReady',
+                             current_step='review', error='runtime switch rolled back',
+                             completed_at=NULL, updated_at=?2
+                         WHERE session_id=?1 AND pet_id=?3 AND status='completed'",
+                        rusqlite::params![session_id, now, pet_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if variant_count != 1 || pet_count != 1 || session_count != 1 {
+                    return Err("creation rollback changed before compensation completed".into());
+                }
+            }
+        } else if let Some(variant_id) = accepted_variant_id {
             if already_rolled_back {
                 let candidate_is_unaccepted: Option<i64> = tx
                     .query_row(
@@ -647,6 +807,39 @@ mod tests {
             test
         }
 
+        fn with_creation_candidate(pet_id: &str, variant_id: &str, session_id: &str) -> Self {
+            let test = Self::with_current_pet(pet_id, variant_id);
+            let storage = test.storage.lock().unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE pets SET display_name='奶糖', lifecycle='draft', completed_at=NULL
+                     WHERE pet_id=?1",
+                    [pet_id],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO creation_sessions
+                     (session_id, pet_id, method, status, last_stable_status, current_step,
+                      schema_version, created_at, updated_at)
+                     VALUES (?1, ?2, 'upload', 'finalizing', 'candidateReady', 'finalizing',
+                             1, '0', '0')",
+                    rusqlite::params![session_id, pet_id],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE appearance_variants SET session_id=?2 WHERE variant_id=?1",
+                    rusqlite::params![variant_id, session_id],
+                )
+                .unwrap();
+            drop(storage);
+            test
+        }
+
         fn insert_pet(&self, pet_id: &str) {
             self.storage
                 .lock()
@@ -704,6 +897,33 @@ mod tests {
                 .unwrap()
                 == 1
         }
+
+        fn creation_state(
+            &self,
+            pet_id: &str,
+            session_id: &str,
+        ) -> (String, Option<String>, String, String, Option<String>) {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT p.lifecycle, p.completed_at, cs.status, cs.last_stable_status, cs.error
+                     FROM pets p JOIN creation_sessions cs ON cs.pet_id=p.pet_id
+                     WHERE p.pet_id=?1 AND cs.session_id=?2",
+                    rusqlite::params![pet_id, session_id],
+                    |row| {
+                        Ok((
+                            row.get(0)?,
+                            row.get(1)?,
+                            row.get(2)?,
+                            row.get(3)?,
+                            row.get(4)?,
+                        ))
+                    },
+                )
+                .unwrap()
+        }
     }
 
     fn write_png(path: &Path, width: u32, height: u32) {
@@ -759,7 +979,7 @@ mod tests {
     fn creation_commit_accepts_variant_and_persists_active_atomically() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service
-            .commit(None, "pet-user", Some("variant-1"))
+            .commit(None, "pet-user", Some("variant-1"), None)
             .unwrap();
         assert_eq!(test.persisted_active().as_deref(), Some("pet-user"));
         assert!(test.variant_accepted("variant-1"));
@@ -767,17 +987,188 @@ mod tests {
     }
 
     #[test]
+    fn creation_context_commit_completes_pet_session_variant_and_active_atomically() {
+        let test = ActiveHarness::with_creation_candidate(
+            "pet-created",
+            "variant-created",
+            "session-created",
+        );
+
+        test.service
+            .commit(
+                None,
+                "pet-created",
+                Some("variant-created"),
+                Some("session-created"),
+            )
+            .unwrap();
+
+        assert_eq!(test.persisted_active().as_deref(), Some("pet-created"));
+        assert!(test.variant_accepted("variant-created"));
+        let state = test.creation_state("pet-created", "session-created");
+        assert_eq!(state.0, "ready");
+        assert!(state.1.is_some());
+        assert_eq!(state.2, "completed");
+        assert_eq!(state.3, "completed");
+        assert_eq!(state.4, None);
+    }
+
+    #[test]
+    fn creation_context_rollback_restores_the_last_stable_candidate_state_idempotently() {
+        let test = ActiveHarness::with_creation_candidate(
+            "pet-created",
+            "variant-created",
+            "session-created",
+        );
+        test.service
+            .commit(
+                None,
+                "pet-created",
+                Some("variant-created"),
+                Some("session-created"),
+            )
+            .unwrap();
+
+        for _ in 0..2 {
+            test.service
+                .rollback_commit(
+                    None,
+                    BUILTIN_PET_ID,
+                    "pet-created",
+                    Some("variant-created"),
+                    Some("session-created"),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        assert!(!test.variant_accepted("variant-created"));
+        let state = test.creation_state("pet-created", "session-created");
+        assert_eq!(state.0, "draft");
+        assert_eq!(state.1, None);
+        assert_eq!(state.2, "candidateReady");
+        assert_eq!(state.3, "candidateReady");
+        assert!(state.4.is_some());
+    }
+
+    #[test]
+    fn creation_commit_retry_after_a_lost_response_is_idempotent() {
+        let test = ActiveHarness::with_creation_candidate(
+            "pet-created",
+            "variant-created",
+            "session-created",
+        );
+        test.service
+            .prepare(Some("creation-response-lost"), "pet-created")
+            .unwrap();
+
+        for _ in 0..2 {
+            test.service
+                .commit(
+                    Some("creation-response-lost"),
+                    "pet-created",
+                    Some("variant-created"),
+                    Some("session-created"),
+                )
+                .unwrap();
+        }
+
+        assert_eq!(
+            test.creation_state("pet-created", "session-created").2,
+            "completed"
+        );
+        assert!(test.variant_accepted("variant-created"));
+        test.service.finish("creation-response-lost").unwrap();
+    }
+
+    #[test]
+    fn creation_reconcile_compensates_a_commit_whose_response_was_lost() {
+        let test = ActiveHarness::with_creation_candidate(
+            "pet-created",
+            "variant-created",
+            "session-created",
+        );
+        test.service
+            .prepare(Some("creation-reconcile"), "pet-created")
+            .unwrap();
+        test.service
+            .commit(
+                Some("creation-reconcile"),
+                "pet-created",
+                Some("variant-created"),
+                Some("session-created"),
+            )
+            .unwrap();
+
+        let result = test
+            .service
+            .reconcile_commit(
+                "creation-reconcile",
+                BUILTIN_PET_ID,
+                "pet-created",
+                Some("variant-created"),
+                Some("session-created"),
+            )
+            .unwrap();
+
+        assert_eq!(result.status, CommitReconciliationStatus::Compensated);
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        assert!(!test.variant_accepted("variant-created"));
+        let state = test.creation_state("pet-created", "session-created");
+        assert_eq!(state.0, "draft");
+        assert_eq!(state.2, "candidateReady");
+        test.service.finish("creation-reconcile").unwrap();
+    }
+
+    #[test]
+    fn creation_commit_database_failure_rolls_back_every_creation_fact() {
+        let test = ActiveHarness::with_creation_candidate(
+            "pet-created",
+            "variant-created",
+            "session-created",
+        );
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_creation_completion BEFORE UPDATE OF status ON creation_sessions
+                 WHEN NEW.status='completed'
+                 BEGIN SELECT RAISE(ABORT, 'forced creation completion failure'); END;",
+            )
+            .unwrap();
+
+        assert!(test
+            .service
+            .commit(
+                None,
+                "pet-created",
+                Some("variant-created"),
+                Some("session-created"),
+            )
+            .unwrap_err()
+            .contains("forced creation completion failure"));
+
+        assert!(!test.variant_accepted("variant-created"));
+        let state = test.creation_state("pet-created", "session-created");
+        assert_eq!(state.0, "draft");
+        assert_eq!(state.1, None);
+        assert_eq!(state.2, "finalizing");
+        assert_eq!(test.persisted_active(), None);
+    }
+
+    #[test]
     fn rollback_commit_restores_previous_selection_and_unaccepts_the_candidate() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service
-            .commit(None, "pet-user", Some("variant-1"))
+            .commit(None, "pet-user", Some("variant-1"), None)
             .unwrap();
 
         test.service
-            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"), None)
             .unwrap();
         test.service
-            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"), None)
             .unwrap();
 
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
@@ -788,13 +1179,13 @@ mod tests {
     #[test]
     fn rollback_commit_without_a_variant_is_idempotent_after_the_previous_selection_is_restored() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
-        test.service.commit(None, "pet-user", None).unwrap();
+        test.service.commit(None, "pet-user", None, None).unwrap();
 
         test.service
-            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", None)
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", None, None)
             .unwrap();
         test.service
-            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", None)
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", None, None)
             .unwrap();
 
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
@@ -805,12 +1196,12 @@ mod tests {
     fn commit_rejects_an_already_accepted_candidate() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service
-            .commit(None, "pet-user", Some("variant-1"))
+            .commit(None, "pet-user", Some("variant-1"), None)
             .unwrap();
 
         assert!(test
             .service
-            .commit(None, "pet-user", Some("variant-1"))
+            .commit(None, "pet-user", Some("variant-1"), None)
             .is_err());
         assert!(test.variant_accepted("variant-1"));
     }
@@ -819,13 +1210,15 @@ mod tests {
     fn rollback_commit_rejects_a_stale_active_selection_without_unaccepting_the_variant() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service
-            .commit(None, "pet-user", Some("variant-1"))
+            .commit(None, "pet-user", Some("variant-1"), None)
             .unwrap();
-        test.service.commit(None, BUILTIN_PET_ID, None).unwrap();
+        test.service
+            .commit(None, BUILTIN_PET_ID, None, None)
+            .unwrap();
 
         assert!(test
             .service
-            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"), None)
             .is_err());
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
         assert!(test.variant_accepted("variant-1"));
@@ -865,7 +1258,7 @@ mod tests {
         );
 
         assert!(service
-            .commit(Some("missing-request"), BUILTIN_PET_ID, None)
+            .commit(Some("missing-request"), BUILTIN_PET_ID, None, None)
             .is_err());
     }
 
@@ -885,11 +1278,11 @@ mod tests {
 
         assert!(test
             .service
-            .commit_switch("missing-request", BUILTIN_PET_ID, None)
+            .commit_switch("missing-request", BUILTIN_PET_ID, None, None)
             .is_err());
         assert!(test
             .service
-            .rollback_switch("missing-request", BUILTIN_PET_ID, "pet-user", None)
+            .rollback_switch("missing-request", BUILTIN_PET_ID, "pet-user", None, None)
             .is_err());
     }
 
@@ -913,7 +1306,7 @@ mod tests {
         std::thread::scope(|scope| {
             let commit = scope.spawn(|| {
                 test.service
-                    .commit(Some("switch-pinned"), BUILTIN_PET_ID, None)
+                    .commit(Some("switch-pinned"), BUILTIN_PET_ID, None, None)
             });
             commit_entered.wait();
 
@@ -942,7 +1335,7 @@ mod tests {
             .prepare(Some("switch-rollback-pinned"), "pet-user")
             .unwrap();
         test.service
-            .commit(Some("switch-rollback-pinned"), "pet-user", None)
+            .commit(Some("switch-rollback-pinned"), "pet-user", None, None)
             .unwrap();
         let entered = Arc::new(std::sync::Barrier::new(2));
         let release = Arc::new(std::sync::Barrier::new(2));
@@ -962,6 +1355,7 @@ mod tests {
                     BUILTIN_PET_ID,
                     "pet-user",
                     None,
+                    None,
                 )
             });
             entered.wait();
@@ -980,7 +1374,7 @@ mod tests {
             .prepare(Some("switch-rollback-warning"), "pet-user")
             .unwrap();
         test.service
-            .commit(Some("switch-rollback-warning"), "pet-user", None)
+            .commit(Some("switch-rollback-warning"), "pet-user", None, None)
             .unwrap();
         let session = test.session.clone();
         assert!(std::thread::spawn(move || {
@@ -992,7 +1386,13 @@ mod tests {
 
         let result = test
             .service
-            .rollback_switch("switch-rollback-warning", BUILTIN_PET_ID, "pet-user", None)
+            .rollback_switch(
+                "switch-rollback-warning",
+                BUILTIN_PET_ID,
+                "pet-user",
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(result.status, CommitCompensationStatus::Compensated);
@@ -1011,11 +1411,23 @@ mod tests {
 
         let first = test
             .service
-            .rollback_switch("switch-rollback-unknown", BUILTIN_PET_ID, "pet-user", None)
+            .rollback_switch(
+                "switch-rollback-unknown",
+                BUILTIN_PET_ID,
+                "pet-user",
+                None,
+                None,
+            )
             .unwrap();
         let retry = test
             .service
-            .rollback_switch("switch-rollback-unknown", BUILTIN_PET_ID, "pet-user", None)
+            .rollback_switch(
+                "switch-rollback-unknown",
+                BUILTIN_PET_ID,
+                "pet-user",
+                None,
+                None,
+            )
             .unwrap();
 
         assert_eq!(first.status, CommitCompensationStatus::Unknown);
@@ -1032,7 +1444,7 @@ mod tests {
             .prepare(Some("switch-reconcile-pinned"), "pet-user")
             .unwrap();
         test.service
-            .commit(Some("switch-reconcile-pinned"), "pet-user", None)
+            .commit(Some("switch-reconcile-pinned"), "pet-user", None, None)
             .unwrap();
         let entered = Arc::new(std::sync::Barrier::new(2));
         let release = Arc::new(std::sync::Barrier::new(2));
@@ -1051,6 +1463,7 @@ mod tests {
                     "switch-reconcile-pinned",
                     BUILTIN_PET_ID,
                     "pet-user",
+                    None,
                     None,
                 )
             });
@@ -1080,6 +1493,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
 
@@ -1099,7 +1513,12 @@ mod tests {
             .prepare(Some("switch-committed"), "pet-user")
             .unwrap();
         test.service
-            .commit(Some("switch-committed"), "pet-user", Some("variant-1"))
+            .commit(
+                Some("switch-committed"),
+                "pet-user",
+                Some("variant-1"),
+                None,
+            )
             .unwrap();
 
         let reconciliation = test
@@ -1109,6 +1528,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
 
@@ -1129,7 +1549,7 @@ mod tests {
             .prepare(Some("switch-retry"), "pet-user")
             .unwrap();
         test.service
-            .commit(Some("switch-retry"), "pet-user", Some("variant-1"))
+            .commit(Some("switch-retry"), "pet-user", Some("variant-1"), None)
             .unwrap();
 
         let first = test
@@ -1139,6 +1559,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
         let retry = test
@@ -1148,6 +1569,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
 
@@ -1169,6 +1591,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
         assert_eq!(
@@ -1190,6 +1613,7 @@ mod tests {
                 Some("switch-concurrent-reconcile"),
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
         let session = test.session.clone();
@@ -1222,6 +1646,7 @@ mod tests {
                     BUILTIN_PET_ID,
                     "pet-user",
                     Some("variant-1"),
+                    None,
                 )
             });
             hook_entered_rx.recv().unwrap();
@@ -1234,6 +1659,7 @@ mod tests {
                     BUILTIN_PET_ID,
                     "pet-user",
                     Some("variant-1"),
+                    None,
                 );
                 retry_tx.send(result.clone()).unwrap();
                 result
@@ -1277,7 +1703,7 @@ mod tests {
         std::thread::scope(|scope| {
             let commit = scope.spawn(|| {
                 test.service
-                    .commit(Some("switch-commit-race"), "pet-user", None)
+                    .commit(Some("switch-commit-race"), "pet-user", None, None)
             });
             entered.wait();
             let (result_tx, result_rx) = std::sync::mpsc::channel();
@@ -1287,6 +1713,7 @@ mod tests {
                     "switch-commit-race",
                     BUILTIN_PET_ID,
                     "pet-user",
+                    None,
                     None,
                 );
                 result_tx.send(result.clone()).unwrap();
@@ -1313,7 +1740,7 @@ mod tests {
             .prepare(Some("switch-rollback-race"), "pet-user")
             .unwrap();
         test.service
-            .commit(Some("switch-rollback-race"), "pet-user", None)
+            .commit(Some("switch-rollback-race"), "pet-user", None, None)
             .unwrap();
         let first_hook = Arc::new(std::sync::atomic::AtomicBool::new(true));
         let entered = Arc::new(std::sync::Barrier::new(2));
@@ -1337,6 +1764,7 @@ mod tests {
                     BUILTIN_PET_ID,
                     "pet-user",
                     None,
+                    None,
                 )
             });
             entered.wait();
@@ -1347,6 +1775,7 @@ mod tests {
                     "switch-rollback-race",
                     BUILTIN_PET_ID,
                     "pet-user",
+                    None,
                     None,
                 );
                 result_tx.send(result.clone()).unwrap();
@@ -1383,6 +1812,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 None,
+                None,
             )
             .unwrap();
         test.save_active("pet-user");
@@ -1392,6 +1822,7 @@ mod tests {
                 "switch-stable-not-committed",
                 BUILTIN_PET_ID,
                 "pet-user",
+                None,
                 None,
             )
             .unwrap();
@@ -1413,6 +1844,7 @@ mod tests {
                 Some("switch-poisoned-session"),
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
         let session = test.session.clone();
@@ -1430,6 +1862,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
 
@@ -1458,6 +1891,7 @@ mod tests {
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
+                None,
             )
             .unwrap();
 

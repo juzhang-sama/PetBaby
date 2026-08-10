@@ -190,6 +190,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
       previousPetId,
       ...request,
     }),
+    abortCreation: (sessionId, error) => invoke("creation_abort_finalize", { sessionId, error }),
     cancel: (requestId) => invoke("pet_cancel_switch", { requestId }),
     finish: (requestId) => invoke("pet_finish_switch", { requestId }),
     refreshHitRegion,
