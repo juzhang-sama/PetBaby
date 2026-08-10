@@ -1,11 +1,25 @@
-/** Guards asynchronous wizard work against a later tab change or restore. */
+/** Guards asynchronous wizard work against later visits and pet mutations. */
 export type WizardOperation = "compile" | "activate";
-export type WizardOperationOutcome = "success" | "failure";
+
+export interface WizardOperationToken {
+  visit: number;
+  petId: string;
+  kind: WizardOperation;
+  revision: number;
+}
+
+export interface WizardRefreshToken {
+  visit: number;
+  petId: string;
+  revision: number;
+}
 
 export class CreationWizardRun {
   private visit = 0;
   private active = false;
   private submittingVisit: number | null = null;
+  private readonly petRevisions = new Map<string, number>();
+  private readonly compilingPets = new Set<string>();
   private readonly activatingPets = new Set<string>();
 
   enter(): number {
@@ -43,28 +57,46 @@ export class CreationWizardRun {
     return this.isCurrent(visit);
   }
 
-  beginActivation(visit: number, petId: string): boolean {
-    if (!this.isCurrent(visit) || this.activatingPets.has(petId)) return false;
-    this.activatingPets.add(petId);
-    return true;
+  beginGeneration(visit: number, petId: string): number | null {
+    if (!this.isCurrent(visit)) return null;
+    const revision = (this.petRevisions.get(petId) ?? 0) + 1;
+    this.petRevisions.set(petId, revision);
+    return revision;
   }
 
-  endActivation(petId: string): void {
-    this.activatingPets.delete(petId);
+  beginOperation(visit: number, kind: WizardOperation, petId: string): WizardOperationToken | null {
+    if (!this.isCurrent(visit) || this.busyPets(kind).has(petId)) return null;
+    this.busyPets(kind).add(petId);
+    return { visit, petId, kind, revision: this.petRevisions.get(petId) ?? 0 };
   }
 
-  shouldRefreshStaleOperation(visit: number, operationPetId: string, currentPetId: string | null): boolean {
-    return this.active && !this.isCurrent(visit) && operationPetId === currentPetId;
+  settleOperation(token: WizardOperationToken): void {
+    this.busyPets(token.kind).delete(token.petId);
   }
 
-  settledStaleOperation(
-    visit: number,
-    _operation: WizardOperation,
-    _outcome: WizardOperationOutcome,
-    operationPetId: string,
-    currentPetId: string | null,
-  ): { refreshCurrentPet: boolean; resetCurrentControls: boolean } {
-    const refreshCurrentPet = this.shouldRefreshStaleOperation(visit, operationPetId, currentPetId);
-    return { refreshCurrentPet, resetCurrentControls: refreshCurrentPet };
+  isPetBusy(petId: string | null): boolean {
+    return !!petId && (this.compilingPets.has(petId) || this.activatingPets.has(petId));
+  }
+
+  shouldRefreshStaleOperation(token: WizardOperationToken, currentPetId: string | null): boolean {
+    return this.active
+      && !this.isCurrent(token.visit)
+      && token.petId === currentPetId
+      && token.revision === (this.petRevisions.get(token.petId) ?? 0);
+  }
+
+  beginRefresh(visit: number, petId: string, revision: number): WizardRefreshToken | null {
+    if (!this.isCurrent(visit) || revision !== (this.petRevisions.get(petId) ?? 0)) return null;
+    return { visit, petId, revision };
+  }
+
+  shouldApplyRefresh(token: WizardRefreshToken, currentPetId: string | null): boolean {
+    return this.isCurrent(token.visit)
+      && token.petId === currentPetId
+      && token.revision === (this.petRevisions.get(token.petId) ?? 0);
+  }
+
+  private busyPets(kind: WizardOperation): Set<string> {
+    return kind === "compile" ? this.compilingPets : this.activatingPets;
   }
 }

@@ -6,8 +6,7 @@ import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-vie
 import { requestPetSwitch } from "./settings/pet-switch-client";
 import {
   CreationWizardRun,
-  type WizardOperation,
-  type WizardOperationOutcome,
+  type WizardOperationToken,
 } from "./settings/creation-wizard-run";
 
 interface PetSummary { petId: string; }
@@ -214,11 +213,12 @@ function resetPhoto(): void {
   photoPreview.style.display = "none";
 }
 
-function resetWizardOperationControls(): void {
-  reviewAccept.disabled = false;
-  reviewRetry.disabled = false;
-  reviewAbandon.disabled = false;
-  confirmRetry.disabled = false;
+function syncWizardOperationControls(petId: string | null): void {
+  const busy = wizardRun.isPetBusy(petId);
+  reviewAccept.disabled = busy;
+  reviewRetry.disabled = busy;
+  reviewAbandon.disabled = busy;
+  confirmRetry.disabled = busy;
 }
 
 function isCurrentWizard(visit: number, expectedFlow: CreationFlow): boolean {
@@ -273,7 +273,7 @@ function startWizard(): void {
   jobGrid.replaceChildren();
   candidateGrid.replaceChildren();
   reviewActions.style.display = "none";
-  resetWizardOperationControls();
+  syncWizardOperationControls(null);
   btnNext.disabled = false;
   showStep("upload");
 }
@@ -296,7 +296,7 @@ async function restoreWizardView(): Promise<void> {
   try {
     const restoredFlow = new CreationFlow();
     flow = restoredFlow;
-    resetWizardOperationControls();
+    syncWizardOperationControls(petId);
     const snapshot = await invoke<CreationResume>("pet_creation_resume", { petId });
     if (!isCurrentWizard(visit, restoredFlow)) return;
     restoredFlow.restore(snapshot);
@@ -312,6 +312,7 @@ async function restoreWizardView(): Promise<void> {
 
 async function renderResumedSnapshot(snapshot: CreationResume, visit: number, expectedFlow: CreationFlow): Promise<void> {
   if (!isCurrentWizard(visit, expectedFlow)) return;
+  syncWizardOperationControls(expectedFlow.petId);
   showStep(expectedFlow.step);
   if (expectedFlow.step === "generating") {
     await refreshGenerating(visit, expectedFlow);
@@ -394,6 +395,7 @@ btnNext.addEventListener("click", async () => {
     await ensurePetForSubmission(submittingFlow, visit);
     if (!isCurrentWizard(visit, submittingFlow)) return;
     submittingFlow.setPhotoBytes(photoBytes);
+    if (!submittingFlow.petId || wizardRun.beginGeneration(visit, submittingFlow.petId) === null) return;
     await submittingFlow.submitSingle();
     persistCreationPetForVisit(submittingFlow.petId!, visit, submittingFlow);
     if (!isCurrentWizard(visit, submittingFlow)) return;
@@ -451,6 +453,7 @@ function renderJob(job: JobInfo | undefined, snapshot: CreationResume): void {
 
 async function renderCandidate(jobId: string | null, visit: number, expectedFlow: CreationFlow): Promise<void> {
   if (!isCurrentWizard(visit, expectedFlow)) return;
+  syncWizardOperationControls(expectedFlow.petId);
   candidateGrid.replaceChildren();
   reviewActions.style.display = "";
   if (!jobId) {
@@ -475,101 +478,83 @@ async function renderCandidate(jobId: string | null, visit: number, expectedFlow
   }
 }
 
-async function refreshCurrentVisitForPet(petId: string): Promise<void> {
+async function refreshCurrentVisitForPet(operation: WizardOperationToken): Promise<void> {
   const visit = wizardVisit;
   const currentFlow = flow;
-  if (!isCurrentWizard(visit, currentFlow) || currentFlow.petId !== petId) return;
+  const refresh = wizardRun.beginRefresh(visit, operation.petId, operation.revision);
+  if (!refresh || !isCurrentWizard(visit, currentFlow) || currentFlow.petId !== operation.petId) return;
   try {
-    const snapshot = await invoke<CreationResume>("pet_creation_resume", { petId });
-    if (!isCurrentWizard(visit, currentFlow) || currentFlow.petId !== petId) return;
+    const snapshot = await invoke<CreationResume>("pet_creation_resume", { petId: operation.petId });
+    if (!isCurrentWizard(visit, currentFlow) || !wizardRun.shouldApplyRefresh(refresh, currentFlow.petId)) return;
     currentFlow.restore(snapshot);
-    resetWizardOperationControls();
+    syncWizardOperationControls(currentFlow.petId);
     await renderResumedSnapshot(snapshot, visit, currentFlow);
   } catch {
     // The newer visit retains its existing, still actionable UI on refresh failure.
   }
 }
 
-function refreshAfterStaleOperation(
-  visit: number,
-  operation: WizardOperation,
-  outcome: WizardOperationOutcome,
-  petId: string,
-): void {
-  if (wizardRun.settledStaleOperation(visit, operation, outcome, petId, flow.petId).refreshCurrentPet) {
-    void refreshCurrentVisitForPet(petId);
+function refreshAfterStaleOperation(operation: WizardOperationToken): void {
+  if (wizardRun.shouldRefreshStaleOperation(operation, flow.petId)) {
+    void refreshCurrentVisitForPet(operation);
   }
 }
 
 reviewAccept.addEventListener("click", async () => {
   const visit = wizardVisit;
   const reviewFlow = flow;
-  if (!isCurrentWizard(visit, reviewFlow)) return;
-  reviewAccept.disabled = true;
-  reviewRetry.disabled = true;
-  reviewAbandon.disabled = true;
-  wizardStatus.textContent = "正在编译资产…";
   const petId = reviewFlow.petId;
+  if (!petId || !isCurrentWizard(visit, reviewFlow)) return;
+  const operation = wizardRun.beginOperation(visit, "compile", petId);
+  if (!operation) return;
+  syncWizardOperationControls(petId);
+  wizardStatus.textContent = "正在编译资产…";
+  let compiled: { degraded: boolean } | null = null;
   try {
-    const result = await reviewFlow.compileCandidate();
-    if (!isCurrentWizard(visit, reviewFlow)) {
-      if (petId) refreshAfterStaleOperation(visit, "compile", "success", petId);
-      return;
-    }
+    compiled = await reviewFlow.compileCandidate();
+    if (!isCurrentWizard(visit, reviewFlow)) return;
     showStep("confirm");
-    wizardStatus.textContent = result.degraded ? "资产已准备（降级模式），正在设为当前宠物…" : "资产已准备，正在设为当前宠物…";
-    await activatePreparedCandidate(visit, reviewFlow);
+    wizardStatus.textContent = compiled.degraded ? "资产已准备（降级模式），正在设为当前宠物…" : "资产已准备，正在设为当前宠物…";
   } catch (error) {
     if (isCurrentWizard(visit, reviewFlow)) {
       wizardStatus.textContent = `编译失败，可重试：${String(error)}`;
       showStep("review");
-    } else if (petId) {
-      refreshAfterStaleOperation(visit, "compile", "failure", petId);
     }
   } finally {
-    if (isCurrentWizard(visit, reviewFlow)) {
-      reviewAccept.disabled = false;
-      reviewRetry.disabled = false;
-      reviewAbandon.disabled = false;
-    }
+    wizardRun.settleOperation(operation);
+    if (isCurrentWizard(visit, reviewFlow)) syncWizardOperationControls(petId);
+    else refreshAfterStaleOperation(operation);
   }
+  if (compiled && isCurrentWizard(visit, reviewFlow)) await activatePreparedCandidate(visit, reviewFlow);
 });
 
 async function activatePreparedCandidate(visit: number, expectedFlow: CreationFlow): Promise<void> {
   const petId = expectedFlow.petId;
   if (!petId || !isCurrentWizard(visit, expectedFlow) || expectedFlow.step !== "confirm") return;
-  if (!wizardRun.beginActivation(visit, petId)) return;
-  confirmRetry.disabled = true;
-  let refreshNewVisit = false;
-  let outcome: WizardOperationOutcome = "failure";
+  const operation = wizardRun.beginOperation(visit, "activate", petId);
+  if (!operation) return;
+  syncWizardOperationControls(petId);
   try {
     await expectedFlow.activateCandidate();
-    outcome = "success";
     clearCreationPet(petId);
-    if (!isCurrentWizard(visit, expectedFlow)) {
-      refreshNewVisit = true;
-      return;
-    }
+    if (!isCurrentWizard(visit, expectedFlow)) return;
     showStep("complete");
     wizardStatus.textContent = "宠物已出现在桌面。";
   } catch (error) {
-    if (!isCurrentWizard(visit, expectedFlow)) {
-      refreshNewVisit = true;
-      return;
-    }
+    if (!isCurrentWizard(visit, expectedFlow)) return;
     showStep("confirm");
     wizardStatus.textContent = `资产已准备，可重试设为当前宠物：${String(error)}`;
   } finally {
-    wizardRun.endActivation(petId);
-    if (isCurrentWizard(visit, expectedFlow)) confirmRetry.disabled = false;
-    if (refreshNewVisit) refreshAfterStaleOperation(visit, "activate", outcome, petId);
+    wizardRun.settleOperation(operation);
+    if (isCurrentWizard(visit, expectedFlow)) syncWizardOperationControls(petId);
+    else refreshAfterStaleOperation(operation);
   }
 }
 
 confirmRetry.addEventListener("click", () => { void activatePreparedCandidate(wizardVisit, flow); });
 
 reviewRetry.addEventListener("click", () => {
-  if (!isCurrentWizard(wizardVisit, flow)) return;
+  if (!isCurrentWizard(wizardVisit, flow) || wizardRun.isPetBusy(flow.petId)) return;
   resetPhoto();
   reviewActions.style.display = "none";
   candidateGrid.replaceChildren();
@@ -579,7 +564,7 @@ reviewRetry.addEventListener("click", () => {
 
 reviewAbandon.addEventListener("click", async () => {
   const petId = flow.petId;
-  if (!petId || !window.confirm("确定放弃创建吗？这会删除这只宠物的本地资料和生成任务。")) return;
+  if (!petId || wizardRun.isPetBusy(petId) || !window.confirm("确定放弃创建吗？这会删除这只宠物的本地资料和生成任务。")) return;
   const visit = wizardVisit;
   const reviewFlow = flow;
   if (!isCurrentWizard(visit, reviewFlow)) return;
