@@ -14,7 +14,7 @@ import {
 import { WindowMotionController } from "./runtime/window-motion-controller";
 import { isLive2DProbeMode, mountLive2DProbe } from "./runtime-live2d/probe";
 import { isLive2DPreviewMode, mountLive2DPreview } from "./runtime-live2d/preview";
-import { PetRuntimeSlot } from "./runtime/pet-runtime-slot";
+import { PetRuntimeSlot, type MountedPetRuntime } from "./runtime/pet-runtime-slot";
 import { PetSwitchCoordinator } from "./runtime/pet-switch-coordinator";
 import {
   PET_SWITCH_REQUEST,
@@ -84,7 +84,19 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
 
   const activePetId = await invoke<string>("pet_get_active");
   const initialDescriptor = await invoke<RuntimePetDescriptor>("pet_prepare_switch", { petId: activePetId });
-  const initialRuntime = await loadRuntimePet(initialDescriptor, document.createElement("div"));
+  let initialRuntime: MountedPetRuntime | undefined;
+  initialRuntime = await loadRuntimePet(
+    initialDescriptor,
+    document.createElement("div"),
+    undefined,
+    {
+      allowPreviewFallback: true,
+      diagnose,
+      onSurfaceChanged: async () => {
+        if (initialRuntime && slot.refreshActiveSurface(initialRuntime)) await refreshHitRegion();
+      },
+    },
+  );
   slot = new PetRuntimeSlot(rendererRoot, initialRuntime);
 
   const windowMotion = new WindowMotionController({
@@ -121,7 +133,16 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
 
   const coordinator = new PetSwitchCoordinator(slot, {
     prepare: (petId) => invoke("pet_prepare_switch", { petId }),
-    load: (descriptor, stagingRoot) => loadRuntimePet(descriptor, stagingRoot),
+    load: async (descriptor, stagingRoot) => {
+      let candidate: MountedPetRuntime | undefined;
+      candidate = await loadRuntimePet(descriptor, stagingRoot, undefined, {
+        diagnose,
+        onSurfaceChanged: async () => {
+          if (candidate && slot.refreshActiveSurface(candidate)) await refreshHitRegion();
+        },
+      });
+      return candidate;
+    },
     probe: assertVisibleFrame,
     commit: (petId, acceptedVariantId) => invoke("pet_commit_switch", { petId, acceptedVariantId }),
     refreshHitRegion,

@@ -75,4 +75,48 @@ describe("requestPetSwitch", () => {
     });
     expect(test.unlisten).toHaveBeenCalledOnce();
   });
+
+  it("settles safely when the matching callback fires before listen resolves", async () => {
+    const unlisten = vi.fn();
+    const listen = vi.fn((handler: (result: PetSwitchResult) => void) => {
+      handler({ ok: true, requestId: "request-1", petId: "pet-b" });
+      return Promise.resolve(unlisten);
+    });
+    const emit = vi.fn(async () => undefined);
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-1" });
+
+    await expect(requestPetSwitch("pet-b", undefined, { listen, emit })).resolves.toMatchObject({ ok: true });
+    expect(unlisten).toHaveBeenCalledOnce();
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("converts a listener registration failure into a window-unavailable result", async () => {
+    const listen = vi.fn(async () => { throw new Error("pet window missing"); });
+    const emit = vi.fn(async () => undefined);
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-1" });
+
+    await expect(requestPetSwitch("pet-b", undefined, { listen, emit })).resolves.toMatchObject({
+      ok: false,
+      code: "pet-window-unavailable",
+      message: "pet window missing",
+    });
+    expect(emit).not.toHaveBeenCalled();
+  });
+
+  it("settles with a protocol result even when listener cleanup throws", async () => {
+    const test = clientPorts();
+    test.unlisten.mockImplementation(() => { throw new Error("cleanup failed"); });
+    test.emit.mockRejectedValue(new Error("pet window missing"));
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-1" });
+
+    await expect(requestPetSwitch("pet-b", undefined, test.ports)).resolves.toMatchObject({
+      ok: false,
+      code: "pet-window-unavailable",
+      message: "pet window missing",
+    });
+    expect(test.unlisten).toHaveBeenCalledOnce();
+  });
 });

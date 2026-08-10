@@ -35,13 +35,28 @@ interface HarnessOptions {
   loadError?: Error;
   commitError?: Error;
   holdLoad?: boolean;
+  rollbackFailures?: number;
+  destroyOldRuntimeError?: Error;
 }
 
 function coordinatorHarness(options: HarnessOptions = {}) {
-  const rendererRoot = { replaceChildren: vi.fn() } as unknown as HTMLElement;
+  let replaceCalls = 0;
+  const rendererRoot = {
+    replaceChildren: vi.fn(() => {
+      replaceCalls += 1;
+      if (replaceCalls >= 3 && replaceCalls < 3 + (options.rollbackFailures ?? 0)) {
+        throw new Error("rollback surface failed");
+      }
+    }),
+  } as unknown as HTMLElement;
   const oldRuntime = fakeRuntime("pet-a");
   const candidate = fakeRuntime("pet-b");
   const slot = new PetRuntimeSlot(rendererRoot, oldRuntime);
+  if (options.destroyOldRuntimeError) {
+    vi.mocked(oldRuntime.host.destroy).mockImplementation(() => {
+      throw options.destroyOldRuntimeError;
+    });
+  }
   const prepare = vi.fn(async (petId: string): Promise<RuntimePetDescriptor> => ({
     petId,
     source: "installed",
@@ -138,5 +153,43 @@ describe("PetSwitchCoordinator", () => {
       stagingRoot,
     );
     expect(stagingRoot).not.toBe(test.rendererRoot);
+  });
+
+  it("reports success when old-runtime cleanup throws after the backend commit succeeded", async () => {
+    const test = coordinatorHarness({ destroyOldRuntimeError: new Error("destroy failed") });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b"))).resolves.toMatchObject({
+      ok: true,
+      petId: "pet-b",
+    });
+    expect(test.commitSelection).toHaveBeenCalledOnce();
+  });
+
+  it("retries a rollback failure and returns the original persistence failure", async () => {
+    const test = coordinatorHarness({
+      commitError: new Error("sqlite busy"),
+      rollbackFailures: 1,
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b"))).resolves.toMatchObject({
+      ok: false,
+      code: "persist-failed",
+    });
+    expect(test.slot.activePetId).toBe("pet-a");
+  });
+
+  it("returns a deterministic failure when rollback cannot converge", async () => {
+    const test = coordinatorHarness({
+      commitError: new Error("sqlite busy"),
+      rollbackFailures: Number.POSITIVE_INFINITY,
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b"))).resolves.toMatchObject({
+      ok: false,
+      code: "persist-failed",
+    });
   });
 });

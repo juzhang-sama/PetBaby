@@ -24,23 +24,39 @@ export async function requestPetSwitch(
   const requestId = crypto.randomUUID();
   let resolveResult!: (result: PetSwitchResult) => void;
   const resultPromise = new Promise<PetSwitchResult>((resolve) => { resolveResult = resolve; });
-  let timer: number;
-  const unlisten = await ports.listen((result) => {
-    if (result.requestId !== requestId) return;
-    window.clearTimeout(timer);
-    unlisten();
+  let unlisten: (() => void) | undefined;
+  let timer: number | undefined;
+  let settled = false;
+  const cleanup = (): void => {
+    if (timer !== undefined) {
+      try {
+        window.clearTimeout(timer);
+      } catch {
+        // Cleanup must not prevent the protocol result from settling.
+      }
+      timer = undefined;
+    }
+    const dispose = unlisten;
+    unlisten = undefined;
+    try {
+      dispose?.();
+    } catch {
+      // Cleanup must not prevent the protocol result from settling.
+    }
+  };
+  const finish = (result: PetSwitchResult): void => {
+    if (settled) return;
+    settled = true;
+    cleanup();
     resolveResult(result);
+  };
+  const unavailable = (error: unknown): PetSwitchResult => ({
+    ok: false,
+    requestId,
+    petId,
+    code: "pet-window-unavailable",
+    message: error instanceof Error ? error.message : String(error),
   });
-  timer = window.setTimeout(() => {
-    unlisten();
-    resolveResult({
-      ok: false,
-      requestId,
-      petId,
-      code: "pet-window-unavailable",
-      message: "桌面宠物窗口没有响应",
-    });
-  }, 10_000);
 
   const request: PetSwitchRequest = {
     requestId,
@@ -48,17 +64,25 @@ export async function requestPetSwitch(
     ...(acceptedVariantId ? { acceptedVariantId } : {}),
   };
   try {
+    unlisten = await ports.listen((result) => {
+      if (result.requestId === requestId) finish(result);
+    });
+    if (settled) {
+      cleanup();
+      return resultPromise;
+    }
+    timer = window.setTimeout(() => {
+      finish({
+        ok: false,
+        requestId,
+        petId,
+        code: "pet-window-unavailable",
+        message: "桌面宠物窗口没有响应",
+      });
+    }, 10_000);
     await ports.emit(request);
   } catch (error) {
-    window.clearTimeout(timer);
-    unlisten();
-    return {
-      ok: false,
-      requestId,
-      petId,
-      code: "pet-window-unavailable",
-      message: error instanceof Error ? error.message : String(error),
-    };
+    finish(unavailable(error));
   }
   return resultPromise;
 }

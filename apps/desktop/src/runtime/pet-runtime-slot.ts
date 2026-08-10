@@ -59,6 +59,14 @@ export class PetRuntimeSlot implements PetRenderer {
     return this.active.getSurface();
   }
 
+  refreshActiveSurface(runtime: MountedPetRuntime, afterAttach?: () => void): boolean {
+    this.assertAlive();
+    if (this.active !== runtime) return false;
+    this.root.replaceChildren(runtime.getSurface());
+    afterAttach?.();
+    return true;
+  }
+
   prepare(candidate: MountedPetRuntime): PreparedRuntimeSwap {
     this.assertAlive();
     if (candidate === this.active) throw new Error("candidate is already active");

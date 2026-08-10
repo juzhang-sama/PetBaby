@@ -46,16 +46,20 @@ export class PetSwitchCoordinator {
         await this.ports.commit(request.petId, request.acceptedVariantId);
       } catch (error) {
         this.log(request, "persist-failed", error);
-        swap.rollback();
+        this.rollbackSafely(request, swap);
         await this.ports.refreshHitRegion().catch(() => undefined);
         return failure(request, "persist-failed", messageOf(error));
       }
-      swap.commit();
+      try {
+        swap.commit();
+      } catch (error) {
+        this.log(request, "cleanup", error);
+      }
       this.log(request, "complete");
       return { ok: true, requestId: request.requestId, petId: request.petId };
     } catch (error) {
       this.log(request, "failed", error);
-      swap?.rollback();
+      if (swap) this.rollbackSafely(request, swap);
       await this.ports.refreshHitRegion().catch(() => undefined);
       return failure(request, classify(error), messageOf(error));
     } finally {
@@ -67,6 +71,17 @@ export class PetSwitchCoordinator {
     const details = { requestId: request.requestId, petId: request.petId, stage };
     if (error === undefined) console.info("Pet switch", details);
     else console.error("Pet switch", { ...details, message: messageOf(error) });
+  }
+
+  private rollbackSafely(request: PetSwitchRequest, swap: PreparedRuntimeSwap): void {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
+      try {
+        swap.rollback();
+        return;
+      } catch (error) {
+        this.log(request, `rollback-${attempt}`, error);
+      }
+    }
   }
 }
 

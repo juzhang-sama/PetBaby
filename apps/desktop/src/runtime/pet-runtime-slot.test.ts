@@ -372,4 +372,27 @@ describe("PetRuntimeSlot", () => {
     expect(candidate.host.destroy).toHaveBeenCalledTimes(2);
     expect(slot.activePetId).toBe("old");
   });
+
+  it("re-attaches a changed surface only when its runtime is still active", () => {
+    const root = fakeRoot();
+    const oldRuntime = fakeRuntime("old");
+    const oldFallbackSurface = { dataset: { petId: "old-fallback" } } as unknown as HTMLCanvasElement;
+    vi.spyOn(oldRuntime, "getSurface").mockReturnValue(oldFallbackSurface);
+    const slot = new PetRuntimeSlot(root, oldRuntime);
+    const refreshActiveSurface = (slot as unknown as {
+      refreshActiveSurface(runtime: MountedPetRuntime, refresh?: () => void): boolean;
+    }).refreshActiveSurface;
+    const refreshHitRegion = vi.fn();
+
+    expect(refreshActiveSurface.call(slot, oldRuntime, refreshHitRegion)).toBe(true);
+    expect(root.replaceChildren).toHaveBeenLastCalledWith(oldFallbackSurface);
+    expect(refreshHitRegion).toHaveBeenCalledOnce();
+
+    const candidate = fakeRuntime("candidate");
+    const swap = slot.prepare(candidate);
+    swap.activate();
+    expect(refreshActiveSurface.call(slot, oldRuntime, refreshHitRegion)).toBe(false);
+    expect(root.replaceChildren).toHaveBeenLastCalledWith(candidate.getSurface());
+    expect(refreshHitRegion).toHaveBeenCalledOnce();
+  });
 });
