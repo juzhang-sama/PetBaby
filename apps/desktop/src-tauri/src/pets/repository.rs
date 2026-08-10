@@ -67,6 +67,15 @@ impl PetRepository {
         method: CreationMethod,
         source_template: Option<(&str, u32)>,
     ) -> Result<Pet, String> {
+        match (method, source_template) {
+            (CreationMethod::Adoption, None) => {
+                return Err("adoption creation requires a source template".into());
+            }
+            (CreationMethod::Upload | CreationMethod::Composer, Some(_)) => {
+                return Err("only adoption creation accepts a source template".into());
+            }
+            _ => {}
+        }
         let mode = match method {
             CreationMethod::Upload => IdentityMode::RealPet,
             CreationMethod::Composer => IdentityMode::Guided,
@@ -270,6 +279,57 @@ mod tests {
         assert_eq!(pet.species, Species::Dog);
         assert_eq!(pet.identity_mode, IdentityMode::Guided);
         assert_eq!(pet.creation_method, CreationMethod::Composer);
+        assert_eq!(pet.source_template_id, None);
+        assert_eq!(pet.source_template_version, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reserve_rejects_sources_for_non_adoption_methods() {
+        let (repo, root) = temp_repo();
+        for method in [CreationMethod::Upload, CreationMethod::Composer] {
+            assert!(repo.reserve(method, Some(("template-a", 1))).is_err());
+        }
+        assert!(repo.list().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reserve_requires_a_source_for_adoption() {
+        let (repo, root) = temp_repo();
+        assert!(repo.reserve(CreationMethod::Adoption, None).is_err());
+        assert!(repo.list().unwrap().is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn abandoned_adoption_source_can_be_reserved_again() {
+        let (repo, root) = temp_repo();
+        let abandoned = repo
+            .reserve(CreationMethod::Adoption, Some(("template-a", 1)))
+            .unwrap();
+        repo.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE pets SET lifecycle='abandoned' WHERE pet_id=?1",
+                [&abandoned.pet_id],
+            )
+            .unwrap();
+
+        let replacement = repo
+            .reserve(CreationMethod::Adoption, Some(("template-a", 1)))
+            .unwrap();
+        assert_ne!(replacement.pet_id, abandoned.pet_id);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_adopted_create_remains_source_free() {
+        let (repo, root) = temp_repo();
+        let pet = repo.create(Species::Dog, IdentityMode::Adopted).unwrap();
+        assert_eq!(pet.creation_method, CreationMethod::Adoption);
         assert_eq!(pet.source_template_id, None);
         assert_eq!(pet.source_template_version, None);
         let _ = std::fs::remove_dir_all(root);

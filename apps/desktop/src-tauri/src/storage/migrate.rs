@@ -120,7 +120,38 @@ pub const MIGRATIONS: &[&str] = &[
     CREATE INDEX generation_jobs_session_idx ON generation_jobs(session_id);
     CREATE INDEX appearance_variants_session_idx ON appearance_variants(session_id);
     CREATE UNIQUE INDEX pets_unique_adoption_source
-      ON pets(source_template_id) WHERE source_template_id IS NOT NULL;
+      ON pets(source_template_id)
+      WHERE source_template_id IS NOT NULL
+        AND creation_method = 'adoption'
+        AND lifecycle != 'abandoned';
+
+    CREATE TRIGGER pets_validate_source_template_insert
+    BEFORE INSERT ON pets
+    WHEN NOT (
+      (NEW.source_template_id IS NULL AND NEW.source_template_version IS NULL)
+      OR (
+        NEW.source_template_id IS NOT NULL
+        AND NEW.source_template_version IS NOT NULL
+        AND NEW.creation_method = 'adoption'
+      )
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid pet source template');
+    END;
+
+    CREATE TRIGGER pets_validate_source_template_update
+    BEFORE UPDATE OF source_template_id, source_template_version, creation_method ON pets
+    WHEN NOT (
+      (NEW.source_template_id IS NULL AND NEW.source_template_version IS NULL)
+      OR (
+        NEW.source_template_id IS NOT NULL
+        AND NEW.source_template_version IS NOT NULL
+        AND NEW.creation_method = 'adoption'
+      )
+    )
+    BEGIN
+      SELECT RAISE(ABORT, 'invalid pet source template');
+    END;
 
     INSERT INTO creation_sessions (
       session_id, pet_id, method, status, last_stable_status, current_step,
@@ -501,6 +532,70 @@ mod tests {
                 assert!(result.unwrap_err().to_string().contains("UNIQUE"));
             }
         }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn database_rejects_invalid_source_template_inserts() {
+        let (db, root) = temp_db();
+        apply(&db).unwrap();
+        let invalid_rows = [
+            ("pet-id-only", "adoption", Some("template-a"), None),
+            ("pet-version-only", "adoption", None, Some(1)),
+            ("pet-upload-source", "upload", Some("template-b"), Some(1)),
+            (
+                "pet-composer-source",
+                "composer",
+                Some("template-c"),
+                Some(1),
+            ),
+        ];
+
+        for (pet_id, method, template_id, template_version) in invalid_rows {
+            let error = db
+                .execute(
+                    "INSERT INTO pets
+                     (pet_id, schema_version, species, identity_mode, creation_method,
+                      source_template_id, source_template_version, lifecycle,
+                      created_at, updated_at)
+                     VALUES (?1, 1, 'cat', 'realpet', ?2, ?3, ?4, 'draft', '10', '10')",
+                    rusqlite::params![pet_id, method, template_id, template_version],
+                )
+                .unwrap_err();
+            assert!(error.to_string().contains("source template"));
+        }
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn database_rejects_invalid_source_template_updates() {
+        let (db, root) = temp_db();
+        apply(&db).unwrap();
+        db.execute(
+            "INSERT INTO pets
+             (pet_id, schema_version, species, identity_mode, creation_method,
+              source_template_id, source_template_version, lifecycle, created_at, updated_at)
+             VALUES ('pet-a', 1, 'cat', 'adopted', 'adoption',
+                     'template-a', 1, 'draft', '10', '10')",
+            [],
+        )
+        .unwrap();
+
+        for sql in [
+            "UPDATE pets SET source_template_version=NULL WHERE pet_id='pet-a'",
+            "UPDATE pets SET creation_method='upload' WHERE pet_id='pet-a'",
+        ] {
+            let error = db.execute(sql, []).unwrap_err();
+            assert!(error.to_string().contains("source template"));
+        }
+
+        db.execute(
+            "UPDATE pets
+             SET source_template_id=NULL, source_template_version=NULL
+             WHERE pet_id='pet-a'",
+            [],
+        )
+        .unwrap();
         let _ = std::fs::remove_dir_all(root);
     }
 }
