@@ -157,7 +157,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   tracePetRuntime("stage-mounted");
 
   const coordinator = new PetSwitchCoordinator(slot, {
-    prepare: (petId) => invoke("pet_prepare_switch", { petId }),
+    prepare: (requestId, petId) => invoke("pet_prepare_switch", { requestId, petId }),
     load: async (descriptor, stagingRoot) => {
       let candidate: MountedPetRuntime | undefined;
       candidate = await loadRuntimePet(descriptor, stagingRoot, undefined, {
@@ -169,12 +169,13 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
       return candidate;
     },
     probe: assertVisibleFrame,
-    commit: (petId, acceptedVariantId) => invoke("pet_commit_switch", { petId, acceptedVariantId }),
-    rollbackCommit: (previousPetId, petId, acceptedVariantId) => invoke("pet_rollback_switch", {
+    commit: (request) => invoke("pet_commit_switch", { ...request }),
+    rollbackCommit: (previousPetId, request) => invoke("pet_rollback_switch", {
       previousPetId,
-      petId,
-      acceptedVariantId,
+      ...request,
     }),
+    cancel: (requestId) => invoke("pet_cancel_switch", { requestId }),
+    finish: (requestId) => invoke("pet_finish_switch", { requestId }),
     refreshHitRegion,
   });
   await listen<PetSwitchRequest>(PET_SWITCH_REQUEST, async ({ payload }) => {

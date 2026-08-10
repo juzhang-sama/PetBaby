@@ -1,6 +1,7 @@
 pub mod active;
 pub mod catalog;
 pub mod deletion;
+pub mod mutation;
 pub mod pet;
 pub mod repository;
 pub mod state;

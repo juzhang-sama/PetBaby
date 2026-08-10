@@ -10,6 +10,13 @@ export interface PetSwitchRequest {
   requestId: string;
   petId: string;
   acceptedVariantId?: string;
+  creationSessionId?: string;
+}
+
+export interface PetSwitchOptions {
+  requestId?: string;
+  acceptedVariantId?: string;
+  creationSessionId?: string;
 }
 
 export type PetSwitchErrorCode =

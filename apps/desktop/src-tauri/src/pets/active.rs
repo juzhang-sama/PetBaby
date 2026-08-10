@@ -1,3 +1,4 @@
+use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
 use crate::pets::SharedActivePetSession;
 use crate::runtime_assets::loader::inspect_pet_asset;
 use crate::storage::Storage;
@@ -28,6 +29,7 @@ pub struct ActivePetService {
     storage: Arc<Mutex<Storage>>,
     session: SharedActivePetSession,
     pets_dir: PathBuf,
+    mutation_gate: SharedPetMutationGate,
 }
 
 impl ActivePetService {
@@ -35,11 +37,13 @@ impl ActivePetService {
         storage: Arc<Mutex<Storage>>,
         session: SharedActivePetSession,
         pets_dir: PathBuf,
+        mutation_gate: SharedPetMutationGate,
     ) -> Self {
         Self {
             storage,
             session,
             pets_dir,
+            mutation_gate,
         }
     }
 
@@ -69,7 +73,19 @@ impl ActivePetService {
             .ok_or_else(|| "active pet has not been restored".into())
     }
 
-    pub fn prepare(&self, pet_id: &str) -> Result<RuntimePetDescriptor, String> {
+    pub fn prepare(
+        &self,
+        request_id: Option<&str>,
+        pet_id: &str,
+    ) -> Result<RuntimePetDescriptor, String> {
+        if let Some(request_id) = request_id {
+            self.mutation_gate
+                .begin(request_id, MutationKind::Switch, pet_id)?;
+        }
+        self.describe(pet_id)
+    }
+
+    fn describe(&self, pet_id: &str) -> Result<RuntimePetDescriptor, String> {
         if pet_id == BUILTIN_PET_ID {
             return Ok(RuntimePetDescriptor {
                 pet_id: pet_id.into(),
@@ -83,8 +99,16 @@ impl ActivePetService {
         })
     }
 
-    pub fn commit(&self, pet_id: &str, accepted_variant_id: Option<&str>) -> Result<(), String> {
-        self.prepare(pet_id)?;
+    pub fn commit(
+        &self,
+        request_id: Option<&str>,
+        pet_id: &str,
+        accepted_variant_id: Option<&str>,
+    ) -> Result<(), String> {
+        if let Some(request_id) = request_id {
+            self.mutation_gate.assert_owner(request_id, pet_id)?;
+        }
+        self.describe(pet_id)?;
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let tx = storage
             .db
@@ -134,11 +158,15 @@ impl ActivePetService {
 
     pub fn rollback_commit(
         &self,
+        request_id: Option<&str>,
         previous_pet_id: &str,
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<(), String> {
-        self.prepare(previous_pet_id)?;
+        if let Some(request_id) = request_id {
+            self.mutation_gate.assert_owner(request_id, pet_id)?;
+        }
+        self.describe(previous_pet_id)?;
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let tx = storage
             .db
@@ -200,6 +228,14 @@ impl ActivePetService {
             .set_active(previous_pet_id.into())
     }
 
+    pub fn cancel(&self, request_id: &str) -> Result<(), String> {
+        self.mutation_gate.finish(request_id)
+    }
+
+    pub fn finish(&self, request_id: &str) -> Result<(), String> {
+        self.mutation_gate.finish(request_id)
+    }
+
     fn read_persisted_active(&self) -> Result<Option<String>, String> {
         self.storage
             .lock()
@@ -257,6 +293,7 @@ impl ActivePetService {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pets::mutation::{MutationKind, PetMutationGate};
     use crate::pets::{ActivePetSession, SharedActivePetSession};
     use crate::runtime_assets::{
         importer::import_png_source,
@@ -285,7 +322,12 @@ mod tests {
             let pets_dir = root.join("pets");
             let storage = Arc::new(Mutex::new(Storage::open(&pets_dir).unwrap()));
             let session = Arc::new(Mutex::new(ActivePetSession::new()));
-            let service = ActivePetService::new(storage.clone(), session.clone(), pets_dir.clone());
+            let service = ActivePetService::new(
+                storage.clone(),
+                session.clone(),
+                pets_dir.clone(),
+                Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60))),
+            );
             Self {
                 root,
                 pets_dir,
@@ -428,14 +470,14 @@ mod tests {
     fn prepare_describes_builtin_and_healthy_installed_pet() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         assert_eq!(
-            test.service.prepare(BUILTIN_PET_ID).unwrap(),
+            test.service.prepare(None, BUILTIN_PET_ID).unwrap(),
             RuntimePetDescriptor {
                 pet_id: BUILTIN_PET_ID.into(),
                 source: RuntimePetSource::Builtin,
             }
         );
         assert_eq!(
-            test.service.prepare("pet-user").unwrap().source,
+            test.service.prepare(None, "pet-user").unwrap().source,
             RuntimePetSource::Installed
         );
     }
@@ -443,7 +485,9 @@ mod tests {
     #[test]
     fn creation_commit_accepts_variant_and_persists_active_atomically() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
-        test.service.commit("pet-user", Some("variant-1")).unwrap();
+        test.service
+            .commit(None, "pet-user", Some("variant-1"))
+            .unwrap();
         assert_eq!(test.persisted_active().as_deref(), Some("pet-user"));
         assert!(test.variant_accepted("variant-1"));
         assert_eq!(test.service.active().unwrap(), "pet-user");
@@ -452,13 +496,15 @@ mod tests {
     #[test]
     fn rollback_commit_restores_previous_selection_and_unaccepts_the_candidate() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
-        test.service.commit("pet-user", Some("variant-1")).unwrap();
+        test.service
+            .commit(None, "pet-user", Some("variant-1"))
+            .unwrap();
 
         test.service
-            .rollback_commit(BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"))
             .unwrap();
         test.service
-            .rollback_commit(BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"))
             .unwrap();
 
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
@@ -469,13 +515,13 @@ mod tests {
     #[test]
     fn rollback_commit_without_a_variant_is_idempotent_after_the_previous_selection_is_restored() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
-        test.service.commit("pet-user", None).unwrap();
+        test.service.commit(None, "pet-user", None).unwrap();
 
         test.service
-            .rollback_commit(BUILTIN_PET_ID, "pet-user", None)
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", None)
             .unwrap();
         test.service
-            .rollback_commit(BUILTIN_PET_ID, "pet-user", None)
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", None)
             .unwrap();
 
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
@@ -485,23 +531,68 @@ mod tests {
     #[test]
     fn commit_rejects_an_already_accepted_candidate() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
-        test.service.commit("pet-user", Some("variant-1")).unwrap();
+        test.service
+            .commit(None, "pet-user", Some("variant-1"))
+            .unwrap();
 
-        assert!(test.service.commit("pet-user", Some("variant-1")).is_err());
+        assert!(test
+            .service
+            .commit(None, "pet-user", Some("variant-1"))
+            .is_err());
         assert!(test.variant_accepted("variant-1"));
     }
 
     #[test]
     fn rollback_commit_rejects_a_stale_active_selection_without_unaccepting_the_variant() {
         let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
-        test.service.commit("pet-user", Some("variant-1")).unwrap();
-        test.service.commit(BUILTIN_PET_ID, None).unwrap();
+        test.service
+            .commit(None, "pet-user", Some("variant-1"))
+            .unwrap();
+        test.service.commit(None, BUILTIN_PET_ID, None).unwrap();
 
         assert!(test
             .service
-            .rollback_commit(BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .rollback_commit(None, BUILTIN_PET_ID, "pet-user", Some("variant-1"))
             .is_err());
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
         assert!(test.variant_accepted("variant-1"));
+    }
+
+    #[test]
+    fn switch_request_holds_the_shared_gate_until_cancel() {
+        let test = ActiveHarness::new();
+        let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+        let service = ActivePetService::new(
+            test.storage.clone(),
+            test.session.clone(),
+            test.pets_dir.clone(),
+            gate.clone(),
+        );
+
+        service.prepare(Some("switch-1"), BUILTIN_PET_ID).unwrap();
+        assert!(gate
+            .begin("delete-1", MutationKind::Delete, "pet-user")
+            .is_err());
+        service.cancel("switch-1").unwrap();
+        assert!(gate
+            .begin("delete-1", MutationKind::Delete, "pet-user")
+            .is_ok());
+        gate.finish("delete-1").unwrap();
+    }
+
+    #[test]
+    fn switch_commit_requires_the_matching_gate_owner() {
+        let test = ActiveHarness::new();
+        let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+        let service = ActivePetService::new(
+            test.storage.clone(),
+            test.session.clone(),
+            test.pets_dir.clone(),
+            gate,
+        );
+
+        assert!(service
+            .commit(Some("missing-request"), BUILTIN_PET_ID, None)
+            .is_err());
     }
 }

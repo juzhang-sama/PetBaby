@@ -348,6 +348,7 @@ mod tests {
     use crate::creation::domain::{CreationMethod, CreationSessionStatus};
     use crate::pets::active::{ActivePetService, BUILTIN_PET_ID};
     use crate::pets::deletion::PetDeletionService;
+    use crate::pets::mutation::PetMutationGate;
     use crate::pets::{ActivePetSession, SharedActivePetSession};
     use crate::storage::Storage;
     use rusqlite::OptionalExtension;
@@ -378,11 +379,18 @@ mod tests {
                 .unwrap()
                 .set_active(BUILTIN_PET_ID.into())
                 .unwrap();
-            let active = Arc::new(ActivePetService::new(storage.clone(), session, pets_dir));
+            let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+            let active = Arc::new(ActivePetService::new(
+                storage.clone(),
+                session,
+                pets_dir,
+                gate.clone(),
+            ));
             let deletion = Arc::new(PetDeletionService::new(
                 storage.clone(),
                 active,
                 root.clone(),
+                gate,
             ));
             let service = CreationService::new(storage.clone(), root.clone(), deletion);
             Self {

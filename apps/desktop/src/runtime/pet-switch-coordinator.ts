@@ -7,11 +7,13 @@ import type {
 } from "./pet-switch-protocol";
 
 export interface PetSwitchCoordinatorPorts {
-  prepare(petId: string): Promise<RuntimePetDescriptor>;
+  prepare(requestId: string, petId: string): Promise<RuntimePetDescriptor>;
   load(descriptor: RuntimePetDescriptor, stagingRoot: HTMLElement): Promise<MountedPetRuntime>;
   probe(surface: HTMLCanvasElement): void;
-  commit(petId: string, acceptedVariantId?: string): Promise<void>;
-  rollbackCommit(previousPetId: string, petId: string, acceptedVariantId?: string): Promise<void>;
+  commit(request: PetSwitchRequest): Promise<void>;
+  rollbackCommit(previousPetId: string, request: PetSwitchRequest): Promise<void>;
+  cancel(requestId: string): Promise<void>;
+  finish(requestId: string): Promise<void>;
   refreshHitRegion(): Promise<void>;
 }
 
@@ -31,9 +33,30 @@ export class PetSwitchCoordinator {
 
     this.busy = true;
     let swap: PreparedRuntimeSwap | undefined;
+    let committed = false;
+    let cleanup: "open" | "cancelled" | "finished" = "open";
+    const cancel = async (): Promise<void> => {
+      if (cleanup !== "open") return;
+      cleanup = "cancelled";
+      try {
+        await this.ports.cancel(request.requestId);
+      } catch (error) {
+        this.log(request, "cancel-failed", error);
+      }
+    };
+    const finish = async (): Promise<void> => {
+      if (cleanup !== "open") return;
+      cleanup = "finished";
+      try {
+        await this.ports.finish(request.requestId);
+      } catch (error) {
+        this.log(request, "finish-failed", error);
+      }
+    };
+
     try {
       this.log(request, "prepare");
-      const descriptor = await this.ports.prepare(request.petId);
+      const descriptor = await this.ports.prepare(request.requestId, request.petId);
       this.log(request, "load");
       const runtime = await this.ports.load(descriptor, document.createElement("div"));
       this.log(request, "probe");
@@ -42,33 +65,67 @@ export class PetSwitchCoordinator {
       this.log(request, "activate");
       swap.activate();
       await this.ports.refreshHitRegion();
+
       if (runtime.isPreviewFallback?.()) {
-        return this.failPreviewFallback(request, swap, false);
+        const rollbackConverged = this.rollbackSafely(request, swap);
+        await this.ports.refreshHitRegion().catch(() => undefined);
+        await cancel();
+        return failure(
+          request,
+          "load-failed",
+          withRollbackState("候选运行时已降级为预览帧", rollbackConverged),
+        );
       }
+
       try {
         this.log(request, "commit");
-        await this.ports.commit(request.petId, request.acceptedVariantId);
+        await this.ports.commit(request);
+        committed = true;
       } catch (error) {
         this.log(request, "persist-failed", error);
         const rollbackConverged = this.rollbackSafely(request, swap);
         await this.ports.refreshHitRegion().catch(() => undefined);
+        await cancel();
         return failure(request, "persist-failed", withRollbackState(messageOf(error), rollbackConverged));
       }
+
       if (runtime.isPreviewFallback?.()) {
-        return this.failPreviewFallback(request, swap, true);
+        const compensation = await this.compensateCommit(request, swap.previous.petId);
+        const rollbackConverged = this.rollbackSafely(request, swap);
+        await this.ports.refreshHitRegion().catch(() => undefined);
+        if (compensation.converged) await finish();
+        return failure(
+          request,
+          "load-failed",
+          withRollbackState(`候选运行时已降级为预览帧${compensation.message}`, rollbackConverged),
+        );
       }
+
       try {
         swap.commit();
       } catch (error) {
         this.log(request, "cleanup", error);
       }
+      await finish();
       this.log(request, "complete");
       return { ok: true, requestId: request.requestId, petId: request.petId };
     } catch (error) {
       this.log(request, "failed", error);
       const rollbackConverged = swap ? this.rollbackSafely(request, swap) : true;
       await this.ports.refreshHitRegion().catch(() => undefined);
-      return failure(request, classify(error), withRollbackState(messageOf(error), rollbackConverged));
+      let compensationMessage = "";
+      if (committed && swap) {
+        const compensation = await this.compensateCommit(request, swap.previous.petId);
+        compensationMessage = compensation.message;
+        if (compensation.converged) await finish();
+      } else {
+        await cancel();
+      }
+      return failure(
+        request,
+        classify(error),
+        withRollbackState(`${messageOf(error)}${compensationMessage}`, rollbackConverged),
+      );
     } finally {
       this.busy = false;
     }
@@ -80,27 +137,22 @@ export class PetSwitchCoordinator {
     else console.error("Pet switch", { ...details, message: messageOf(error) });
   }
 
-  private async failPreviewFallback(
+  private async compensateCommit(
     request: PetSwitchRequest,
-    swap: PreparedRuntimeSwap,
-    committed: boolean,
-  ): Promise<PetSwitchResult> {
-    let compensationMessage = "";
-    if (committed) {
+    previousPetId: string,
+  ): Promise<{ converged: boolean; message: string }> {
+    for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await this.ports.rollbackCommit(swap.previous.petId, request.petId, request.acceptedVariantId);
+        await this.ports.rollbackCommit(previousPetId, request);
+        return { converged: true, message: "" };
       } catch (error) {
-        this.log(request, "persist-compensation", error);
-        compensationMessage = `；持久化补偿失败：${messageOf(error)}`;
+        this.log(request, `persist-compensation-${attempt}`, error);
+        if (attempt === 2) {
+          return { converged: false, message: `；持久化补偿失败：${messageOf(error)}` };
+        }
       }
     }
-    const rollbackConverged = this.rollbackSafely(request, swap);
-    await this.ports.refreshHitRegion().catch(() => undefined);
-    return failure(
-      request,
-      "load-failed",
-      withRollbackState(`候选运行时已降级为预览帧${compensationMessage}`, rollbackConverged),
-    );
+    return { converged: false, message: "；持久化补偿状态未知" };
   }
 
   private rollbackSafely(request: PetSwitchRequest, swap: PreparedRuntimeSwap): boolean {

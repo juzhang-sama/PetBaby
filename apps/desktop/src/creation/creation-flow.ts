@@ -32,7 +32,7 @@ class TauriStore implements CreationStore {
   }
 
   switchPet(petId: string, acceptedVariantId: string): Promise<PetSwitchResult> {
-    return requestPetSwitch(petId, acceptedVariantId);
+    return requestPetSwitch(petId, { acceptedVariantId });
   }
 }
 

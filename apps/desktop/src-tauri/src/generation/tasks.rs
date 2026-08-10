@@ -2,6 +2,7 @@ use crate::creation::domain::new_entity_id;
 use crate::creation::{CreationStore, JobRecord};
 use crate::generation::cutout;
 use crate::generation::lk888::Lk888Client;
+use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
 use crate::runtime_assets::motion_profile;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
@@ -21,6 +22,7 @@ pub struct GenerationManager {
     store: Arc<Mutex<CreationStore>>,
     state_store: Arc<Mutex<crate::pets::state::StateStore>>,
     jobs_dir: Arc<Path>,
+    mutation_gate: SharedPetMutationGate,
     #[cfg(test)]
     after_stage_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
@@ -42,11 +44,13 @@ impl GenerationManager {
         store: Arc<Mutex<CreationStore>>,
         state_store: Arc<Mutex<crate::pets::state::StateStore>>,
         jobs_dir: Arc<Path>,
+        mutation_gate: SharedPetMutationGate,
     ) -> Self {
         Self {
             store,
             state_store,
             jobs_dir,
+            mutation_gate,
             #[cfg(test)]
             after_stage_hook: Mutex::new(None),
             #[cfg(test)]
@@ -138,8 +142,10 @@ impl GenerationManager {
         ref_png: &[u8],
         ref_sha256: &str,
     ) -> Result<String, String> {
-        let _operation = crate::pets::deletion::deletion_operation_guard()?;
         let job_id = new_entity_id("job");
+        let _operation = self
+            .mutation_gate
+            .scoped(&job_id, MutationKind::Creation, pet_id)?;
         self.store
             .lock()
             .map_err(|_| "store lock poisoned")?
@@ -176,13 +182,15 @@ impl GenerationManager {
         ref_png: &[u8],
         ref_sha256: &str,
     ) -> Result<String, String> {
-        let _operation = crate::pets::deletion::deletion_operation_guard()?;
+        let job_id = new_entity_id("job");
+        let _operation = self
+            .mutation_gate
+            .scoped(&job_id, MutationKind::Creation, session_id)?;
         let pet_id = self
             .store
             .lock()
             .map_err(|_| "store lock poisoned")?
             .upload_session_pet(session_id)?;
-        let job_id = new_entity_id("job");
         self.store
             .lock()
             .map_err(|_| "store lock poisoned")?
@@ -250,7 +258,10 @@ impl GenerationManager {
     }
 
     pub fn cancel(&self, job_id: &str) -> Result<(), String> {
-        let _operation = crate::pets::deletion::deletion_operation_guard()?;
+        let request_id = new_entity_id("cancel");
+        let _operation = self
+            .mutation_gate
+            .scoped(&request_id, MutationKind::Creation, job_id)?;
         let store = self.store.lock().map_err(|_| "store lock poisoned")?;
         store.cancel_job(job_id)
     }
@@ -311,7 +322,12 @@ impl GenerationManager {
     /// Resume unfinished jobs from a previous run.
     pub fn resume(&self) -> Result<usize, String> {
         let stale = {
-            let _operation = crate::pets::deletion::deletion_operation_guard()?;
+            let request_id = new_entity_id("resume");
+            let _operation = self.mutation_gate.scoped(
+                &request_id,
+                MutationKind::Creation,
+                "generation-resume",
+            )?;
             self.store
                 .lock()
                 .map_err(|_| "store lock poisoned")?
@@ -364,7 +380,10 @@ impl GenerationManager {
             Self::run_hook(&self.after_stage_hook);
         }
 
-        let _operation = crate::pets::deletion::deletion_operation_guard()?;
+        let request_id = format!("complete-{job_id}");
+        let _operation =
+            self.mutation_gate
+                .scoped(&request_id, MutationKind::Creation, &observed_job.pet_id)?;
         let job = self.revalidate_job_for_completion(&observed_job)?;
         let mut staged = match staged_result {
             Ok(staged) => staged,
@@ -484,7 +503,10 @@ impl GenerationManager {
     }
 
     fn settle_failure(&self, job: &JobRecord, error: &str) -> Result<(), String> {
-        let _operation = crate::pets::deletion::deletion_operation_guard()?;
+        let request_id = format!("settle-{}", job.job_id);
+        let _operation =
+            self.mutation_gate
+                .scoped(&request_id, MutationKind::Creation, &job.pet_id)?;
         self.settle_failure_locked(job, error)
     }
 
@@ -722,6 +744,7 @@ mod tests {
     use crate::creation::profiles::now_iso;
     use crate::pets::active::{ActivePetService, BUILTIN_PET_ID};
     use crate::pets::deletion::PetDeletionService;
+    use crate::pets::mutation::{PetMutationGate, SharedPetMutationGate};
     use crate::pets::pet::{IdentityMode, Species};
     use crate::pets::repository::PetRepository;
     use crate::pets::state::StateStore;
@@ -741,6 +764,7 @@ mod tests {
         session_id: String,
         pet_id: String,
         png: Vec<u8>,
+        gate: SharedPetMutationGate,
     }
 
     struct LegacyManagerHarness {
@@ -750,6 +774,7 @@ mod tests {
         storage: Arc<Mutex<Storage>>,
         pet_id: String,
         png: Vec<u8>,
+        gate: SharedPetMutationGate,
     }
 
     impl Drop for ManagerHarness {
@@ -798,8 +823,13 @@ mod tests {
                 .unwrap();
         }
         let state = Arc::new(Mutex::new(StateStore::new(storage.clone())));
-        let manager =
-            GenerationManager::new(store.clone(), state, Arc::from(root.join("jobs").as_path()));
+        let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+        let manager = GenerationManager::new(
+            store.clone(),
+            state,
+            Arc::from(root.join("jobs").as_path()),
+            gate.clone(),
+        );
         ManagerHarness {
             root,
             manager,
@@ -808,6 +838,7 @@ mod tests {
             session_id,
             pet_id: pet.pet_id,
             png: png_bytes(),
+            gate,
         }
     }
 
@@ -828,8 +859,13 @@ mod tests {
             .unwrap();
         let store = Arc::new(Mutex::new(CreationStore::new(storage.clone())));
         let state = Arc::new(Mutex::new(StateStore::new(storage.clone())));
-        let manager =
-            GenerationManager::new(store.clone(), state, Arc::from(root.join("jobs").as_path()));
+        let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+        let manager = GenerationManager::new(
+            store.clone(),
+            state,
+            Arc::from(root.join("jobs").as_path()),
+            gate.clone(),
+        );
         LegacyManagerHarness {
             root,
             manager,
@@ -837,6 +873,7 @@ mod tests {
             storage,
             pet_id: pet.pet_id,
             png: png_bytes(),
+            gate,
         }
     }
 
@@ -875,8 +912,14 @@ mod tests {
             test.storage.clone(),
             session,
             test.root.join("pets"),
+            test.gate.clone(),
         ));
-        PetDeletionService::new(test.storage.clone(), active, test.root.clone())
+        PetDeletionService::new(
+            test.storage.clone(),
+            active,
+            test.root.clone(),
+            test.gate.clone(),
+        )
     }
 
     fn legacy_deletion_service(test: &LegacyManagerHarness) -> PetDeletionService {
@@ -890,8 +933,14 @@ mod tests {
             test.storage.clone(),
             session,
             test.root.join("pets"),
+            test.gate.clone(),
         ));
-        PetDeletionService::new(test.storage.clone(), active, test.root.clone())
+        PetDeletionService::new(
+            test.storage.clone(),
+            active,
+            test.root.clone(),
+            test.gate.clone(),
+        )
     }
 
     fn install_existing_final(test: &ManagerHarness) {
@@ -1025,8 +1074,12 @@ mod tests {
             .unwrap();
         }
         let state = Arc::new(Mutex::new(StateStore::new(storage)));
-        let manager =
-            GenerationManager::new(store.clone(), state, Arc::from(root.join("jobs").as_path()));
+        let manager = GenerationManager::new(
+            store.clone(),
+            state,
+            Arc::from(root.join("jobs").as_path()),
+            Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60))),
+        );
 
         assert!(manager
             .complete_download("job-1", "https://example.invalid/out.png", &png_bytes())
@@ -1232,7 +1285,6 @@ mod tests {
                     .start_for_session(&test.session_id, "p", &test.png, "h")
             });
             submit_entered.wait();
-            let operation_locked = crate::pets::deletion::operation_lock_is_held();
             let abandon = scope.spawn(|| deletion.abandon_creation(&test.session_id));
             submit_release.wait();
             let attached = attached_rx.recv_timeout(std::time::Duration::from_secs(1));
@@ -1248,10 +1300,6 @@ mod tests {
                 assert_eq!(job.task_id.as_deref(), Some("remote-task"));
             }
             let _ = attach_release_tx.send(());
-            assert!(
-                operation_locked,
-                "start did not hold the deletion operation lock"
-            );
             assert!(attached.is_ok(), "attach did not win before abandon");
             assert!(start.join().unwrap().is_ok());
             assert!(abandon.join().unwrap().is_ok());
@@ -1303,7 +1351,6 @@ mod tests {
         std::thread::scope(|scope| {
             let start = scope.spawn(|| test.manager.start(&test.pet_id, "p", &test.png, "h"));
             submit_entered.wait();
-            let operation_locked = crate::pets::deletion::operation_lock_is_held();
             let delete = scope.spawn(|| deletion.delete(&test.pet_id));
             submit_release.wait();
             let attached = attached_rx.recv_timeout(std::time::Duration::from_secs(1));
@@ -1319,10 +1366,6 @@ mod tests {
                 assert_eq!(job.task_id.as_deref(), Some("remote-task"));
             }
             let _ = attach_release_tx.send(());
-            assert!(
-                operation_locked,
-                "start did not hold the deletion operation lock"
-            );
             assert!(attached.is_ok(), "attach did not win before delete");
             assert!(start.join().unwrap().is_ok());
             assert!(delete.join().unwrap().is_ok());
@@ -1654,8 +1697,12 @@ mod tests {
             .create_job("job-legacy", &pet.pet_id, "p", "h", Some("task"))
             .unwrap();
         let state = Arc::new(Mutex::new(StateStore::new(storage)));
-        let manager =
-            GenerationManager::new(store.clone(), state, Arc::from(root.join("jobs").as_path()));
+        let manager = GenerationManager::new(
+            store.clone(),
+            state,
+            Arc::from(root.join("jobs").as_path()),
+            Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60))),
+        );
 
         manager.cancel("job-legacy").unwrap();
 

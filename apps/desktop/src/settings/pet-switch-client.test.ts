@@ -10,10 +10,12 @@ function clientPorts() {
     return unlisten;
   });
   const emit = vi.fn(async () => undefined);
+  const cancel = vi.fn(async () => undefined);
   return {
+    cancel,
     emit,
     listen,
-    ports: { emit, listen } satisfies SwitchClientPorts,
+    ports: { cancel, emit, listen } satisfies SwitchClientPorts,
     result: (value: PetSwitchResult) => listener?.(value),
     unlisten,
   };
@@ -43,7 +45,7 @@ describe("requestPetSwitch", () => {
     vi.stubGlobal("window", globalThis);
     vi.stubGlobal("crypto", { randomUUID: () => "request-1" });
 
-    const pending = requestPetSwitch("pet-b", "variant-1", test.ports);
+    const pending = requestPetSwitch("pet-b", { acceptedVariantId: "variant-1" }, test.ports);
     await vi.waitFor(() => expect(test.emit).toHaveBeenCalledOnce());
     test.result({ ok: true, requestId: "another-request", petId: "pet-c" });
     expect(test.unlisten).not.toHaveBeenCalled();
@@ -55,6 +57,27 @@ describe("requestPetSwitch", () => {
       requestId: "request-1",
       petId: "pet-b",
       acceptedVariantId: "variant-1",
+    });
+  });
+
+  it("uses a caller request id and forwards creation options unchanged", async () => {
+    const test = clientPorts();
+    vi.stubGlobal("window", globalThis);
+
+    const pending = requestPetSwitch("pet-b", {
+      requestId: "creation-request",
+      acceptedVariantId: "variant-1",
+      creationSessionId: "session-1",
+    }, test.ports);
+    await vi.waitFor(() => expect(test.emit).toHaveBeenCalledOnce());
+    test.result({ ok: true, requestId: "creation-request", petId: "pet-b" });
+    await pending;
+
+    expect(test.emit).toHaveBeenCalledWith({
+      requestId: "creation-request",
+      petId: "pet-b",
+      acceptedVariantId: "variant-1",
+      creationSessionId: "session-1",
     });
   });
 
@@ -74,6 +97,7 @@ describe("requestPetSwitch", () => {
       code: "pet-window-unavailable",
     });
     expect(test.unlisten).toHaveBeenCalledOnce();
+    expect(test.cancel).toHaveBeenCalledWith("request-1");
   });
 
   it("settles safely when the matching callback fires before listen resolves", async () => {
@@ -83,10 +107,11 @@ describe("requestPetSwitch", () => {
       return Promise.resolve(unlisten);
     });
     const emit = vi.fn(async () => undefined);
+    const cancel = vi.fn(async () => undefined);
     vi.stubGlobal("window", globalThis);
     vi.stubGlobal("crypto", { randomUUID: () => "request-1" });
 
-    await expect(requestPetSwitch("pet-b", undefined, { listen, emit })).resolves.toMatchObject({ ok: true });
+    await expect(requestPetSwitch("pet-b", undefined, { listen, emit, cancel })).resolves.toMatchObject({ ok: true });
     expect(unlisten).toHaveBeenCalledOnce();
     expect(emit).not.toHaveBeenCalled();
   });
@@ -94,15 +119,17 @@ describe("requestPetSwitch", () => {
   it("converts a listener registration failure into a window-unavailable result", async () => {
     const listen = vi.fn(async () => { throw new Error("pet window missing"); });
     const emit = vi.fn(async () => undefined);
+    const cancel = vi.fn(async () => undefined);
     vi.stubGlobal("window", globalThis);
     vi.stubGlobal("crypto", { randomUUID: () => "request-1" });
 
-    await expect(requestPetSwitch("pet-b", undefined, { listen, emit })).resolves.toMatchObject({
+    await expect(requestPetSwitch("pet-b", undefined, { listen, emit, cancel })).resolves.toMatchObject({
       ok: false,
       code: "pet-window-unavailable",
       message: "pet window missing",
     });
     expect(emit).not.toHaveBeenCalled();
+    expect(cancel).toHaveBeenCalledWith("request-1");
   });
 
   it("settles with a protocol result even when listener cleanup throws", async () => {
@@ -118,5 +145,21 @@ describe("requestPetSwitch", () => {
       message: "pet window missing",
     });
     expect(test.unlisten).toHaveBeenCalledOnce();
+    expect(test.cancel).toHaveBeenCalledWith("request-1");
+  });
+
+  it("ignores duplicate matching results after the request has settled", async () => {
+    const test = clientPorts();
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-1" });
+
+    const pending = requestPetSwitch("pet-b", undefined, test.ports);
+    await vi.waitFor(() => expect(test.emit).toHaveBeenCalledOnce());
+    test.result({ ok: true, requestId: "request-1", petId: "pet-b" });
+    await pending;
+    test.result({ ok: true, requestId: "request-1", petId: "pet-b" });
+
+    expect(test.unlisten).toHaveBeenCalledOnce();
+    expect(test.cancel).not.toHaveBeenCalled();
   });
 });

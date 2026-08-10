@@ -33,12 +33,16 @@ function fakeRuntime(petId: string): MountedPetRuntime {
 }
 
 interface HarnessOptions {
+  prepareError?: Error;
   loadError?: Error;
+  probeError?: Error;
   commitError?: Error;
   candidateMotionError?: Error;
   holdLoad?: boolean;
   holdCommit?: boolean;
   rollbackFailures?: number;
+  backendRollbackError?: Error;
+  fallbackCheckErrorAfterCommit?: Error;
   destroyOldRuntimeError?: Error;
 }
 
@@ -65,13 +69,20 @@ function coordinatorHarness(options: HarnessOptions = {}) {
       throw options.destroyOldRuntimeError;
     });
   }
-  const prepare = vi.fn(async (petId: string): Promise<RuntimePetDescriptor> => ({
+  const prepare = vi.fn(async (_requestId: string, petId: string): Promise<RuntimePetDescriptor> => ({
     petId,
     source: "installed",
   }));
+  if (options.prepareError) prepare.mockRejectedValue(options.prepareError);
   const refreshHitRegion = vi.fn(async () => undefined);
-  const rollbackCommit = vi.fn(async () => undefined);
-  const probe = vi.fn();
+  const rollbackCommit = vi.fn(async () => {
+    if (options.backendRollbackError) throw options.backendRollbackError;
+  });
+  const cancel = vi.fn(async () => undefined);
+  const finish = vi.fn(async () => undefined);
+  const probe = vi.fn(() => {
+    if (options.probeError) throw options.probeError;
+  });
   let resolveLoadStarted!: () => void;
   const loadStarted = new Promise<void>((resolve) => { resolveLoadStarted = resolve; });
   let releaseLoad!: () => void;
@@ -81,7 +92,14 @@ function coordinatorHarness(options: HarnessOptions = {}) {
   let releaseCommit!: () => void;
   const commitReleasePromise = new Promise<void>((resolve) => { releaseCommit = resolve; });
   let candidatePreviewFallback = false;
-  candidate.isPreviewFallback = () => candidatePreviewFallback;
+  let fallbackChecks = 0;
+  candidate.isPreviewFallback = () => {
+    fallbackChecks += 1;
+    if (fallbackChecks > 1 && options.fallbackCheckErrorAfterCommit) {
+      throw options.fallbackCheckErrorAfterCommit;
+    }
+    return candidatePreviewFallback;
+  };
   const commitSelection = vi.fn(async () => {
     if (options.holdCommit) {
       resolveCommitStarted();
@@ -103,13 +121,17 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     probe,
     commit: commitSelection,
     rollbackCommit,
+    cancel,
+    finish,
     refreshHitRegion,
   });
   return {
     candidate,
+    cancel,
     commitSelection,
     commitStarted,
     coordinator,
+    finish,
     load,
     loadStarted,
     oldRuntime,
@@ -137,6 +159,34 @@ describe("PetSwitchCoordinator", () => {
     expect(result).toMatchObject({ ok: false, code: "load-failed" });
     expect(test.slot.activePetId).toBe("pet-a");
     expect(test.commitSelection).not.toHaveBeenCalled();
+    expect(test.cancel).toHaveBeenCalledOnce();
+    expect(test.finish).not.toHaveBeenCalled();
+  });
+
+  it("cancels exactly once when backend prepare fails", async () => {
+    const test = coordinatorHarness({ prepareError: new Error("missing pet") });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b", "r-prepare"))).resolves.toMatchObject({ ok: false });
+
+    expect(test.prepare).toHaveBeenCalledWith("r-prepare", "pet-b");
+    expect(test.cancel).toHaveBeenCalledWith("r-prepare");
+    expect(test.cancel).toHaveBeenCalledOnce();
+    expect(test.finish).not.toHaveBeenCalled();
+  });
+
+  it("cancels exactly once when surface probing fails", async () => {
+    const test = coordinatorHarness({ probeError: new Error("blank-frame") });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b", "r-probe"))).resolves.toMatchObject({
+      ok: false,
+      code: "blank-frame",
+    });
+
+    expect(test.cancel).toHaveBeenCalledWith("r-probe");
+    expect(test.cancel).toHaveBeenCalledOnce();
+    expect(test.finish).not.toHaveBeenCalled();
   });
 
   it("rolls back the visual swap when persistence fails", async () => {
@@ -154,6 +204,8 @@ describe("PetSwitchCoordinator", () => {
     expect(test.candidate.host.destroy).toHaveBeenCalledOnce();
     expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
     expect(test.oldRuntime.host.update).toHaveBeenCalledWith(42);
+    expect(test.cancel).toHaveBeenCalledOnce();
+    expect(test.finish).not.toHaveBeenCalled();
   });
 
   it("starts the carried idle after visual activation and before persistence commits", async () => {
@@ -192,6 +244,8 @@ describe("PetSwitchCoordinator", () => {
     expect(test.candidate.host.destroy).toHaveBeenCalledOnce();
     expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
     expect(test.oldRuntime.host.update).toHaveBeenCalledWith(42);
+    expect(test.cancel).toHaveBeenCalledOnce();
+    expect(test.finish).not.toHaveBeenCalled();
   });
 
   it("rejects a concurrent request without disturbing the in-flight switch", async () => {
@@ -232,6 +286,8 @@ describe("PetSwitchCoordinator", () => {
       petId: "pet-b",
     });
     expect(test.commitSelection).toHaveBeenCalledOnce();
+    expect(test.finish).toHaveBeenCalledOnce();
+    expect(test.cancel).not.toHaveBeenCalled();
   });
 
   it("retries a rollback failure and returns the original persistence failure", async () => {
@@ -277,7 +333,48 @@ describe("PetSwitchCoordinator", () => {
       message: expect.stringContaining("预览帧"),
     });
     expect(test.slot.activePetId).toBe("pet-a");
-    expect(test.rollbackCommit).toHaveBeenCalledWith("pet-a", "pet-b", undefined);
+    expect(test.rollbackCommit).toHaveBeenCalledWith("pet-a", {
+      requestId: "r-fallback",
+      petId: "pet-b",
+    });
+    expect(test.finish).toHaveBeenCalledWith("r-fallback");
+    expect(test.cancel).not.toHaveBeenCalled();
     expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
+  });
+
+  it("leaves the lease to TTL when committed persistence compensation cannot converge", async () => {
+    const test = coordinatorHarness({
+      holdCommit: true,
+      backendRollbackError: new Error("database unavailable"),
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    const switching = test.coordinator.switch(request("pet-b", "r-uncertain"));
+    await test.commitStarted;
+    test.triggerCandidatePreviewFallback();
+    test.releaseCommit();
+    await expect(switching).resolves.toMatchObject({ ok: false });
+
+    expect(test.rollbackCommit).toHaveBeenCalledTimes(2);
+    expect(test.finish).not.toHaveBeenCalled();
+    expect(test.cancel).not.toHaveBeenCalled();
+  });
+
+  it("compensates and finishes instead of cancelling after an unexpected post-commit failure", async () => {
+    const test = coordinatorHarness({
+      fallbackCheckErrorAfterCommit: new Error("fallback state unavailable"),
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b", "r-post-commit"))).resolves.toMatchObject({
+      ok: false,
+    });
+
+    expect(test.rollbackCommit).toHaveBeenCalledWith("pet-a", {
+      requestId: "r-post-commit",
+      petId: "pet-b",
+    });
+    expect(test.finish).toHaveBeenCalledWith("r-post-commit");
+    expect(test.cancel).not.toHaveBeenCalled();
   });
 });

@@ -13,6 +13,7 @@ use pets::{
     active::{RuntimePetDescriptor, SharedActivePetService},
     catalog::{CreationResume, PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
     deletion::{DeleteOutcome, PetDeletionService, SharedPetDeletionService},
+    mutation::{PetMutationGate, SharedPetMutationGate},
 };
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
 use std::sync::{Arc, Mutex};
@@ -402,28 +403,60 @@ fn creation_abandon(
 #[tauri::command]
 fn pet_prepare_switch(
     state: tauri::State<'_, SharedActivePetService>,
+    request_id: Option<String>,
     pet_id: String,
 ) -> Result<RuntimePetDescriptor, String> {
-    state.prepare(&pet_id)
+    state.prepare(request_id.as_deref(), &pet_id)
 }
 
 #[tauri::command]
 fn pet_commit_switch(
     state: tauri::State<'_, SharedActivePetService>,
+    request_id: Option<String>,
     pet_id: String,
     accepted_variant_id: Option<String>,
+    creation_session_id: Option<String>,
 ) -> Result<(), String> {
-    state.commit(&pet_id, accepted_variant_id.as_deref())
+    let _ = creation_session_id;
+    state.commit(
+        request_id.as_deref(),
+        &pet_id,
+        accepted_variant_id.as_deref(),
+    )
 }
 
 #[tauri::command]
 fn pet_rollback_switch(
     state: tauri::State<'_, SharedActivePetService>,
+    request_id: Option<String>,
     previous_pet_id: String,
     pet_id: String,
     accepted_variant_id: Option<String>,
+    creation_session_id: Option<String>,
 ) -> Result<(), String> {
-    state.rollback_commit(&previous_pet_id, &pet_id, accepted_variant_id.as_deref())
+    let _ = creation_session_id;
+    state.rollback_commit(
+        request_id.as_deref(),
+        &previous_pet_id,
+        &pet_id,
+        accepted_variant_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn pet_cancel_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    request_id: String,
+) -> Result<(), String> {
+    state.cancel(&request_id)
+}
+
+#[tauri::command]
+fn pet_finish_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    request_id: String,
+) -> Result<(), String> {
+    state.finish(&request_id)
 }
 
 #[tauri::command]
@@ -741,10 +774,12 @@ pub fn run() {
                 );
             }
             let session = Arc::new(Mutex::new(pets::ActivePetSession::new()));
+            let mutation_gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
             let active = Arc::new(pets::active::ActivePetService::new(
                 storage.clone(),
                 session,
                 pets_dir.clone(),
+                mutation_gate.clone(),
             ));
             active.restore()?;
             let catalog = Arc::new(PetCatalogService::new(
@@ -756,11 +791,13 @@ pub fn run() {
                 storage.clone(),
                 active.clone(),
                 data_dir.clone(),
+                mutation_gate.clone(),
             ));
             if let Err(error) = deletion.cleanup_quarantine() {
                 eprintln!("[desktop-pet] quarantine cleanup failed: {error}");
             }
             app.manage(active as SharedActivePetService);
+            app.manage(mutation_gate.clone() as SharedPetMutationGate);
             app.manage(catalog as SharedPetCatalogService);
             let creation_service = Arc::new(creation::CreationService::new(
                 storage.clone(),
@@ -783,6 +820,7 @@ pub fn run() {
                 creation_store,
                 state_store,
                 Arc::from(data_dir.join("jobs").as_path()),
+                mutation_gate,
             );
             let manager = Arc::new(manager);
             app.manage(manager.clone() as generation::tasks::SharedGenerationManager);
@@ -835,6 +873,8 @@ pub fn run() {
             pet_prepare_switch,
             pet_commit_switch,
             pet_rollback_switch,
+            pet_cancel_switch,
+            pet_finish_switch,
             pet_state_load,
             pet_state_save,
             app_setting_get,

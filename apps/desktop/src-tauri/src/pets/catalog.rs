@@ -397,6 +397,7 @@ mod tests {
     use super::*;
     use crate::pets::{
         active::{ActivePetService, BUILTIN_PET_ID},
+        mutation::PetMutationGate,
         ActivePetSession,
     };
     use crate::runtime_assets::{
@@ -425,10 +426,12 @@ mod tests {
                 .join(format!("desktop-pet-catalog-{}-{n}", std::process::id()));
             let pets_dir = root.join("pets");
             let storage = Arc::new(Mutex::new(Storage::open(&pets_dir).unwrap()));
+            let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
             let active = Arc::new(ActivePetService::new(
                 storage.clone(),
                 Arc::new(Mutex::new(ActivePetSession::new())),
                 pets_dir.clone(),
+                gate,
             ));
             active.restore().unwrap();
             if active_pet_id != BUILTIN_PET_ID {
@@ -729,7 +732,7 @@ mod tests {
         test.insert_candidate("job-1", "pet-1", false);
         test.insert_runtime_variant("job-1", "pet-1");
         test.write_current_asset("pet-1", "job-1");
-        test.active.commit("pet-1", Some("job-1")).unwrap();
+        test.active.commit(None, "pet-1", Some("job-1")).unwrap();
 
         let entry = test
             .service

@@ -1,11 +1,11 @@
+use crate::creation::domain::new_entity_id;
 use crate::pets::active::{SharedActivePetService, BUILTIN_PET_ID};
+use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
 use crate::storage::Storage;
 use rusqlite::{Connection, OptionalExtension};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
-
-static DELETION_OPERATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
+use std::sync::{Arc, Mutex};
 const JOURNAL_FILE: &str = "journal.json";
 
 pub type SharedPetDeletionService = Arc<PetDeletionService>;
@@ -20,6 +20,7 @@ pub struct PetDeletionService {
     storage: Arc<Mutex<Storage>>,
     active: SharedActivePetService,
     app_data_dir: PathBuf,
+    mutation_gate: SharedPetMutationGate,
 }
 
 #[derive(Debug)]
@@ -53,17 +54,22 @@ impl PetDeletionService {
         storage: Arc<Mutex<Storage>>,
         active: SharedActivePetService,
         app_data_dir: PathBuf,
+        mutation_gate: SharedPetMutationGate,
     ) -> Self {
         Self {
             storage,
             active,
             app_data_dir,
+            mutation_gate,
         }
     }
 
     pub fn delete(&self, pet_id: &str) -> Result<DeleteOutcome, String> {
-        let _operation = deletion_operation_guard()?;
         validate_component(pet_id, "pet id")?;
+        let request_id = new_entity_id("delete");
+        let _operation = self
+            .mutation_gate
+            .scoped(&request_id, MutationKind::Delete, pet_id)?;
         if pet_id == BUILTIN_PET_ID {
             return Err("the built-in pet cannot be deleted".into());
         }
@@ -126,8 +132,11 @@ impl PetDeletionService {
     }
 
     pub fn abandon_creation(&self, session_id: &str) -> Result<(), String> {
-        let _operation = deletion_operation_guard()?;
         validate_component(session_id, "session id")?;
+        let request_id = new_entity_id("abandon");
+        let _operation =
+            self.mutation_gate
+                .scoped(&request_id, MutationKind::Delete, session_id)?;
 
         let Some((pet_id, method, status, job_ids)) = self.creation_abandon_plan(session_id)?
         else {
@@ -206,7 +215,10 @@ impl PetDeletionService {
     }
 
     pub fn cleanup_quarantine(&self) -> Result<(), String> {
-        let _operation = deletion_operation_guard()?;
+        let request_id = new_entity_id("cleanup");
+        let _operation =
+            self.mutation_gate
+                .scoped(&request_id, MutationKind::Delete, "quarantine")?;
         let root = self.app_data_dir.join("trash").join("pet-delete");
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
@@ -534,24 +546,6 @@ impl PetDeletionService {
     }
 }
 
-fn deletion_operation_lock() -> &'static Mutex<()> {
-    DELETION_OPERATION_LOCK.get_or_init(|| Mutex::new(()))
-}
-
-pub(crate) fn deletion_operation_guard() -> Result<MutexGuard<'static, ()>, String> {
-    deletion_operation_lock()
-        .lock()
-        .map_err(|_| "deletion operation lock poisoned".into())
-}
-
-#[cfg(test)]
-pub(crate) fn operation_lock_is_held() -> bool {
-    matches!(
-        deletion_operation_lock().try_lock(),
-        Err(std::sync::TryLockError::WouldBlock)
-    )
-}
-
 fn creation_job_ids(
     db: &Connection,
     session_id: &str,
@@ -766,6 +760,7 @@ fn remove_operation(operation: &Path) -> Result<(), String> {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::pets::mutation::{MutationKind, PetMutationGate, SharedPetMutationGate};
     use crate::pets::{active::ActivePetService, ActivePetSession, SharedActivePetSession};
     use crate::storage::Storage;
     use std::path::PathBuf;
@@ -778,6 +773,7 @@ mod tests {
         root: PathBuf,
         storage: Arc<Mutex<Storage>>,
         service: PetDeletionService,
+        gate: SharedPetMutationGate,
     }
 
     impl DeletionHarness {
@@ -793,12 +789,20 @@ mod tests {
                 .unwrap()
                 .set_active(BUILTIN_PET_ID.into())
                 .unwrap();
-            let active = Arc::new(ActivePetService::new(storage.clone(), session, pets_dir));
-            let service = PetDeletionService::new(storage.clone(), active, root.clone());
+            let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+            let active = Arc::new(ActivePetService::new(
+                storage.clone(),
+                session,
+                pets_dir,
+                gate.clone(),
+            ));
+            let service =
+                PetDeletionService::new(storage.clone(), active, root.clone(), gate.clone());
             let test = Self {
                 root,
                 storage,
                 service,
+                gate,
             };
             test.insert_pet_with_job("pet-a", "job-a");
             test.insert_pet_with_job("pet-b", "job-b");
@@ -1034,6 +1038,16 @@ mod tests {
             .delete("pet-a")
             .unwrap_err()
             .contains("active pet"));
+    }
+
+    #[test]
+    fn delete_releases_the_shared_gate_after_error() {
+        let test = DeletionHarness::two_pets();
+        assert!(test.service.delete(BUILTIN_PET_ID).is_err());
+        assert!(test
+            .gate
+            .begin("switch-2", MutationKind::Switch, "pet-b")
+            .is_ok());
     }
 
     #[test]
