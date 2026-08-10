@@ -597,6 +597,15 @@ fn creation_upload_start(
     manager.start_for_session(&session_id, &prompt, &png, &ref_sha256)
 }
 
+#[tauri::command]
+fn creation_upload_retry(
+    manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
+    session_id: String,
+    prompt: String,
+) -> Result<String, String> {
+    manager.retry_for_session(&session_id, &prompt)
+}
+
 fn decode_creation_upload_source(encoded: &str) -> Result<Vec<u8>, String> {
     use base64::Engine;
     use generation::tasks::{MAX_UPLOAD_SOURCE_BASE64_BYTES, MAX_UPLOAD_SOURCE_BYTES};
@@ -1047,6 +1056,7 @@ pub fn run() {
             creation_abort_finalize,
             creation_recover_finalization,
             creation_upload_start,
+            creation_upload_retry,
             creation_upload_jobs,
             creation_upload_source,
             creation_upload_candidate_assets,
@@ -1225,6 +1235,7 @@ mod tests {
         let _set_name = super::creation_set_name;
         let _abandon = super::creation_abandon;
         let _upload_source = super::creation_upload_source;
+        let _upload_retry = super::creation_upload_retry;
         let _candidate_assets = super::creation_upload_candidate_assets;
     }
 

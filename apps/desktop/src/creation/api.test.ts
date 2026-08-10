@@ -68,6 +68,18 @@ describe("creationApi", () => {
     });
   });
 
+  it("retries upload generation using only the durable session and prompt", async () => {
+    const invoke = vi.fn().mockResolvedValue("job-retry");
+    const api = createCreationApi(invoke);
+
+    await expect(api.uploadRetry("session-1", "prompt")).resolves.toBe("job-retry");
+
+    expect(invoke).toHaveBeenCalledWith("creation_upload_retry", {
+      sessionId: "session-1",
+      prompt: "prompt",
+    });
+  });
+
   it("lists upload jobs by camelCase sessionId", async () => {
     const invoke = vi.fn().mockResolvedValue([]);
     const api = createCreationApi(invoke);

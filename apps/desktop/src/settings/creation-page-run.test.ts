@@ -97,4 +97,17 @@ describe("CreationPageRun", () => {
     await waiting;
     expect(settled).toBe(true);
   });
+
+  it("reports every active mutation owner and shares one settlement promise per session", () => {
+    const run = new CreationPageRun();
+    const visit = run.enter("upload");
+    run.begin(visit, "retry", "session-1");
+    run.begin(visit, "finalize", "session-2");
+
+    expect(run.activeMutations()).toEqual([
+      { kind: "retry", sessionId: "session-1" },
+      { kind: "finalize", sessionId: "session-2" },
+    ]);
+    expect(run.waitForMutation("session-1")).toBe(run.waitForMutation("session-1"));
+  });
 });

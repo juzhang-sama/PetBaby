@@ -54,6 +54,8 @@ export function createCreationApi(invoke: InvokePort) {
         refPngB64,
         refSha256,
       }),
+    uploadRetry: (sessionId: string, prompt: string) =>
+      invoke<string>("creation_upload_retry", { sessionId, prompt }),
     uploadJobs: (sessionId: string) =>
       invoke<UploadJobRecord[]>("creation_upload_jobs", { sessionId }),
     uploadSource: (sessionId: string) =>

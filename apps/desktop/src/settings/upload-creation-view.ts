@@ -19,6 +19,7 @@ export interface UploadCreationPorts {
       refPngB64: string,
       refSha256: string,
     ): Promise<string>;
+    uploadRetry(sessionId: string, prompt: string): Promise<string>;
     uploadJobs(sessionId: string): Promise<UploadJobRecord[]>;
     uploadSource(sessionId: string): Promise<{ dataUrl: string; refSha256: string } | null>;
     recoverFinalization(): Promise<RecoveryReport>;
@@ -196,10 +197,9 @@ export class UploadCreationView {
   async enter(): Promise<void> {
     const pendingFinalization = this.finalizing;
     const knownFinalizingSession = this.state.step === "finalizing" ? this.state.sessionId : null;
-    const knownMutationSession = this.run.isMutating(this.state.sessionId) ? this.state.sessionId : null;
-    const knownFinalizeOwner = this.run.isRunning("finalize", this.state.sessionId)
-      ? this.state.sessionId
-      : null;
+    const activeMutations = this.run.activeMutations();
+    const activeMutationSettlements = activeMutations.map((owner) =>
+      this.run.waitForMutation(owner.sessionId));
     if (!this.dom) throw new Error("上传创建页面未装配 DOM");
     this.leave();
     this.visit = this.run.enter("upload");
@@ -214,14 +214,12 @@ export class UploadCreationView {
         await pendingFinalization.promise.catch(() => undefined);
         if (!this.run.isCurrent(visit)) return;
       }
+      await Promise.all(activeMutationSettlements);
+      if (!this.run.isCurrent(visit)) return;
+      const finalizeOwner = activeMutations.find((owner) => owner.kind === "finalize");
       const finalizationSession = pendingFinalization?.sessionId
         ?? knownFinalizingSession
-        ?? knownFinalizeOwner;
-      const unsettledSession = finalizationSession ?? knownMutationSession;
-      if (unsettledSession) {
-        await this.run.waitForMutation(unsettledSession);
-        if (!this.run.isCurrent(visit)) return;
-      }
+        ?? finalizeOwner?.sessionId;
       if (finalizationSession) {
         const settled = await this.ports.creation.snapshot(finalizationSession).catch((error) => {
           throw new Error(`暂时无法确认上次完成状态：${errorMessage(error)}`);
@@ -298,14 +296,20 @@ export class UploadCreationView {
       throw new Error("当前创建正在执行其他操作，请稍候");
     }
     const submitting = (async () => {
-      const hash = await sha256Hex(bytes);
-      if (!this.canApplySession(sessionId, visit)) throw new StaleCreationOperation();
-      const jobId = await this.ports.creation.uploadStart(
-        sessionId,
-        buildPrompt(),
-        bytesToBase64(bytes),
-        hash,
-      );
+      const prompt = buildPrompt();
+      let jobId: string;
+      if (this.durableSourceLoaded) {
+        jobId = await this.ports.creation.uploadRetry(sessionId, prompt);
+      } else {
+        const hash = await sha256Hex(bytes);
+        if (!this.canApplySession(sessionId, visit)) throw new StaleCreationOperation();
+        jobId = await this.ports.creation.uploadStart(
+          sessionId,
+          prompt,
+          bytesToBase64(bytes),
+          hash,
+        );
+      }
       if (!this.canApplySession(sessionId, visit)) return jobId;
       this.durableSourceLoaded = true;
       const creation = this.state.creation
@@ -573,17 +577,19 @@ export class UploadCreationView {
 
   private async readSelectedPhoto(): Promise<void> {
     if (!this.dom) return;
+    const revision = ++this.photoRevision;
     if (this.durableSourceLoaded) {
+      this.dom.elements.photoInput.value = "";
       this.setStatus("如需换照片，请先放弃当前创建并开始新会话。", true);
       return;
     }
     const file = this.dom.elements.photoInput.files?.[0];
     if (!file) return;
     if (file.size !== undefined && file.size > MAX_UPLOAD_PHOTO_BYTES) {
+      this.dom.elements.photoInput.value = "";
       this.setStatus("照片过大，请选择不超过 10 MiB 的 PNG 或 JPEG。", true);
       return;
     }
-    const revision = ++this.photoRevision;
     const visit = this.visit;
     const bytes = new Uint8Array(await file.arrayBuffer());
     if (!this.mounted || revision !== this.photoRevision || !this.run.isCurrent(visit)) return;

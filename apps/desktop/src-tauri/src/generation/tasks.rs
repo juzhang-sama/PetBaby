@@ -75,6 +75,8 @@ pub struct GenerationManager {
     #[cfg(test)]
     submit_hook: Mutex<Option<Arc<dyn Fn() -> Result<String, String> + Send + Sync>>>,
     #[cfg(test)]
+    test_provider_endpoint: Mutex<Option<String>>,
+    #[cfg(test)]
     after_task_attach_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     fail_next_task_attach: std::sync::atomic::AtomicBool,
@@ -102,6 +104,8 @@ impl GenerationManager {
             fail_next_stage_promote_rename: std::sync::atomic::AtomicBool::new(false),
             #[cfg(test)]
             submit_hook: Mutex::new(None),
+            #[cfg(test)]
+            test_provider_endpoint: Mutex::new(None),
             #[cfg(test)]
             after_task_attach_hook: Mutex::new(None),
             #[cfg(test)]
@@ -133,6 +137,11 @@ impl GenerationManager {
     }
 
     #[cfg(test)]
+    fn set_test_provider_endpoint(&self, endpoint: String) {
+        *self.test_provider_endpoint.lock().unwrap() = Some(endpoint);
+    }
+
+    #[cfg(test)]
     fn set_after_task_attach_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self.after_task_attach_hook.lock().unwrap() = Some(Arc::new(hook));
     }
@@ -157,6 +166,14 @@ impl GenerationManager {
     }
 
     fn client_for(&self) -> Result<Lk888Client, String> {
+        #[cfg(test)]
+        if let Some(endpoint) = self.test_provider_endpoint.lock().unwrap().clone() {
+            return Ok(Lk888Client::new_with(
+                "test-key".into(),
+                endpoint,
+                "gpt-image-2".into(),
+            ));
+        }
         let state = self.state_store.lock().map_err(|_| "state lock poisoned")?;
         let key = state
             .load("app:lk888_api_key")?
@@ -234,33 +251,67 @@ impl GenerationManager {
         let pet_id = store.upload_session_pet(session_id)?;
         store.save_upload_source(session_id, &source.png, &source.sha256, "image/png")?;
         drop(store);
-        let create_result = self
-            .store
-            .lock()
-            .map_err(|_| "store lock poisoned".to_string())
-            .and_then(|store| {
-                store.create_job_for_session(&job_id, session_id, prompt, &source.sha256, None)
-            });
-        if let Err(error) = create_result {
-            return Err(error);
-        }
+        self.start_normalized_for_session(
+            &job_id,
+            session_id,
+            &pet_id,
+            prompt,
+            &source.png,
+            &source.sha256,
+        )
+    }
 
-        let task_id = match self.submit_task(prompt, &source.png) {
+    pub fn retry_for_session(&self, session_id: &str, prompt: &str) -> Result<String, String> {
+        let job_id = new_entity_id("job");
+        let _operation = self
+            .mutation_gate
+            .scoped(&job_id, MutationKind::Creation, session_id)?;
+        let store = self.store.lock().map_err(|_| "store lock poisoned")?;
+        let pet_id = store.upload_session_pet(session_id)?;
+        let source = store
+            .upload_source(session_id)?
+            .ok_or_else(|| "upload session has no durable source image".to_string())?;
+        drop(store);
+        self.start_normalized_for_session(
+            &job_id,
+            session_id,
+            &pet_id,
+            prompt,
+            &source.normalized_png,
+            &source.sha256,
+        )
+    }
+
+    fn start_normalized_for_session(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        pet_id: &str,
+        prompt: &str,
+        normalized_png: &[u8],
+        ref_sha256: &str,
+    ) -> Result<String, String> {
+        self.store
+            .lock()
+            .map_err(|_| "store lock poisoned".to_string())?
+            .create_job_for_session(job_id, session_id, prompt, ref_sha256, None)?;
+
+        let task_id = match self.submit_task(prompt, normalized_png) {
             Ok(task_id) => task_id,
             Err(error) => {
                 self.store
                     .lock()
                     .map_err(|_| "store lock poisoned")?
-                    .fail_upload_job(&job_id, session_id, &pet_id, &error)?;
+                    .fail_upload_job(job_id, session_id, pet_id, &error)?;
                 return Err(error);
             }
         };
-        if let Err(error) = self.attach_upload_task(&job_id, session_id, &pet_id, &task_id) {
+        if let Err(error) = self.attach_upload_task(job_id, session_id, pet_id, &task_id) {
             let preservation = self
                 .store
                 .lock()
                 .map_err(|_| "store lock poisoned")?
-                .preserve_upload_task_after_attach_failure(&job_id, session_id, &pet_id, &task_id);
+                .preserve_upload_task_after_attach_failure(job_id, session_id, pet_id, &task_id);
             return Err(combine_attach_and_preservation_error(error, preservation));
         }
         #[cfg(test)]
@@ -269,7 +320,7 @@ impl GenerationManager {
             .lock()
             .map_err(|_| "state lock poisoned")?
             .remove(&format!("creation:{pet_id}:compile_error"))?;
-        Ok(job_id)
+        Ok(job_id.to_string())
     }
 
     pub fn upload_source(&self, session_id: &str) -> Result<Option<DurableUploadSource>, String> {
@@ -888,9 +939,14 @@ mod tests {
     use crate::pets::state::StateStore;
     use crate::pets::{ActivePetSession, SharedActivePetSession};
     use crate::storage::Storage;
+    use base64::Engine;
     use image::{DynamicImage, ImageFormat, RgbaImage};
     use std::io::Cursor;
     use std::sync::atomic::{AtomicU32, Ordering};
+    use wiremock::{
+        matchers::{method, path},
+        Mock, MockServer, ResponseTemplate,
+    };
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
@@ -1051,6 +1107,23 @@ mod tests {
         let mut bytes = Cursor::new(Vec::new());
         DynamicImage::ImageRgb8(image)
             .write_to(&mut bytes, ImageFormat::Jpeg)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    fn noisy_png(width: u32, height: u32) -> Vec<u8> {
+        let image = image::RgbaImage::from_fn(width, height, |x, y| {
+            let seed = x.wrapping_mul(1_664_525) ^ y.wrapping_mul(1_013_904_223);
+            image::Rgba([
+                seed as u8,
+                seed.rotate_left(11) as u8,
+                seed.rotate_left(23) as u8,
+                seed.rotate_left(7) as u8,
+            ])
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Png)
             .unwrap();
         bytes.into_inner()
     }
@@ -1930,11 +2003,7 @@ mod tests {
             test.gate.clone(),
         );
         reopened.set_submit_hook(|| Ok("task-retry".into()));
-        let restored = reopened.upload_source(&test.session_id).unwrap().unwrap();
-
-        reopened
-            .start_for_session(&test.session_id, "p", &restored.bytes, &restored.ref_sha256)
-            .unwrap();
+        reopened.retry_for_session(&test.session_id, "p").unwrap();
 
         let jobs = test
             .store
@@ -1946,6 +2015,95 @@ mod tests {
         assert!(jobs
             .iter()
             .all(|job| job.ref_sha256 == sha256_hex(&test.png)));
+    }
+
+    #[test]
+    fn repeated_durable_retries_create_distinct_failed_jobs_without_reuploading_bytes() {
+        let test = manager_harness_with_job(false);
+        let hash = sha256_hex(&test.png);
+        test.store
+            .lock()
+            .unwrap()
+            .save_upload_source(&test.session_id, &test.png, &hash, "image/png")
+            .unwrap();
+        test.manager
+            .set_submit_hook(|| Err("provider unavailable".into()));
+
+        assert!(test
+            .manager
+            .retry_for_session(&test.session_id, "p")
+            .is_err());
+        assert!(test
+            .manager
+            .retry_for_session(&test.session_id, "p")
+            .is_err());
+
+        let jobs = test
+            .store
+            .lock()
+            .unwrap()
+            .upload_jobs(&test.session_id)
+            .unwrap();
+        assert_eq!(jobs.len(), 2);
+        assert_ne!(jobs[0].job_id, jobs[1].job_id);
+        assert!(jobs
+            .iter()
+            .all(|job| job.status == "failed" && job.ref_sha256 == hash));
+    }
+
+    #[tokio::test(flavor = "multi_thread", worker_threads = 2)]
+    async fn durable_retry_sends_a_10_to_24_mib_normalized_blob_unchanged_to_the_provider() {
+        let server = MockServer::start().await;
+        Mock::given(method("POST"))
+            .and(path("/v1/media/generate"))
+            .respond_with(ResponseTemplate::new(200).set_body_json(serde_json::json!({
+                "data": { "task_id": 42 }
+            })))
+            .mount(&server)
+            .await;
+        let test = manager_harness_with_job(false);
+        let png = noisy_png(1_700, 1_600);
+        assert!(
+            png.len() > MAX_UPLOAD_SOURCE_BYTES,
+            "fixture too small: {}",
+            png.len()
+        );
+        assert!(
+            png.len() <= MAX_NORMALIZED_PNG_BYTES,
+            "fixture too large: {}",
+            png.len()
+        );
+        let hash = sha256_hex(&png);
+        test.store
+            .lock()
+            .unwrap()
+            .save_upload_source(&test.session_id, &png, &hash, "image/png")
+            .unwrap();
+        test.manager.set_test_provider_endpoint(server.uri());
+
+        let job_id = tokio::task::block_in_place(|| {
+            test.manager
+                .retry_for_session(&test.session_id, "retry prompt")
+        })
+        .unwrap();
+
+        let jobs = test
+            .store
+            .lock()
+            .unwrap()
+            .upload_jobs(&test.session_id)
+            .unwrap();
+        let job = jobs.iter().find(|job| job.job_id == job_id).unwrap();
+        assert_eq!(job.ref_sha256, hash);
+        let requests = server.received_requests().await.unwrap();
+        assert_eq!(requests.len(), 1);
+        let body: serde_json::Value = serde_json::from_slice(&requests[0].body).unwrap();
+        let data_url = body["params"]["images"][0].as_str().unwrap();
+        let provider_bytes = base64::engine::general_purpose::STANDARD
+            .decode(data_url.strip_prefix("data:image/png;base64,").unwrap())
+            .unwrap();
+        assert_eq!(provider_bytes, png);
+        assert_eq!(sha256_hex(&provider_bytes), hash);
     }
 
     #[test]
