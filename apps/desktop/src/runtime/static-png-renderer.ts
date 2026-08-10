@@ -27,8 +27,9 @@ interface Viewport {
   dpr: number;
 }
 
-async function loadBrowserImage(url: string): Promise<StaticPngImage> {
+export async function loadBrowserImage(url: string): Promise<StaticPngImage> {
   const image = new Image();
+  image.crossOrigin = "anonymous";
   image.src = url;
   await image.decode();
   return image;

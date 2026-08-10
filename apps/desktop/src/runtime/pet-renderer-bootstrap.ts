@@ -2,6 +2,7 @@ import { loadLive2DAsset } from "../runtime-assets/live2d-asset-loader";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
 import { Live2DRenderer } from "../runtime-live2d/live2d-renderer";
 import { parseRuntimeAssetManifest, type RuntimeAssetManifestV1 } from "./manifest-schema";
+import { installedPetAssetUrl } from "./pet-asset-url";
 import type { PetRenderer } from "./pet-renderer";
 import { PetRendererHost } from "./pet-renderer-host";
 import { StaticPngRenderer } from "./static-png-renderer";
@@ -53,10 +54,6 @@ function preferredV1Image(manifest: RuntimeAssetManifestV1): string {
     ?? manifest.files[0]!.relativePath;
 }
 
-function defaultAssetUrl(petId: string, relativePath: string): string {
-  return `pet-asset://localhost/${petId}/assets/${relativePath}`;
-}
-
 export async function createStaticPngRuntime(
   imageUrl: string,
   options: PetRendererBootstrapOptions,
@@ -95,7 +92,7 @@ export async function createPetRendererRuntime(
     ?? ((root, canvas) => new StaticPngRenderer(root, { createCanvas: () => canvas }));
   const createLive2DRenderer = options.createLive2DRenderer
     ?? ((canvas, onReloadFailure) => new Live2DRenderer(canvas, { onReloadFailure }));
-  const assetUrl = options.assetUrl ?? defaultAssetUrl;
+  const assetUrl = options.assetUrl ?? installedPetAssetUrl;
 
   const makeStatic = (relativePath: string): Promise<PetRendererRuntime> => createStaticPngRuntime(
     assetUrl(petId, relativePath),

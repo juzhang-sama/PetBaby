@@ -15,9 +15,11 @@ import {
   selectStartupPetSource,
   type StartupPetSource,
 } from "./startup-pet";
+import { installedPetAssetUrl } from "./pet-asset-url";
 
 export interface RuntimePetLoaderPorts {
   readInstalledManifest(petId: string): Promise<unknown>;
+  installedAssetUrl(petId: string, relativePath: string): string;
   createBuiltinTransport(manifestUrl: string): Live2DAssetTransport;
   createRuntime(
     petId: string,
@@ -35,6 +37,7 @@ export interface RuntimePetLoadOptions {
 
 const defaultPorts: RuntimePetLoaderPorts = {
   readInstalledManifest: (petId) => invoke("asset_manifest", { petId }),
+  installedAssetUrl: installedPetAssetUrl,
   createBuiltinTransport: (manifestUrl) => createBuiltinPetTransport({ manifestUrl }),
   createRuntime: createPetRendererRuntime,
   createPreviewRuntime: createStaticPngRuntime,
@@ -89,7 +92,7 @@ export async function loadRuntimePet(
   let previewUrl: string;
   try {
     if (descriptor.source === "installed") {
-      previewUrl = `pet-asset://localhost/${descriptor.petId}/assets/body.png`;
+      previewUrl = ports.installedAssetUrl(descriptor.petId, "body.png");
       manifest = await ports.readInstalledManifest(descriptor.petId);
       let runtime: PetRendererRuntime | undefined;
       let previewFallback = false;

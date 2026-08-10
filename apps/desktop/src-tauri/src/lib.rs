@@ -33,6 +33,45 @@ fn frontend_ping(message: String) {
     println!("[frontend] {message}");
 }
 
+fn pet_asset_relative_path(path: &str) -> Result<String, String> {
+    let encoded = path.strip_prefix('/').unwrap_or(path);
+    let decoded = percent_encoding::percent_decode_str(encoded)
+        .decode_utf8()
+        .map_err(|_| "pet asset path is not valid UTF-8".to_owned())?;
+    let relative = runtime_assets::manifest::normalize_relative_path(decoded.as_ref())?;
+    let segments = relative.split('/').collect::<Vec<_>>();
+    if segments.len() < 3 || segments[1] != "assets" {
+        return Err("pet asset path must match <pet_id>/assets/<file>".to_owned());
+    }
+    Ok(relative)
+}
+
+fn serve_pet_asset(file: &std::path::Path) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::{
+        header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE},
+        Response, StatusCode,
+    };
+
+    match std::fs::read(file) {
+        Ok(bytes) => {
+            let builder = Response::builder()
+                .status(StatusCode::OK)
+                .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+            let builder = match file.extension().and_then(|extension| extension.to_str()) {
+                Some(extension) if extension.eq_ignore_ascii_case("png") => {
+                    builder.header(CONTENT_TYPE, "image/png")
+                }
+                _ => builder,
+            };
+            builder.body(bytes).unwrap()
+        }
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Vec::new())
+            .unwrap(),
+    }
+}
+
 #[tauri::command]
 fn apply_hit_region(
     window: tauri::WebviewWindow,
@@ -565,19 +604,25 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .register_uri_scheme_protocol("pet-asset", |ctx, request| {
-            use tauri::http::Response;
+            use tauri::http::{Response, StatusCode};
+
             let app = ctx.app_handle();
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::new());
-            let relative = request.uri().path().trim_start_matches('/');
-            // pet-asset://localhost/<pet_id>/assets/<file>
+            let relative = match pet_asset_relative_path(request.uri().path()) {
+                Ok(relative) => relative,
+                Err(_) => {
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Vec::new())
+                        .unwrap();
+                }
+            };
+            // Tauri maps the custom protocol request path to <pet_id>/assets/<file>.
             let file = data_dir.join("pets").join(relative);
-            match std::fs::read(&file) {
-                Ok(bytes) => Response::builder().status(200).body(bytes).unwrap(),
-                Err(_) => Response::builder().status(404).body(Vec::new()).unwrap(),
-            }
+            serve_pet_asset(&file)
         })
         .setup(|app| {
             let data_dir = app
@@ -764,6 +809,60 @@ mod tests {
     fn pet_catalog_commands_are_available() {
         let _list = super::pet_catalog_list;
         let _resume = super::pet_creation_resume;
+    }
+
+    #[test]
+    fn pet_asset_png_response_is_decodable_media_with_its_original_bytes() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-uri-response-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("body.PNG");
+        let png = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        std::fs::write(&file, &png).unwrap();
+
+        let response = serve_pet_asset(&file);
+
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "*"
+        );
+        assert_eq!(response.body(), &png);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pet_asset_path_decodes_the_separator_encoded_by_convert_file_src() {
+        assert_eq!(
+            pet_asset_relative_path("/pet-user-1%2Fassets%2Fbody.png").unwrap(),
+            "pet-user-1/assets/body.png"
+        );
+    }
+
+    #[test]
+    fn pet_asset_path_rejects_encoded_traversal() {
+        assert!(pet_asset_relative_path("/pet-user-1%2Fassets%2F..%2Fsecret.png").is_err());
+        assert!(pet_asset_relative_path("/pet-user-1%2Fassets%2F..%5Csecret.png").is_err());
+    }
+
+    #[test]
+    fn pet_asset_path_cannot_read_files_outside_a_pet_assets_directory() {
+        assert!(pet_asset_relative_path("/desktop-pet.db").is_err());
+        assert!(pet_asset_relative_path("/pet-user-1%2Fmanifest.json").is_err());
+        assert!(pet_asset_relative_path("/pet-user-1%2Fassets").is_err());
     }
 
     #[test]

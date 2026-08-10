@@ -16,6 +16,7 @@ function loaderPorts(): RuntimePetLoaderPorts & {
   createBuiltinTransport: ReturnType<typeof vi.fn>;
   createRuntime: ReturnType<typeof vi.fn>;
   createPreviewRuntime: ReturnType<typeof vi.fn>;
+  installedAssetUrl: ReturnType<typeof vi.fn>;
 } {
   return {
     readInstalledManifest: vi.fn(async () => ({ source: "installed-manifest" })),
@@ -25,6 +26,9 @@ function loaderPorts(): RuntimePetLoaderPorts & {
     })),
     createRuntime: vi.fn(async () => fakeRuntime()),
     createPreviewRuntime: vi.fn(async () => fakeRuntime()),
+    installedAssetUrl: vi.fn((petId: string, relativePath: string) => (
+      `http://pet-asset.localhost/${petId}/assets/${relativePath}`
+    )),
   };
 }
 
@@ -58,6 +62,7 @@ describe("loadRuntimePet", () => {
 
     expect(runtime.petId).toBe("pet-user-1");
     expect(ports.readInstalledManifest).toHaveBeenCalledWith("pet-user-1");
+    expect(ports.installedAssetUrl).toHaveBeenCalledWith("pet-user-1", "body.png");
     expect(ports.createBuiltinTransport).not.toHaveBeenCalled();
     expect(ports.createRuntime).toHaveBeenCalledWith(
       "pet-user-1",
@@ -123,9 +128,10 @@ describe("loadRuntimePet", () => {
     )).resolves.toMatchObject({ petId: "pet-user-1" });
 
     expect(createPreviewRuntime).toHaveBeenCalledWith(
-      "pet-asset://localhost/pet-user-1/assets/body.png",
+      "http://pet-asset.localhost/pet-user-1/assets/body.png",
       expect.objectContaining({ root }),
     );
+    expect(ports.installedAssetUrl).toHaveBeenCalledWith("pet-user-1", "body.png");
   });
 
   it("forwards diagnostics and active-surface callbacks to the renderer runtime", async () => {

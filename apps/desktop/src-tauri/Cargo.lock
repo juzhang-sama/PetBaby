@@ -613,6 +613,7 @@ version = "0.0.0"
 dependencies = [
  "base64 0.22.1",
  "image",
+ "percent-encoding",
  "reqwest 0.12.22",
  "rusqlite",
  "serde",

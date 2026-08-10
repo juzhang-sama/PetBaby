@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { StaticPngRenderer } from "./static-png-renderer";
+import { loadBrowserImage, StaticPngRenderer } from "./static-png-renderer";
 
 function createHarness() {
   const context = {
@@ -22,6 +22,27 @@ function createHarness() {
 }
 
 describe("StaticPngRenderer", () => {
+  it("loads browser images anonymously so their canvases remain readable", async () => {
+    const decode = vi.fn(async () => undefined);
+    class TestImage {
+      crossOrigin: string | null = null;
+      src = "";
+      width = 200;
+      height = 400;
+      decode = decode;
+    }
+    vi.stubGlobal("Image", TestImage);
+
+    const image = await loadBrowserImage(
+      "http://pet-asset.localhost/pet-1/assets/body.png",
+    ) as HTMLImageElement;
+
+    expect(image.crossOrigin).toBe("anonymous");
+    expect(image.src).toBe("http://pet-asset.localhost/pet-1/assets/body.png");
+    expect(decode).toHaveBeenCalledOnce();
+    vi.unstubAllGlobals();
+  });
+
   it("destroy is idempotent and clears visibility", async () => {
     const { renderer } = createHarness();
     await renderer.load({ kind: "static-png", imageUrl: "pet.png" });

@@ -24,9 +24,14 @@ import {
 } from "./runtime/pet-switch-protocol";
 import { assertVisibleFrame } from "./runtime/render-surface-probe";
 import { loadRuntimePet } from "./runtime/runtime-pet-loader";
+import { loadStartupRuntime } from "./runtime/startup-runtime-recovery";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
+
+function tracePetRuntime(message: string): void {
+  void invoke("frontend_ping", { message: `pet-runtime: ${message}` }).catch(() => undefined);
+}
 
 if (isLive2DProbeMode(location.search)) {
   const result = await mountLive2DProbe(root);
@@ -36,8 +41,11 @@ if (isLive2DProbeMode(location.search)) {
   await mountLive2DPreview(root);
 } else {
   try {
+    tracePetRuntime("mount-start");
     await mountPet(root);
+    tracePetRuntime("mount-complete");
   } catch (error) {
+    tracePetRuntime(`mount-failed: ${errorMessage(error)}`);
     console.error("Pet mount failed", {
       petId: "unknown",
       manifestVersion: 0,
@@ -49,8 +57,10 @@ if (isLive2DProbeMode(location.search)) {
 
 async function mountPet(appRoot: HTMLElement): Promise<void> {
   const preferences = await loadPreferences();
+  tracePetRuntime("preferences-loaded");
   const petWindow = getCurrentWindow();
   await restoreWindowPlacement(petWindow, preferences);
+  tracePetRuntime("window-placement-restored");
 
   const rendererRoot = document.createElement("div");
   rendererRoot.className = "pet-render-host";
@@ -83,20 +93,34 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   };
 
   const activePetId = await invoke<string>("pet_get_active");
-  const initialDescriptor = await invoke<RuntimePetDescriptor>("pet_prepare_switch", { petId: activePetId });
+  tracePetRuntime(`active-pet: ${activePetId}`);
   let initialRuntime: MountedPetRuntime | undefined;
-  initialRuntime = await loadRuntimePet(
-    initialDescriptor,
-    document.createElement("div"),
-    undefined,
-    {
-      allowPreviewFallback: true,
-      diagnose,
-      onSurfaceChanged: async () => {
-        if (initialRuntime && slot.refreshActiveSurface(initialRuntime)) await refreshHitRegion();
-      },
+  const startup = await loadStartupRuntime(activePetId, {
+    prepare: async (petId) => {
+      const descriptor = await invoke<RuntimePetDescriptor>("pet_prepare_switch", { petId });
+      tracePetRuntime(`descriptor-prepared: ${descriptor.source}`);
+      return descriptor;
     },
-  );
+    load: (descriptor) => loadRuntimePet(
+      descriptor,
+      document.createElement("div"),
+      undefined,
+      {
+        allowPreviewFallback: true,
+        diagnose,
+        onSurfaceChanged: async () => {
+          if (initialRuntime && slot.refreshActiveSurface(initialRuntime)) await refreshHitRegion();
+        },
+      },
+    ),
+    commit: (petId) => invoke("pet_commit_switch", { petId }),
+    onRecovery: (petId, error) => {
+      tracePetRuntime(`recovering-to-builtin: ${petId}: ${errorMessage(error)}`);
+    },
+  });
+  initialRuntime = startup.runtime;
+  if (startup.recoveredToBuiltin) tracePetRuntime("recovered-to-builtin");
+  tracePetRuntime(`runtime-loaded: ${initialRuntime.kind()}`);
   slot = new PetRuntimeSlot(rendererRoot, initialRuntime);
 
   const windowMotion = new WindowMotionController({
@@ -130,6 +154,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
     }),
   });
   await stage.mount(rendererRoot);
+  tracePetRuntime("stage-mounted");
 
   const coordinator = new PetSwitchCoordinator(slot, {
     prepare: (petId) => invoke("pet_prepare_switch", { petId }),
@@ -156,6 +181,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
     const result = await coordinator.switch(payload);
     await emitTo("settings", PET_SWITCH_RESULT, result);
   });
+  tracePetRuntime("switch-listener-ready");
 
   let hiddenForFullscreen = false;
   window.setInterval(async () => {
