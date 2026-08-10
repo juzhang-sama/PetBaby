@@ -6,6 +6,19 @@ export type InvokePort = <T>(
   args?: Record<string, unknown>,
 ) => Promise<T>;
 
+export interface UploadJobRecord {
+  jobId: string;
+  petId: string;
+  sessionId: string | null;
+  prompt: string;
+  refSha256: string;
+  taskId: string | null;
+  status: string;
+  resultUrl: string | null;
+  error: string | null;
+  createdAt: string;
+}
+
 export function createCreationApi(invoke: InvokePort) {
   return {
     start: (method: "upload" | "composer") =>
@@ -17,6 +30,20 @@ export function createCreationApi(invoke: InvokePort) {
       invoke<CreationSnapshot>("creation_set_name", { sessionId, displayName }),
     abandon: (sessionId: string) =>
       invoke<void>("creation_abandon", { sessionId }),
+    uploadStart: (
+      sessionId: string,
+      prompt: string,
+      refPngB64: string,
+      refSha256: string,
+    ) =>
+      invoke<string>("creation_upload_start", {
+        sessionId,
+        prompt,
+        refPngB64,
+        refSha256,
+      }),
+    uploadJobs: (sessionId: string) =>
+      invoke<UploadJobRecord[]>("creation_upload_jobs", { sessionId }),
   };
 }
 

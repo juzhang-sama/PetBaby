@@ -1,5 +1,8 @@
 use crate::creation::profiles;
+use crate::creation::StandardCandidate;
 use crate::storage::Storage;
+use rusqlite::OptionalExtension;
+use std::path::Path;
 use std::sync::{Arc, Mutex};
 
 pub type SharedCreationStore = Arc<Mutex<CreationStore>>;
@@ -39,6 +42,356 @@ impl CreationStore {
         Ok(())
     }
 
+    pub fn upload_session_pet(&self, session_id: &str) -> Result<String, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        let session: Option<(String, String, String)> = db
+            .query_row(
+                "SELECT pet_id, method, status FROM creation_sessions WHERE session_id=?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (pet_id, method, status) = session
+            .ok_or_else(|| format!("creation session not found or abandoned: {session_id}"))?;
+        if method != "upload" {
+            return Err("generation requires an upload session".into());
+        }
+        if matches!(status.as_str(), "completed" | "abandoned") {
+            return Err("cannot generate for a terminal upload session".into());
+        }
+        Ok(pet_id)
+    }
+
+    pub fn create_job_for_session(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        prompt: &str,
+        ref_sha256: &str,
+        task_id: Option<&str>,
+    ) -> Result<(), String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let session: Option<(String, String, String)> = tx
+            .query_row(
+                "SELECT pet_id, method, status FROM creation_sessions WHERE session_id=?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (pet_id, method, status) = session
+            .ok_or_else(|| format!("creation session not found or abandoned: {session_id}"))?;
+        if method != "upload" {
+            return Err("generation requires an upload session".into());
+        }
+        if matches!(status.as_str(), "completed" | "abandoned") {
+            return Err("cannot generate for a terminal upload session".into());
+        }
+        let current_candidate: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM appearance_variants WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if current_candidate != 0 {
+            return Err("upload session already has a current candidate".into());
+        }
+        let active_jobs: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM generation_jobs
+                 WHERE session_id=?1 AND status IN ('pending','running')",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if active_jobs != 0 {
+            return Err("upload session already has an active upload job".into());
+        }
+        let now = profiles::now_iso();
+        tx.execute(
+            "INSERT INTO generation_jobs
+             (job_id, pet_id, session_id, prompt, ref_sha256, task_id, status, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+            rusqlite::params![job_id, pet_id, session_id, prompt, ref_sha256, task_id, now],
+        )
+        .map_err(|error| error.to_string())?;
+        let affected = tx
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='draft', last_stable_status='draft', current_step='generating',
+                     error=NULL, updated_at=?2
+                 WHERE session_id=?1 AND pet_id=?3 AND method='upload'
+                   AND status NOT IN ('completed','abandoned')",
+                rusqlite::params![session_id, now, pet_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("upload session is not bound to its reserved pet".into());
+        }
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn attach_task_to_upload_job(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        pet_id: &str,
+        task_id: &str,
+    ) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        let affected = db
+            .execute(
+                "UPDATE generation_jobs SET task_id=?4, status='running'
+                 WHERE job_id=?1 AND session_id=?2 AND pet_id=?3 AND status='pending'",
+                rusqlite::params![job_id, session_id, pet_id, task_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("upload job ownership changed before task attachment".into());
+        }
+        Ok(())
+    }
+
+    pub fn record_upload_candidate(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        raw_path: &str,
+        cutout_path: &str,
+        motion_profile_path: &str,
+        quality: &str,
+    ) -> Result<StandardCandidate, String> {
+        self.record_upload_candidate_transaction(
+            job_id,
+            session_id,
+            raw_path,
+            cutout_path,
+            motion_profile_path,
+            quality,
+            None,
+        )
+    }
+
+    pub fn record_upload_candidate_with_result_url(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        raw_path: &str,
+        cutout_path: &str,
+        motion_profile_path: &str,
+        quality: &str,
+        result_url: &str,
+    ) -> Result<StandardCandidate, String> {
+        self.record_upload_candidate_transaction(
+            job_id,
+            session_id,
+            raw_path,
+            cutout_path,
+            motion_profile_path,
+            quality,
+            Some(result_url),
+        )
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    fn record_upload_candidate_transaction(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        raw_path: &str,
+        cutout_path: &str,
+        motion_profile_path: &str,
+        quality: &str,
+        result_url: Option<&str>,
+    ) -> Result<StandardCandidate, String> {
+        let (raw_path, cutout_path, motion_profile_path) =
+            validate_candidate_paths(job_id, raw_path, cutout_path, motion_profile_path)?;
+        let candidate_id = crate::creation::domain::new_entity_id("candidate");
+        let created_at = profiles::now_iso();
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let ownership: Option<(String, String, String, String)> = tx
+            .query_row(
+                "SELECT gj.pet_id, gj.session_id, cs.pet_id, cs.method
+                 FROM generation_jobs gj
+                 JOIN creation_sessions cs ON cs.session_id=gj.session_id
+                 WHERE gj.job_id=?1",
+                [job_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (job_pet_id, job_session_id, session_pet_id, method) =
+            ownership.ok_or_else(|| "upload job ownership was not found".to_string())?;
+        if job_session_id != session_id || job_pet_id != session_pet_id {
+            return Err("upload job is not owned by this session and pet".into());
+        }
+        if method != "upload" {
+            return Err("candidate requires an upload session".into());
+        }
+        let current_candidate: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM appearance_variants WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if current_candidate != 0 {
+            return Err("upload session already has a current candidate".into());
+        }
+        tx.execute(
+            "INSERT INTO appearance_variants
+             (variant_id, pet_id, job_id, session_id, image_path, cutout_path,
+              motion_profile_path, quality, accepted, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+            rusqlite::params![
+                candidate_id,
+                job_pet_id,
+                job_id,
+                session_id,
+                raw_path,
+                cutout_path,
+                motion_profile_path,
+                quality,
+                created_at
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        let job_affected = tx
+            .execute(
+                "UPDATE generation_jobs SET status='success', result_url=?4, error=NULL
+                 WHERE job_id=?1 AND session_id=?2 AND pet_id=?3
+                   AND status IN ('pending','running')",
+                rusqlite::params![job_id, session_id, job_pet_id, result_url],
+            )
+            .map_err(|error| error.to_string())?;
+        if job_affected != 1 {
+            return Err("upload job is not pending for this session".into());
+        }
+        let session_affected = tx
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='candidateReady', last_stable_status='candidateReady',
+                     current_step='review', error=NULL, updated_at=?3
+                 WHERE session_id=?1 AND pet_id=?2 AND method='upload'
+                   AND status NOT IN ('completed','abandoned')",
+                rusqlite::params![session_id, job_pet_id, created_at],
+            )
+            .map_err(|error| error.to_string())?;
+        if session_affected != 1 {
+            return Err("upload session is not eligible for a candidate".into());
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(StandardCandidate {
+            candidate_id,
+            session_id: session_id.into(),
+            pet_id: job_pet_id,
+            job_id: Some(job_id.into()),
+            body_path: cutout_path,
+            motion_profile_path,
+            quality: quality.into(),
+            created_at,
+        })
+    }
+
+    pub fn fail_upload_job(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        pet_id: &str,
+        error: &str,
+    ) -> Result<(), String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let ownership: Option<(String, String, String, String)> = tx
+            .query_row(
+                "SELECT gj.pet_id, gj.session_id, cs.pet_id, cs.method
+                 FROM generation_jobs gj
+                 JOIN creation_sessions cs ON cs.session_id=gj.session_id
+                 WHERE gj.job_id=?1",
+                [job_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+            )
+            .optional()
+            .map_err(|db_error| db_error.to_string())?;
+        let (actual_pet_id, actual_session_id, session_pet_id, method) =
+            ownership.ok_or_else(|| "upload job ownership was not found".to_string())?;
+        if actual_session_id != session_id || actual_pet_id != pet_id || session_pet_id != pet_id {
+            return Err("upload job is not owned by this session and pet".into());
+        }
+        if method != "upload" {
+            return Err("job failure requires an upload session".into());
+        }
+        let job_affected = tx
+            .execute(
+                "UPDATE generation_jobs SET status='failed', result_url=NULL, error=?4
+                 WHERE job_id=?1 AND session_id=?2 AND pet_id=?3
+                   AND status IN ('pending','running')",
+                rusqlite::params![job_id, session_id, pet_id, error],
+            )
+            .map_err(|db_error| db_error.to_string())?;
+        if job_affected != 1 {
+            return Err("upload job is not pending for failure recovery".into());
+        }
+        let session_affected = tx
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='retryableFailure', last_stable_status='draft',
+                     current_step='upload', error=?3, updated_at=?4
+                 WHERE session_id=?1 AND pet_id=?2 AND method='upload'
+                   AND status NOT IN ('completed','abandoned')",
+                rusqlite::params![session_id, pet_id, error, profiles::now_iso()],
+            )
+            .map_err(|db_error| db_error.to_string())?;
+        if session_affected != 1 {
+            return Err("upload session is not eligible for failure recovery".into());
+        }
+        tx.commit().map_err(|db_error| db_error.to_string())
+    }
+
+    pub fn candidate_for_session(&self, session_id: &str) -> Result<StandardCandidate, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.query_row(
+            "SELECT av.variant_id, av.session_id, av.pet_id, av.job_id, av.cutout_path,
+                    av.motion_profile_path, av.quality, av.created_at
+             FROM appearance_variants av
+             JOIN generation_jobs gj ON gj.job_id=av.job_id
+             JOIN creation_sessions cs ON cs.session_id=av.session_id
+             WHERE av.session_id=?1 AND av.pet_id=cs.pet_id
+               AND gj.session_id=av.session_id AND gj.pet_id=av.pet_id
+               AND gj.status='success' AND cs.status!='abandoned'
+               AND av.cutout_path IS NOT NULL AND av.motion_profile_path IS NOT NULL
+               AND av.motion_profile_path!=''
+             ORDER BY av.created_at DESC, av.rowid DESC LIMIT 1",
+            [session_id],
+            |row| {
+                Ok(StandardCandidate {
+                    candidate_id: row.get(0)?,
+                    session_id: row.get(1)?,
+                    pet_id: row.get(2)?,
+                    job_id: row.get(3)?,
+                    body_path: row.get(4)?,
+                    motion_profile_path: row.get(5)?,
+                    quality: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
+            },
+        )
+        .map_err(|error| format!("candidate is not available for creation session: {error}"))
+    }
+
     pub fn update_job_status(
         &self,
         job_id: &str,
@@ -54,6 +407,31 @@ impl CreationStore {
         )
         .map_err(|error| error.to_string())?;
         Ok(())
+    }
+
+    pub fn job(&self, job_id: &str) -> Result<JobRecord, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.query_row(
+            "SELECT job_id, pet_id, session_id, prompt, ref_sha256, task_id, status,
+                    result_url, error, created_at
+             FROM generation_jobs WHERE job_id=?1",
+            [job_id],
+            |row| {
+                Ok(JobRecord {
+                    job_id: row.get(0)?,
+                    pet_id: row.get(1)?,
+                    session_id: row.get(2)?,
+                    prompt: row.get(3)?,
+                    ref_sha256: row.get(4)?,
+                    task_id: row.get(5)?,
+                    status: row.get(6)?,
+                    result_url: row.get(7)?,
+                    error: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            },
+        )
+        .map_err(|error| format!("generation job not found: {error}"))
     }
 
     pub fn record_candidate(
@@ -212,7 +590,7 @@ impl CreationStore {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT job_id, pet_id, prompt, ref_sha256, task_id, status, result_url, error, created_at
+                "SELECT job_id, pet_id, session_id, prompt, ref_sha256, task_id, status, result_url, error, created_at
                  FROM generation_jobs WHERE status IN ('pending','running')",
             )
             .map_err(|error| error.to_string())?;
@@ -221,13 +599,14 @@ impl CreationStore {
                 Ok(JobRecord {
                     job_id: row.get(0)?,
                     pet_id: row.get(1)?,
-                    prompt: row.get(2)?,
-                    ref_sha256: row.get(3)?,
-                    task_id: row.get(4)?,
-                    status: row.get(5)?,
-                    result_url: row.get(6)?,
-                    error: row.get(7)?,
-                    created_at: row.get(8)?,
+                    session_id: row.get(2)?,
+                    prompt: row.get(3)?,
+                    ref_sha256: row.get(4)?,
+                    task_id: row.get(5)?,
+                    status: row.get(6)?,
+                    result_url: row.get(7)?,
+                    error: row.get(8)?,
+                    created_at: row.get(9)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -242,7 +621,7 @@ impl CreationStore {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT job_id, pet_id, prompt, ref_sha256, task_id, status, result_url, error, created_at
+                "SELECT job_id, pet_id, session_id, prompt, ref_sha256, task_id, status, result_url, error, created_at
                  FROM generation_jobs WHERE pet_id = ?1 ORDER BY created_at",
             )
             .map_err(|error| error.to_string())?;
@@ -251,13 +630,14 @@ impl CreationStore {
                 Ok(JobRecord {
                     job_id: row.get(0)?,
                     pet_id: row.get(1)?,
-                    prompt: row.get(2)?,
-                    ref_sha256: row.get(3)?,
-                    task_id: row.get(4)?,
-                    status: row.get(5)?,
-                    result_url: row.get(6)?,
-                    error: row.get(7)?,
-                    created_at: row.get(8)?,
+                    session_id: row.get(2)?,
+                    prompt: row.get(3)?,
+                    ref_sha256: row.get(4)?,
+                    task_id: row.get(5)?,
+                    status: row.get(6)?,
+                    result_url: row.get(7)?,
+                    error: row.get(8)?,
+                    created_at: row.get(9)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -267,6 +647,92 @@ impl CreationStore {
         }
         Ok(jobs)
     }
+
+    pub fn upload_jobs(&self, session_id: &str) -> Result<Vec<JobRecord>, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        let mut statement = db
+            .prepare(
+                "SELECT job_id, pet_id, session_id, prompt, ref_sha256, task_id, status,
+                        result_url, error, created_at
+                 FROM generation_jobs WHERE session_id=?1 ORDER BY created_at, rowid",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([session_id], |row| {
+                Ok(JobRecord {
+                    job_id: row.get(0)?,
+                    pet_id: row.get(1)?,
+                    session_id: row.get(2)?,
+                    prompt: row.get(3)?,
+                    ref_sha256: row.get(4)?,
+                    task_id: row.get(5)?,
+                    status: row.get(6)?,
+                    result_url: row.get(7)?,
+                    error: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        rows.collect::<Result<Vec<_>, _>>()
+            .map_err(|error| error.to_string())
+    }
+}
+
+fn validate_candidate_paths(
+    job_id: &str,
+    raw_path: &str,
+    cutout_path: &str,
+    motion_profile_path: &str,
+) -> Result<(String, String, String), String> {
+    let expected = [
+        (raw_path, "raw.png"),
+        (cutout_path, "cutout.png"),
+        (motion_profile_path, "motion-profile.json"),
+    ];
+    let mut canonical_paths = Vec::with_capacity(expected.len());
+    let mut canonical_job_dir = None;
+    for (value, expected_name) in expected {
+        let path = Path::new(value);
+        if path.file_name().and_then(|name| name.to_str()) != Some(expected_name) {
+            return Err(format!("candidate path must end with {expected_name}"));
+        }
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("candidate file {expected_name} is missing: {error}"))?;
+        if metadata.file_type().is_symlink() || !metadata.is_file() {
+            return Err(format!(
+                "candidate file {expected_name} is not a regular file"
+            ));
+        }
+        let parent = path
+            .parent()
+            .ok_or_else(|| "candidate path has no job directory".to_string())?;
+        let parent_metadata = std::fs::symlink_metadata(parent)
+            .map_err(|error| format!("candidate job directory is missing: {error}"))?;
+        if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
+            return Err("candidate job directory cannot be a symbolic link".into());
+        }
+        if parent.file_name().and_then(|name| name.to_str()) != Some(job_id) {
+            return Err("candidate path is outside the matching job directory".into());
+        }
+        let canonical_parent = parent.canonicalize().map_err(|error| error.to_string())?;
+        if let Some(expected_parent) = canonical_job_dir.as_ref() {
+            if expected_parent != &canonical_parent {
+                return Err("candidate files do not share one job directory".into());
+            }
+        } else {
+            canonical_job_dir = Some(canonical_parent.clone());
+        }
+        let canonical_path = path.canonicalize().map_err(|error| error.to_string())?;
+        if canonical_path.parent() != Some(canonical_parent.as_path()) {
+            return Err("candidate path escapes its job directory".into());
+        }
+        canonical_paths.push(canonical_path.to_string_lossy().into_owned());
+    }
+    Ok((
+        canonical_paths.remove(0),
+        canonical_paths.remove(0),
+        canonical_paths.remove(0),
+    ))
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -274,6 +740,7 @@ impl CreationStore {
 pub struct JobRecord {
     pub job_id: String,
     pub pet_id: String,
+    pub session_id: Option<String>,
     pub prompt: String,
     pub ref_sha256: String,
     pub task_id: Option<String>,

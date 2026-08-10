@@ -53,4 +53,29 @@ describe("creationApi", () => {
       sessionId: "session-1",
     });
   });
+
+  it("starts upload generation with camelCase session ownership arguments", async () => {
+    const invoke = vi.fn().mockResolvedValue("job-1");
+    const api = createCreationApi(invoke);
+
+    await api.uploadStart("session-1", "fluffy cat", "cG5n", "sha-1");
+
+    expect(invoke).toHaveBeenCalledWith("creation_upload_start", {
+      sessionId: "session-1",
+      prompt: "fluffy cat",
+      refPngB64: "cG5n",
+      refSha256: "sha-1",
+    });
+  });
+
+  it("lists upload jobs by camelCase sessionId", async () => {
+    const invoke = vi.fn().mockResolvedValue([]);
+    const api = createCreationApi(invoke);
+
+    await api.uploadJobs("session-1");
+
+    expect(invoke).toHaveBeenCalledWith("creation_upload_jobs", {
+      sessionId: "session-1",
+    });
+  });
 });

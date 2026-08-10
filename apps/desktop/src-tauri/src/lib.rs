@@ -500,6 +500,30 @@ fn gen_start(
 }
 
 #[tauri::command]
+fn creation_upload_start(
+    manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
+    session_id: String,
+    prompt: String,
+    ref_png_b64: String,
+    ref_sha256: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    let png = base64::engine::general_purpose::STANDARD
+        .decode(ref_png_b64)
+        .map_err(|error| format!("bad base64: {error}"))?;
+    manager.start_for_session(&session_id, &prompt, &png, &ref_sha256)
+}
+
+#[tauri::command]
+fn creation_upload_jobs(
+    store: tauri::State<'_, creation::SharedCreationStore>,
+    session_id: String,
+) -> Result<Vec<creation::JobRecord>, String> {
+    let store = store.lock().map_err(|_| "store lock poisoned")?;
+    store.upload_jobs(&session_id)
+}
+
+#[tauri::command]
 fn gen_cancel(
     manager: tauri::State<'_, generation::tasks::SharedGenerationManager>,
     job_id: String,
@@ -822,6 +846,8 @@ pub fn run() {
             creation_snapshot,
             creation_set_name,
             creation_abandon,
+            creation_upload_start,
+            creation_upload_jobs,
             gen_start,
             gen_cancel,
             gen_list,
