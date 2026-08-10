@@ -27,6 +27,8 @@ pub struct CreationFinalizationService {
     jobs_root: PathBuf,
     mutation_gate: SharedPetMutationGate,
     switch_transaction: SharedSwitchTransaction,
+    #[cfg(test)]
+    after_owner_pin_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
 
 #[derive(Debug)]
@@ -56,6 +58,11 @@ struct FinalizationRecord {
     manifest_path: Option<String>,
 }
 
+struct SafePetPaths {
+    assets_dir: PathBuf,
+    assets_exist: bool,
+}
+
 impl CreationFinalizationService {
     pub fn new(
         storage: Arc<Mutex<Storage>>,
@@ -70,6 +77,8 @@ impl CreationFinalizationService {
             jobs_root,
             mutation_gate,
             switch_transaction,
+            #[cfg(test)]
+            after_owner_pin_hook: Mutex::new(None),
         }
     }
 
@@ -80,49 +89,21 @@ impl CreationFinalizationService {
             .switch_transaction
             .lock()
             .map_err(|_| "switch transaction lock poisoned")?;
-        let record = self.finalization_record(session_id)?;
-        self.validate_record(&record)?;
-
-        if record.status == "completed" {
-            if !record.accepted
-                || record.runtime_pet_id.as_deref() != Some(record.pet_id.as_str())
-                || record.manifest_path.is_none()
-            {
-                return Err("completed creation is missing its accepted runtime variant".into());
-            }
-            let expected_manifest = self.assets_dir(&record.pet_id).join("manifest.json");
-            if record.manifest_path.as_deref().map(Path::new) != Some(expected_manifest.as_path())
-                || !self.install_is_owned(&record)?
-            {
-                return Err("completed creation runtime manifest is not authoritative".into());
-            }
-            return Ok(prepared(&record, request_id, true));
+        let initial_record = self.finalization_record(session_id)?;
+        if initial_record.status == "completed" {
+            self.validate_record(&initial_record)?;
+            self.validate_completed_install(&initial_record)?;
+            return Ok(prepared(&initial_record, request_id, true));
         }
-        let retryable =
-            record.status == "retryableFailure" && record.last_stable_status == "candidateReady";
-        let resumable_finalizing = record.status == "finalizing"
-            && record.runtime_pet_id.as_deref() == Some(record.pet_id.as_str())
-            && record.manifest_path.is_some();
-        if record.status != "candidateReady" && !retryable && !resumable_finalizing {
-            return Err(format!(
-                "creation session is not ready for finalization: {}",
-                record.status
-            ));
-        }
-        self.validate_candidate_paths(&record)?;
-        if self.assets_dir(&record.pet_id).exists() && !resumable_finalizing {
-            return Err("creation pet assets already exist and require exact recovery".into());
-        }
-        if resumable_finalizing && !self.install_is_owned(&record)? {
-            return Err("finalizing runtime assets are not owned by this candidate".into());
-        }
+        validate_component(&initial_record.pet_id, "pet id")?;
+        let target_pet_id = initial_record.pet_id.clone();
 
         self.mutation_gate
-            .begin(request_id, MutationKind::Switch, &record.pet_id)?;
+            .begin(request_id, MutationKind::Switch, &target_pet_id)?;
         let owner_pin =
             match self
                 .mutation_gate
-                .assert_owner(request_id, MutationKind::Switch, &record.pet_id)
+                .assert_owner(request_id, MutationKind::Switch, &target_pet_id)
             {
                 Ok(pin) => pin,
                 Err(error) => {
@@ -130,6 +111,73 @@ impl CreationFinalizationService {
                     return Err(error);
                 }
             };
+        #[cfg(test)]
+        if let Some(hook) = self.after_owner_pin_hook.lock().unwrap().take() {
+            hook();
+        }
+
+        let record = match self.finalization_record(session_id).and_then(|record| {
+            if record.pet_id != target_pet_id {
+                return Err("creation session target changed while acquiring the gate".into());
+            }
+            self.validate_record(&record)?;
+            Ok(record)
+        }) {
+            Ok(record) => record,
+            Err(error) => {
+                drop(owner_pin);
+                let finish_warning = self
+                    .mutation_gate
+                    .finish(request_id)
+                    .err()
+                    .map(|warning| format!("; gate release failed: {warning}"))
+                    .unwrap_or_default();
+                return Err(format!("{error}{finish_warning}"));
+            }
+        };
+        if record.status == "completed" {
+            let result = self
+                .validate_completed_install(&record)
+                .map(|()| prepared(&record, request_id, true));
+            drop(owner_pin);
+            self.mutation_gate.finish(request_id)?;
+            return result;
+        }
+        let preflight = (|| {
+            let retryable = record.status == "retryableFailure"
+                && record.last_stable_status == "candidateReady";
+            let resumable_finalizing = record.status == "finalizing"
+                && record.runtime_pet_id.as_deref() == Some(record.pet_id.as_str())
+                && record.manifest_path.is_some();
+            if record.status != "candidateReady" && !retryable && !resumable_finalizing {
+                return Err(format!(
+                    "creation session is not ready for finalization: {}",
+                    record.status
+                ));
+            }
+            self.validate_candidate_paths(&record)?;
+            let safe_paths = self.safe_pet_paths(&record.pet_id)?;
+            if safe_paths.assets_exist && !resumable_finalizing {
+                return Err("creation pet assets already exist and require exact recovery".into());
+            }
+            if resumable_finalizing && !self.install_is_owned(&record)? {
+                return Err("finalizing runtime assets are not owned by this candidate".into());
+            }
+            Ok(resumable_finalizing)
+        })();
+        let resumable_finalizing = match preflight {
+            Ok(resumable) => resumable,
+            Err(error) => {
+                drop(owner_pin);
+                let finish_warning = self
+                    .mutation_gate
+                    .finish(request_id)
+                    .err()
+                    .map(|warning| format!("; gate release failed: {warning}"))
+                    .unwrap_or_default();
+                return Err(format!("{error}{finish_warning}"));
+            }
+        };
 
         let result: Result<PreparedCreation, String> = (|| {
             if resumable_finalizing {
@@ -143,7 +191,7 @@ impl CreationFinalizationService {
                 return Ok(prepared(&record, request_id, false));
             }
             self.mark_finalizing(&record)?;
-            let assets_dir = self.assets_dir(&record.pet_id);
+            let assets_dir = self.safe_pet_paths(&record.pet_id)?.assets_dir;
             let compiled = compile_animated_image(
                 &record.pet_id,
                 &record.candidate_id,
@@ -151,6 +199,7 @@ impl CreationFinalizationService {
                 &record.motion_profile_path,
                 &assets_dir,
             )?;
+            self.safe_pet_paths(&record.pet_id)?;
             self.record_runtime_variant(&record, &compiled.manifest_path)?;
             Ok(prepared(&record, request_id, false))
         })();
@@ -189,6 +238,7 @@ impl CreationFinalizationService {
             return Err("cannot abort an abandoned creation session".into());
         }
         self.validate_record(&record)?;
+        self.safe_pet_paths(&record.pet_id)?;
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let tx = storage
             .db
@@ -440,6 +490,22 @@ impl CreationFinalizationService {
         Ok(())
     }
 
+    fn validate_completed_install(&self, record: &FinalizationRecord) -> Result<(), String> {
+        if !record.accepted
+            || record.runtime_pet_id.as_deref() != Some(record.pet_id.as_str())
+            || record.manifest_path.is_none()
+        {
+            return Err("completed creation is missing its accepted runtime variant".into());
+        }
+        let expected_manifest = self.assets_dir(&record.pet_id).join("manifest.json");
+        if record.manifest_path.as_deref().map(Path::new) != Some(expected_manifest.as_path())
+            || !self.install_is_owned(record)?
+        {
+            return Err("completed creation runtime manifest is not authoritative".into());
+        }
+        Ok(())
+    }
+
     fn validate_candidate_paths(&self, record: &FinalizationRecord) -> Result<(), String> {
         let (root, session_dir, expected_dir, expected_body_name) =
             if let Some(job_id) = &record.job_id {
@@ -564,7 +630,10 @@ impl CreationFinalizationService {
         record: &FinalizationRecord,
         manifest_path: &str,
     ) -> Result<(), String> {
-        let expected_manifest = self.assets_dir(&record.pet_id).join("manifest.json");
+        let expected_manifest = self
+            .safe_pet_paths(&record.pet_id)?
+            .assets_dir
+            .join("manifest.json");
         if Path::new(manifest_path) != expected_manifest {
             return Err("compiler returned a manifest outside the target pet assets".into());
         }
@@ -697,14 +766,11 @@ impl CreationFinalizationService {
     }
 
     fn install_is_owned(&self, record: &FinalizationRecord) -> Result<bool, String> {
-        let assets_dir = self.assets_dir(&record.pet_id);
-        if !assets_dir.exists() {
+        let safe_paths = self.safe_pet_paths(&record.pet_id)?;
+        if !safe_paths.assets_exist {
             return Ok(false);
         }
-        let metadata = std::fs::symlink_metadata(&assets_dir).map_err(|error| error.to_string())?;
-        if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
-            return Err("pet assets are not a regular owned directory".into());
-        }
+        let assets_dir = safe_paths.assets_dir;
         let manifest_path = assets_dir.join("manifest.json");
         let manifest_metadata = std::fs::symlink_metadata(&manifest_path)
             .map_err(|_| "existing pet assets have no ownership manifest".to_string())?;
@@ -733,7 +799,69 @@ impl CreationFinalizationService {
         if !self.install_is_owned(record)? {
             return Ok(());
         }
-        std::fs::remove_dir_all(self.assets_dir(&record.pet_id)).map_err(|error| error.to_string())
+        let safe_paths = self.safe_pet_paths(&record.pet_id)?;
+        if !safe_paths.assets_exist {
+            return Err("owned pet assets changed before cleanup".into());
+        }
+        std::fs::remove_dir_all(safe_paths.assets_dir).map_err(|error| error.to_string())
+    }
+
+    fn safe_pet_paths(&self, pet_id: &str) -> Result<SafePetPaths, String> {
+        validate_component(pet_id, "pet id")?;
+        let pets_root = self.app_data_dir.join("pets");
+        let root_metadata = std::fs::symlink_metadata(&pets_root)
+            .map_err(|error| format!("configured pets root is missing: {error}"))?;
+        if crate::platform::is_link_or_reparse_point(&root_metadata) || !root_metadata.is_dir() {
+            return Err("configured pets root cannot be a link or reparse point".into());
+        }
+        let canonical_root = pets_root
+            .canonicalize()
+            .map_err(|error| format!("configured pets root cannot be resolved: {error}"))?;
+        let pet_dir = pets_root.join(pet_id);
+        let pet_metadata = match std::fs::symlink_metadata(&pet_dir) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("pet directory cannot be inspected: {error}")),
+        };
+        let Some(pet_metadata) = pet_metadata else {
+            return Ok(SafePetPaths {
+                assets_dir: pet_dir.join("assets"),
+                assets_exist: false,
+            });
+        };
+        if crate::platform::is_link_or_reparse_point(&pet_metadata) || !pet_metadata.is_dir() {
+            return Err("pet directory cannot be a link or reparse point".into());
+        }
+        let canonical_pet_dir = pet_dir
+            .canonicalize()
+            .map_err(|error| format!("pet directory cannot be resolved: {error}"))?;
+        if canonical_pet_dir.parent() != Some(canonical_root.as_path()) {
+            return Err("pet directory escapes the configured pets root".into());
+        }
+        let assets_dir = pet_dir.join("assets");
+        let assets_metadata = match std::fs::symlink_metadata(&assets_dir) {
+            Ok(metadata) => Some(metadata),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => None,
+            Err(error) => return Err(format!("pet assets cannot be inspected: {error}")),
+        };
+        let assets_exist = if let Some(metadata) = assets_metadata {
+            if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+                return Err("pet assets are not a regular owned directory".into());
+            }
+            let canonical_assets = assets_dir
+                .canonicalize()
+                .map_err(|error| format!("pet assets cannot be resolved: {error}"))?;
+            if canonical_assets.parent() != Some(canonical_pet_dir.as_path()) {
+                return Err("pet assets escape their authoritative pet directory".into());
+            }
+            true
+        } else {
+            false
+        };
+        Ok(SafePetPaths {
+            assets_dir,
+            assets_exist,
+        })
     }
 
     fn pet_dir(&self, pet_id: &str) -> PathBuf {
@@ -832,11 +960,23 @@ mod tests {
         body_path: PathBuf,
     }
 
+    struct ExternalTestDirectory(PathBuf);
+
+    impl Drop for ExternalTestDirectory {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.0);
+        }
+    }
+
     impl FinalizationHarness {
         fn candidate_ready() -> Self {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
             let root = std::env::temp_dir().join(format!(
-                "desktop-pet-finalization-{}-{n}",
+                "desktop-pet-finalization-{}-{n}-{unique}",
                 std::process::id()
             ));
             let pets_dir = root.join("pets");
@@ -961,6 +1101,38 @@ mod tests {
 
         fn assets(&self) -> PathBuf {
             self.root.join("pets").join(&self.pet_id).join("assets")
+        }
+
+        fn external_directory(&self, label: &str) -> ExternalTestDirectory {
+            let name = self
+                .root
+                .file_name()
+                .and_then(|value| value.to_str())
+                .unwrap();
+            let path = self.root.with_file_name(format!("{name}-{label}"));
+            std::fs::create_dir_all(&path).unwrap();
+            ExternalTestDirectory(path)
+        }
+
+        fn service_for_app_data(&self, app_data_dir: PathBuf) -> CreationFinalizationService {
+            CreationFinalizationService::new(
+                self.storage.clone(),
+                app_data_dir,
+                self.root.join("jobs"),
+                self.gate.clone(),
+                self.switch_transaction.clone(),
+            )
+        }
+
+        fn write_owned_install(&self, assets: &Path) {
+            compile_animated_image(
+                &self.pet_id,
+                &self.variant_id,
+                &self.body_path,
+                &self.body_path.parent().unwrap().join("motion-profile.json"),
+                assets,
+            )
+            .unwrap();
         }
 
         fn complete(&self) {
@@ -1220,6 +1392,72 @@ mod tests {
     }
 
     #[test]
+    fn prepare_reloads_the_authoritative_candidate_after_pinning_the_gate() {
+        let test = FinalizationHarness::candidate_ready();
+        let replacement_job = "job-after-pin";
+        let replacement_variant = "candidate-after-pin";
+        let replacement_dir = test.root.join("jobs").join(replacement_job);
+        std::fs::create_dir_all(&replacement_dir).unwrap();
+        let replacement_raw = replacement_dir.join("raw.png");
+        let replacement_body = replacement_dir.join("cutout.png");
+        let replacement_profile = replacement_dir.join("motion-profile.json");
+        std::fs::copy(&test.body_path, &replacement_raw).unwrap();
+        std::fs::copy(&test.body_path, &replacement_body).unwrap();
+        std::fs::copy(
+            test.body_path.parent().unwrap().join("motion-profile.json"),
+            &replacement_profile,
+        )
+        .unwrap();
+        let storage = test.storage.clone();
+        let session_id = test.session_id.clone();
+        let pet_id = test.pet_id.clone();
+        *test.service.after_owner_pin_hook.lock().unwrap() = Some(Box::new(move || {
+            let storage = storage.lock().unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO generation_jobs
+                     (job_id, pet_id, session_id, prompt, ref_sha256, status, created_at)
+                     VALUES (?1, ?2, ?3, 'replacement', 'hash', 'success', 'zzzz')",
+                    rusqlite::params![replacement_job, pet_id, session_id],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO appearance_variants
+                     (variant_id, pet_id, job_id, session_id, image_path, cutout_path,
+                      motion_profile_path, quality, accepted, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'acceptable', 0, 'zzzz')",
+                    rusqlite::params![
+                        replacement_variant,
+                        pet_id,
+                        replacement_job,
+                        session_id,
+                        replacement_raw.to_string_lossy(),
+                        replacement_body.to_string_lossy(),
+                        replacement_profile.to_string_lossy()
+                    ],
+                )
+                .unwrap();
+        }));
+
+        let prepared = test
+            .service
+            .prepare(&test.session_id, "req-reload-after-pin")
+            .unwrap();
+
+        assert_eq!(prepared.variant_id, replacement_variant);
+        let manifest = std::fs::read_to_string(test.assets().join("manifest.json")).unwrap();
+        let parsed = crate::runtime_assets::manifest::parse_manifest(&manifest).unwrap();
+        assert_eq!(
+            crate::runtime_assets::manifest::manifest_identity(&parsed).1,
+            replacement_variant
+        );
+        test.gate.finish("req-reload-after-pin").unwrap();
+    }
+
+    #[test]
     fn compile_failure_restores_retryable_candidate_and_releases_exact_owner() {
         let test = FinalizationHarness::candidate_ready();
         std::fs::write(&test.body_path, b"not an image").unwrap();
@@ -1238,7 +1476,7 @@ mod tests {
     }
 
     #[test]
-    fn installer_failure_preserves_non_owned_blocker_and_releases_exact_owner() {
+    fn non_directory_pet_path_is_rejected_without_changing_the_session() {
         let test = FinalizationHarness::candidate_ready();
         let pet_install = test.root.join("pets").join(&test.pet_id);
         std::fs::write(&pet_install, b"blocks the install directory").unwrap();
@@ -1248,7 +1486,7 @@ mod tests {
             .prepare(&test.session_id, "req-installer")
             .is_err());
 
-        assert_eq!(test.status().0, "retryableFailure");
+        assert_eq!(test.status().0, "candidateReady");
         assert_eq!(test.status().1, "candidateReady");
         assert_eq!(test.runtime_variant_count(), 0);
         assert_eq!(
@@ -1257,6 +1495,121 @@ mod tests {
         );
         assert!(test.body_path.exists());
         test.assert_gate_is_free("req-after-installer");
+    }
+
+    #[test]
+    fn prepare_rejects_a_pet_directory_junction_without_writing_outside_app_data() {
+        let test = FinalizationHarness::candidate_ready();
+        let outside = test.external_directory("prepare-pet-junction");
+        let sentinel = outside.0.join("sentinel.txt");
+        std::fs::write(&sentinel, "outside must stay untouched").unwrap();
+        crate::platform::create_directory_link(
+            &outside.0,
+            &test.root.join("pets").join(&test.pet_id),
+        );
+
+        let result = test.service.prepare(&test.session_id, "req-pet-junction");
+        if result.is_ok() {
+            test.gate.finish("req-pet-junction").unwrap();
+        }
+
+        assert!(result.unwrap_err().contains("link or reparse point"));
+        assert_eq!(test.status().0, "candidateReady");
+        assert!(!outside.0.join("assets").exists());
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "outside must stay untouched"
+        );
+        test.assert_gate_is_free("req-after-pet-junction");
+    }
+
+    #[test]
+    fn prepare_rejects_a_pets_root_junction_without_writing_its_target() {
+        let test = FinalizationHarness::candidate_ready();
+        let outside = test.external_directory("pets-root-junction");
+        let alternate_app_data = test.root.join("alternate-app-data");
+        std::fs::create_dir_all(&alternate_app_data).unwrap();
+        crate::platform::create_directory_link(&outside.0, &alternate_app_data.join("pets"));
+        let service = test.service_for_app_data(alternate_app_data);
+
+        let result = service.prepare(&test.session_id, "req-pets-root-junction");
+        if result.is_ok() {
+            test.gate.finish("req-pets-root-junction").unwrap();
+        }
+
+        assert!(result.unwrap_err().contains("link or reparse point"));
+        assert_eq!(test.status().0, "candidateReady");
+        assert!(!outside.0.join(&test.pet_id).exists());
+        test.assert_gate_is_free("req-after-pets-root-junction");
+    }
+
+    #[test]
+    fn abort_rejects_a_pet_directory_junction_before_database_or_external_cleanup() {
+        let test = FinalizationHarness::candidate_ready();
+        let outside = test.external_directory("abort-pet-junction");
+        let outside_assets = outside.0.join("assets");
+        test.write_owned_install(&outside_assets);
+        let sentinel = outside_assets.join("sentinel.txt");
+        std::fs::write(&sentinel, "owned-looking external assets").unwrap();
+        crate::platform::create_directory_link(
+            &outside.0,
+            &test.root.join("pets").join(&test.pet_id),
+        );
+
+        let error = test
+            .service
+            .abort(&test.session_id, "desktop timeout")
+            .unwrap_err();
+
+        assert!(error.contains("link or reparse point"));
+        assert_eq!(test.status().0, "candidateReady");
+        assert_eq!(test.runtime_variant_count(), 0);
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "owned-looking external assets"
+        );
+    }
+
+    #[test]
+    fn recover_rejects_a_pet_directory_junction_before_database_or_external_cleanup() {
+        let test = FinalizationHarness::candidate_ready();
+        let outside = test.external_directory("recover-pet-junction");
+        let outside_assets = outside.0.join("assets");
+        test.write_owned_install(&outside_assets);
+        let sentinel = outside_assets.join("sentinel.txt");
+        std::fs::write(&sentinel, "crash install outside app data").unwrap();
+        crate::platform::create_directory_link(
+            &outside.0,
+            &test.root.join("pets").join(&test.pet_id),
+        );
+        let manifest = test.assets().join("manifest.json");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(&format!(
+                "UPDATE creation_sessions SET status='finalizing', current_step='finalizing'
+                   WHERE session_id='{}';
+                 INSERT INTO variants (variant_id, pet_id, style_id, manifest_path, created_at)
+                   VALUES ('{}', '{}', 'animated-image-v1', '{}', '0');",
+                test.session_id,
+                test.variant_id,
+                test.pet_id,
+                manifest.to_string_lossy().replace('\\', "\\\\")
+            ))
+            .unwrap();
+
+        let report = test.service.recover().unwrap();
+
+        assert!(report.cleaned_session_ids.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("link or reparse point"));
+        assert_eq!(test.status().0, "finalizing");
+        assert_eq!(test.runtime_variant_count(), 1);
+        assert_eq!(
+            std::fs::read_to_string(&sentinel).unwrap(),
+            "crash install outside app data"
+        );
     }
 
     #[test]
