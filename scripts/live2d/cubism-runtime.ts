@@ -7,12 +7,19 @@ import type { ACubismMotion } from "@cubism-framework/motion/acubismmotion";
 import type { CubismMotion } from "@cubism-framework/motion/cubismmotion";
 import { CubismShaderManager_WebGL } from "@cubism-framework/rendering/cubismshader_webgl";
 import { resolveCubismResourceUrl } from "../../apps/desktop/src/runtime-live2d/cubism-adapter";
+import {
+  WebViewCubismFrameworkLifetime,
+  type CubismFrameworkLease,
+} from "../../apps/desktop/src/runtime-live2d/cubism-framework-lifetime";
 import type {
   CubismControlAdapter,
   CubismMotionOptions,
 } from "../../apps/desktop/src/runtime-live2d/cubism-model-loader";
 
-let frameworkUsers = 0;
+const frameworkLifetime = new WebViewCubismFrameworkLifetime(CubismFramework, {
+  logFunction: (message: string) => console.info(`[Cubism] ${message}`),
+  loggingLevel: LogLevel.LogLevel_Verbose,
+});
 
 class ProbeModel extends CubismUserModel {
   private readonly textures: WebGLTexture[] = [];
@@ -213,7 +220,7 @@ class OfficialCubismAdapter implements CubismControlAdapter {
   private model: ProbeModel | null = null;
   private width = 1;
   private height = 1;
-  private frameworkLease = false;
+  private frameworkLease: CubismFrameworkLease | null = null;
   private pendingParameters = new Map<string, number>();
 
   async initialize(canvas: HTMLCanvasElement): Promise<void> {
@@ -221,15 +228,7 @@ class OfficialCubismAdapter implements CubismControlAdapter {
     this.gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: false })
       ?? canvas.getContext("webgl", { alpha: true, premultipliedAlpha: false });
     if (!this.gl) throw new Error("WebGL 不可用");
-    if (!CubismFramework.isStarted() && !CubismFramework.startUp({
-      logFunction: (message: string) => console.info(`[Cubism] ${message}`),
-      loggingLevel: LogLevel.LogLevel_Verbose,
-    })) {
-      throw new Error("Cubism Framework 启动失败");
-    }
-    if (!CubismFramework.isInitialized()) CubismFramework.initialize();
-    frameworkUsers += 1;
-    this.frameworkLease = true;
+    this.frameworkLease ??= frameworkLifetime.acquire();
   }
 
   async loadModel(modelUrl: string): Promise<void> {
@@ -299,18 +298,8 @@ class OfficialCubismAdapter implements CubismControlAdapter {
     }
     this.model = null;
     this.pendingParameters.clear();
-    if (this.frameworkLease) {
-      this.frameworkLease = false;
-      frameworkUsers = Math.max(0, frameworkUsers - 1);
-    }
-    if (frameworkUsers === 0) {
-      try {
-        if (CubismFramework.isInitialized()) CubismFramework.dispose();
-        if (CubismFramework.isStarted()) CubismFramework.cleanUp();
-      } catch (error) {
-        console.error("Cubism Framework 释放失败", error);
-      }
-    }
+    this.frameworkLease?.release();
+    this.frameworkLease = null;
     this.gl = null;
     this.canvas = null;
   }
