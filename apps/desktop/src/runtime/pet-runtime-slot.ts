@@ -31,6 +31,10 @@ interface PendingRuntimeSwap {
   candidate: MountedPetRuntime;
   activated: boolean;
   settled: boolean;
+  surfaceRestored: boolean;
+  viewportRestored: boolean;
+  visibilityRestored: boolean;
+  candidateDestroyed: boolean;
 }
 
 export class PetRuntimeSlot implements PetRenderer {
@@ -58,7 +62,9 @@ export class PetRuntimeSlot implements PetRenderer {
     this.assertAlive();
     if (candidate === this.active) throw new Error("candidate is already active");
     if (this.pending) {
-      candidate.host.destroy();
+      if (candidate !== this.pending.previous && candidate !== this.pending.candidate) {
+        this.destroyQuietly(candidate);
+      }
       throw new Error("swap is already pending");
     }
     try {
@@ -79,6 +85,10 @@ export class PetRuntimeSlot implements PetRenderer {
       candidate,
       activated: false,
       settled: false,
+      surfaceRestored: false,
+      viewportRestored: false,
+      visibilityRestored: false,
+      candidateDestroyed: false,
     };
     this.pending = state;
 
@@ -89,10 +99,15 @@ export class PetRuntimeSlot implements PetRenderer {
         if (!this.isPending(state) || state.activated || this.active !== state.previous) {
           throw new Error("swap is not activatable");
         }
-        state.previous.host.setVisibility(false);
-        this.active = candidate;
-        this.root.replaceChildren(candidate.getSurface());
-        state.activated = true;
+        try {
+          state.previous.host.setVisibility(false);
+          this.root.replaceChildren(candidate.getSurface());
+          this.active = candidate;
+          state.activated = true;
+        } catch (error) {
+          this.abortActivation(state);
+          throw error;
+        }
       },
       commit: () => {
         if (state.settled || !this.isPending(state)) return;
@@ -103,16 +118,31 @@ export class PetRuntimeSlot implements PetRenderer {
       },
       rollback: () => {
         if (state.settled || !this.isPending(state)) return;
-        const expectedActive = state.activated ? candidate : state.previous;
+        const expectedActive = state.activated && !state.surfaceRestored
+          ? candidate
+          : state.previous;
         if (this.active !== expectedActive) throw new Error("swap is not rollbackable");
+        if (state.activated) {
+          if (!state.surfaceRestored) {
+            this.root.replaceChildren(state.previous.getSurface());
+            this.active = state.previous;
+            state.surfaceRestored = true;
+          }
+          if (!state.viewportRestored) {
+            if (this.viewport) state.previous.host.resize(this.viewport);
+            state.viewportRestored = true;
+          }
+          if (!state.visibilityRestored) {
+            state.previous.host.setVisibility(this.visible);
+            state.visibilityRestored = true;
+          }
+        }
+        if (!state.candidateDestroyed) {
+          candidate.host.destroy();
+          state.candidateDestroyed = true;
+        }
         state.settled = true;
         this.pending = null;
-        if (state.activated) {
-          this.active = state.previous;
-          this.root.replaceChildren(state.previous.getSurface());
-          state.previous.host.setVisibility(this.visible);
-        }
-        candidate.host.destroy();
       },
     };
   }
@@ -185,5 +215,31 @@ export class PetRuntimeSlot implements PetRenderer {
 
   private assertAlive(): void {
     if (this.destroyed) throw new Error("PetRuntimeSlot has been destroyed");
+  }
+
+  private abortActivation(state: PendingRuntimeSwap): void {
+    this.active = state.previous;
+    try {
+      this.root.replaceChildren(state.previous.getSurface());
+    } catch {
+      // Preserve the activation failure while attempting to restore the old surface.
+    }
+    try {
+      state.previous.host.setVisibility(this.visible);
+    } catch {
+      // Preserve the activation failure while attempting to restore visibility.
+    }
+    this.destroyQuietly(state.candidate);
+    state.candidateDestroyed = true;
+    state.settled = true;
+    if (this.pending === state) this.pending = null;
+  }
+
+  private destroyQuietly(runtime: MountedPetRuntime): void {
+    try {
+      runtime.host.destroy();
+    } catch {
+      // The caller is handling a more relevant failure.
+    }
   }
 }
