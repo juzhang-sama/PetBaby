@@ -16,6 +16,12 @@ import {
 import { WindowMotionController } from "./runtime/window-motion-controller";
 import { isLive2DProbeMode, mountLive2DProbe } from "./runtime-live2d/probe";
 import { isLive2DPreviewMode, mountLive2DPreview } from "./runtime-live2d/preview";
+import { loadLive2DAsset } from "./runtime-assets/live2d-asset-loader";
+import {
+  createBuiltinPetTransport,
+  resolveBuiltinPetUrl,
+  selectStartupPetSource,
+} from "./runtime/startup-pet";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
@@ -75,30 +81,57 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   };
 
   const activePetId = await invoke<string | null>("pet_get_active");
+  const startupPet = selectStartupPetSource(activePetId);
   let activeManifestVersion = 0;
-  if (activePetId) {
+  if (startupPet.kind === "installed") {
     try {
-      const manifestJson = await invoke<unknown>("asset_manifest", { petId: activePetId });
+      const manifestJson = await invoke<unknown>("asset_manifest", { petId: startupPet.petId });
       activeManifestVersion = manifestVersionOf(manifestJson);
-      runtime = await createPetRendererRuntime(activePetId, manifestJson, {
+      runtime = await createPetRendererRuntime(startupPet.petId, manifestJson, {
         root: rendererRoot,
         diagnose,
         onSurfaceChanged: refreshHitRegion,
       });
     } catch (error) {
       diagnose({
-        petId: activePetId,
+        petId: startupPet.petId,
         manifestVersion: activeManifestVersion,
         stage: "manifest-load",
         message: errorMessage(error),
       });
       runtime = await createStaticPngRuntime(
-        `pet-asset://localhost/${activePetId}/assets/body.png`,
+        `pet-asset://localhost/${startupPet.petId}/assets/body.png`,
         { root: rendererRoot, diagnose },
       );
     }
   } else {
-    runtime = await createStaticPngRuntime("/test-assets/layered/body.png", { root: rendererRoot });
+    const transport = createBuiltinPetTransport({ manifestUrl: startupPet.manifestUrl });
+    try {
+      const manifestJson = await transport.readManifest(startupPet.petId);
+      activeManifestVersion = manifestVersionOf(manifestJson);
+      runtime = await createPetRendererRuntime(startupPet.petId, manifestJson, {
+        root: rendererRoot,
+        diagnose,
+        onSurfaceChanged: refreshHitRegion,
+        assetUrl: (_petId, relativePath) => resolveBuiltinPetUrl(
+          startupPet.manifestUrl,
+          relativePath,
+          window.location.origin,
+        ),
+        loadLive2DAsset: (petId, manifest) => loadLive2DAsset(petId, manifest, transport),
+      });
+    } catch (error) {
+      diagnose({
+        petId: startupPet.petId,
+        manifestVersion: activeManifestVersion,
+        stage: "manifest-load",
+        message: errorMessage(error),
+      });
+      runtime = await createStaticPngRuntime(startupPet.previewUrl, {
+        root: rendererRoot,
+        diagnose,
+      });
+    }
   }
 
   const windowMotion = new WindowMotionController({
@@ -125,7 +158,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
     effects,
     refreshHitRegion,
     diagnose: (stageName, error) => diagnose({
-      petId: activePetId ?? "none",
+      petId: startupPet.petId,
       manifestVersion: activeManifestVersion,
       stage: stageName === "window-motion" ? "window-motion" : "hit-region",
       message: errorMessage(error),
@@ -148,7 +181,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
       }
     } catch (error) {
       diagnose({
-        petId: activePetId ?? "none",
+        petId: startupPet.petId,
         manifestVersion: activeManifestVersion,
         stage: "fullscreen",
         message: errorMessage(error),
