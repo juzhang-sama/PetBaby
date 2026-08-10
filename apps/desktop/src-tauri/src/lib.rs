@@ -232,6 +232,14 @@ fn pet_get_active(state: tauri::State<'_, SharedActivePetService>) -> Result<Str
 }
 
 #[tauri::command]
+fn pet_set_active(
+    state: tauri::State<'_, SharedActivePetService>,
+    pet_id: String,
+) -> Result<(), String> {
+    state.commit(&pet_id, None)
+}
+
+#[tauri::command]
 fn pet_prepare_switch(
     state: tauri::State<'_, SharedActivePetService>,
     pet_id: String,
@@ -584,6 +592,7 @@ pub fn run() {
             pet_get,
             pet_delete,
             pet_get_active,
+            pet_set_active,
             pet_prepare_switch,
             pet_commit_switch,
             pet_state_load,
@@ -610,5 +619,10 @@ mod tests {
     #[test]
     fn probe_version_is_m0() {
         assert_eq!(super::probe_version(), "m0");
+    }
+
+    #[test]
+    fn legacy_pet_set_active_command_remains_available() {
+        let _command = super::pet_set_active;
     }
 }
