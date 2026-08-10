@@ -13,6 +13,28 @@ use crate::{
 
 pub struct WindowsPlatformAdapter;
 
+pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
+    use std::os::windows::fs::MetadataExt;
+
+    const FILE_ATTRIBUTE_REPARSE_POINT: u32 = 0x0400;
+    metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
+}
+
+#[cfg(test)]
+pub(crate) fn create_directory_junction(target: &std::path::Path, link: &std::path::Path) {
+    let output = std::process::Command::new("cmd")
+        .args(["/C", "mklink", "/J"])
+        .arg(link)
+        .arg(target)
+        .output()
+        .unwrap();
+    assert!(
+        output.status.success(),
+        "junction creation failed: {}",
+        String::from_utf8_lossy(&output.stderr)
+    );
+}
+
 impl PlatformAdapter for WindowsPlatformAdapter {
     fn configure_pet_window(&self, hwnd: isize) -> Result<(), PlatformError> {
         unsafe {

@@ -1,7 +1,7 @@
 use crate::creation::profiles;
 use crate::creation::StandardCandidate;
 use crate::storage::Storage;
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use std::path::Path;
 use std::sync::{Arc, Mutex};
 
@@ -24,8 +24,13 @@ impl CreationStore {
         ref_sha256: &str,
         task_id: Option<&str>,
     ) -> Result<(), String> {
-        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
-        db.execute(
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        ensure_legacy_generation_pet(&tx, pet_id)?;
+        tx.execute(
             "INSERT INTO generation_jobs
              (job_id, pet_id, prompt, ref_sha256, task_id, status, created_at)
              VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
@@ -39,7 +44,12 @@ impl CreationStore {
             ],
         )
         .map_err(|error| error.to_string())?;
-        Ok(())
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    pub fn ensure_legacy_generation_pet(&self, pet_id: &str) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        ensure_legacy_generation_pet(db, pet_id)
     }
 
     pub fn upload_session_pet(&self, session_id: &str) -> Result<String, String> {
@@ -162,6 +172,7 @@ impl CreationStore {
         &self,
         job_id: &str,
         session_id: &str,
+        jobs_root: &Path,
         raw_path: &str,
         cutout_path: &str,
         motion_profile_path: &str,
@@ -170,6 +181,7 @@ impl CreationStore {
         self.record_upload_candidate_transaction(
             job_id,
             session_id,
+            jobs_root,
             raw_path,
             cutout_path,
             motion_profile_path,
@@ -182,6 +194,7 @@ impl CreationStore {
         &self,
         job_id: &str,
         session_id: &str,
+        jobs_root: &Path,
         raw_path: &str,
         cutout_path: &str,
         motion_profile_path: &str,
@@ -191,6 +204,7 @@ impl CreationStore {
         self.record_upload_candidate_transaction(
             job_id,
             session_id,
+            jobs_root,
             raw_path,
             cutout_path,
             motion_profile_path,
@@ -204,14 +218,20 @@ impl CreationStore {
         &self,
         job_id: &str,
         session_id: &str,
+        jobs_root: &Path,
         raw_path: &str,
         cutout_path: &str,
         motion_profile_path: &str,
         quality: &str,
         result_url: Option<&str>,
     ) -> Result<StandardCandidate, String> {
-        let (raw_path, cutout_path, motion_profile_path) =
-            validate_candidate_paths(job_id, raw_path, cutout_path, motion_profile_path)?;
+        let (raw_path, cutout_path, motion_profile_path) = validate_candidate_paths(
+            jobs_root,
+            job_id,
+            raw_path,
+            cutout_path,
+            motion_profile_path,
+        )?;
         let candidate_id = crate::creation::domain::new_entity_id("candidate");
         let created_at = profiles::now_iso();
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
@@ -400,13 +420,88 @@ impl CreationStore {
         error: Option<&str>,
     ) -> Result<(), String> {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
-        db.execute(
-            "UPDATE generation_jobs SET status = ?2, result_url = ?3, error = ?4
+        let affected = db
+            .execute(
+                "UPDATE generation_jobs SET status = ?2, result_url = ?3, error = ?4
              WHERE job_id = ?1",
-            rusqlite::params![job_id, status, result_url, error],
-        )
-        .map_err(|error| error.to_string())?;
+                rusqlite::params![job_id, status, result_url, error],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err(format!("generation job not found: {job_id}"));
+        }
         Ok(())
+    }
+
+    pub fn cancel_job(&self, job_id: &str) -> Result<(), String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let job: Option<(String, Option<String>)> = tx
+            .query_row(
+                "SELECT pet_id, session_id FROM generation_jobs WHERE job_id=?1",
+                [job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (pet_id, session_id) =
+            job.ok_or_else(|| format!("generation job not found: {job_id}"))?;
+        if let Some(session_id) = session_id {
+            let session_owned: bool = tx
+                .query_row(
+                    "SELECT EXISTS(
+                       SELECT 1 FROM creation_sessions
+                       WHERE session_id=?1 AND pet_id=?2 AND method='upload'
+                         AND status NOT IN ('completed','abandoned')
+                     )",
+                    rusqlite::params![session_id, pet_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if !session_owned {
+                return Err("session generation job ownership is not live".into());
+            }
+            let job_affected = tx
+                .execute(
+                    "UPDATE generation_jobs
+                     SET status='cancelled', result_url=NULL, error=NULL
+                     WHERE job_id=?1 AND session_id=?2 AND pet_id=?3
+                       AND status IN ('pending','running')",
+                    rusqlite::params![job_id, session_id, pet_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if job_affected != 1 {
+                return Err("session generation job is not active".into());
+            }
+            let session_affected = tx
+                .execute(
+                    "UPDATE creation_sessions
+                     SET status='draft', last_stable_status='draft', current_step='upload',
+                         error=NULL, updated_at=?3
+                     WHERE session_id=?1 AND pet_id=?2 AND method='upload'
+                       AND status NOT IN ('completed','abandoned')",
+                    rusqlite::params![session_id, pet_id, profiles::now_iso()],
+                )
+                .map_err(|error| error.to_string())?;
+            if session_affected != 1 {
+                return Err("upload session could not be restored after cancellation".into());
+            }
+        } else {
+            let affected = tx
+                .execute(
+                    "UPDATE generation_jobs SET status='cancelled', result_url=NULL, error=NULL
+                     WHERE job_id=?1 AND session_id IS NULL",
+                    [job_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if affected != 1 {
+                return Err("legacy generation job not found".into());
+            }
+        }
+        tx.commit().map_err(|error| error.to_string())
     }
 
     pub fn job(&self, job_id: &str) -> Result<JobRecord, String> {
@@ -432,6 +527,52 @@ impl CreationStore {
             },
         )
         .map_err(|error| format!("generation job not found: {error}"))
+    }
+
+    pub fn live_upload_job_for_completion(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        pet_id: &str,
+    ) -> Result<JobRecord, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.query_row(
+            "SELECT gj.job_id, gj.pet_id, gj.session_id, gj.prompt, gj.ref_sha256,
+                    gj.task_id, gj.status, gj.result_url, gj.error, gj.created_at
+             FROM generation_jobs gj
+             JOIN creation_sessions cs ON cs.session_id=gj.session_id
+             WHERE gj.job_id=?1 AND gj.session_id=?2 AND gj.pet_id=?3
+               AND cs.pet_id=?3 AND cs.method='upload'
+               AND cs.status NOT IN ('completed','abandoned')
+               AND gj.status IN ('pending','running')",
+            rusqlite::params![job_id, session_id, pet_id],
+            |row| {
+                Ok(JobRecord {
+                    job_id: row.get(0)?,
+                    pet_id: row.get(1)?,
+                    session_id: row.get(2)?,
+                    prompt: row.get(3)?,
+                    ref_sha256: row.get(4)?,
+                    task_id: row.get(5)?,
+                    status: row.get(6)?,
+                    result_url: row.get(7)?,
+                    error: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
+            },
+        )
+        .map_err(|error| format!("live upload job ownership is unavailable: {error}"))
+    }
+
+    pub fn job_status(&self, job_id: &str) -> Result<Option<String>, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.query_row(
+            "SELECT status FROM generation_jobs WHERE job_id=?1",
+            [job_id],
+            |row| row.get(0),
+        )
+        .optional()
+        .map_err(|error| error.to_string())
     }
 
     pub fn record_candidate(
@@ -678,12 +819,51 @@ impl CreationStore {
     }
 }
 
+fn ensure_legacy_generation_pet(db: &Connection, pet_id: &str) -> Result<(), String> {
+    let exists: bool = db
+        .query_row(
+            "SELECT EXISTS(SELECT 1 FROM pets WHERE pet_id=?1)",
+            [pet_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if !exists {
+        return Err(format!("pet not found: {pet_id}"));
+    }
+    let has_live_session: bool = db
+        .query_row(
+            "SELECT EXISTS(
+               SELECT 1 FROM creation_sessions
+               WHERE pet_id=?1 AND status NOT IN ('completed','abandoned')
+             )",
+            [pet_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())?;
+    if has_live_session {
+        return Err(
+            "pet belongs to a live creation session; use creation_upload_start instead".into(),
+        );
+    }
+    Ok(())
+}
+
 fn validate_candidate_paths(
+    jobs_root: &Path,
     job_id: &str,
     raw_path: &str,
     cutout_path: &str,
     motion_profile_path: &str,
 ) -> Result<(String, String, String), String> {
+    let root_metadata = std::fs::symlink_metadata(jobs_root)
+        .map_err(|error| format!("configured jobs root is missing: {error}"))?;
+    if crate::platform::is_link_or_reparse_point(&root_metadata) || !root_metadata.is_dir() {
+        return Err("configured jobs root cannot be a link or reparse point".into());
+    }
+    let canonical_root = jobs_root
+        .canonicalize()
+        .map_err(|error| format!("could not canonicalize configured jobs root: {error}"))?;
+    let expected_job_dir = canonical_root.join(job_id);
     let expected = [
         (raw_path, "raw.png"),
         (cutout_path, "cutout.png"),
@@ -698,7 +878,7 @@ fn validate_candidate_paths(
         }
         let metadata = std::fs::symlink_metadata(path)
             .map_err(|error| format!("candidate file {expected_name} is missing: {error}"))?;
-        if metadata.file_type().is_symlink() || !metadata.is_file() {
+        if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
             return Err(format!(
                 "candidate file {expected_name} is not a regular file"
             ));
@@ -708,13 +888,17 @@ fn validate_candidate_paths(
             .ok_or_else(|| "candidate path has no job directory".to_string())?;
         let parent_metadata = std::fs::symlink_metadata(parent)
             .map_err(|error| format!("candidate job directory is missing: {error}"))?;
-        if parent_metadata.file_type().is_symlink() || !parent_metadata.is_dir() {
-            return Err("candidate job directory cannot be a symbolic link".into());
+        if crate::platform::is_link_or_reparse_point(&parent_metadata) || !parent_metadata.is_dir()
+        {
+            return Err("candidate job directory cannot be a link or reparse point".into());
         }
         if parent.file_name().and_then(|name| name.to_str()) != Some(job_id) {
             return Err("candidate path is outside the matching job directory".into());
         }
         let canonical_parent = parent.canonicalize().map_err(|error| error.to_string())?;
+        if canonical_parent != expected_job_dir {
+            return Err("candidate job directory is outside the configured jobs root".into());
+        }
         if let Some(expected_parent) = canonical_job_dir.as_ref() {
             if expected_parent != &canonical_parent {
                 return Err("candidate files do not share one job directory".into());
@@ -801,6 +985,42 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].status, "success");
         assert_eq!(listed[0].result_url.as_deref(), Some("https://x/out.png"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn status_update_requires_a_durable_job_row() {
+        let (store, root, _) = temp_store();
+
+        assert!(store
+            .update_job_status("missing-job", "failed", None, Some("failed"))
+            .unwrap_err()
+            .contains("not found"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_job_creation_rejects_a_pet_with_a_live_creation_session() {
+        let (store, root, pet_id) = temp_store();
+        let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO creation_sessions
+                 (session_id, pet_id, method, status, last_stable_status, current_step,
+                  schema_version, created_at, updated_at)
+                 VALUES ('session-live', ?1, 'upload', 'draft', 'draft', 'upload', 1, ?2, ?2)",
+                rusqlite::params![pet_id, now_iso()],
+            )
+            .unwrap();
+
+        assert!(store
+            .create_job("job-legacy", &pet_id, "p", "h", Some("task"))
+            .unwrap_err()
+            .contains("creation_upload_start"));
+        assert!(store.job_list(&pet_id).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 

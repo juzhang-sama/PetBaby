@@ -127,6 +127,7 @@ mod tests {
             .record_upload_candidate(
                 "job-1",
                 &test.session_id,
+                &test.root.join("jobs"),
                 &raw,
                 &cutout,
                 &profile,
@@ -205,6 +206,7 @@ mod tests {
             .record_upload_candidate(
                 "job-1",
                 &second_session,
+                &first.root.join("jobs"),
                 &raw,
                 &cutout,
                 &profile,
@@ -226,6 +228,7 @@ mod tests {
             .record_upload_candidate(
                 "job-1",
                 &test.session_id,
+                &test.root.join("jobs"),
                 &raw,
                 &cutout,
                 &profile,
@@ -259,6 +262,7 @@ mod tests {
             .record_upload_candidate(
                 "job-2",
                 &test.session_id,
+                &test.root.join("jobs"),
                 &raw2,
                 &cutout2,
                 &profile2,
@@ -289,6 +293,7 @@ mod tests {
             .record_upload_candidate(
                 "job-1",
                 &test.session_id,
+                &test.root.join("jobs"),
                 &raw,
                 &cutout,
                 &profile,
@@ -296,6 +301,68 @@ mod tests {
             )
             .unwrap_err()
             .contains("job directory"));
+    }
+
+    #[test]
+    fn candidate_rejects_an_external_directory_with_the_same_job_name() {
+        let test = CandidateHarness::upload();
+        test.store
+            .create_job_for_session("job-1", &test.session_id, "p", "h", None)
+            .unwrap();
+        let external = test.root.join("external").join("job-1");
+        std::fs::create_dir_all(&external).unwrap();
+        let raw = external.join("raw.png");
+        let cutout = external.join("cutout.png");
+        let profile = external.join("motion-profile.json");
+        std::fs::write(&raw, b"raw").unwrap();
+        std::fs::write(&cutout, b"cutout").unwrap();
+        std::fs::write(&profile, b"{}").unwrap();
+
+        assert!(test
+            .store
+            .record_upload_candidate(
+                "job-1",
+                &test.session_id,
+                &test.root.join("jobs"),
+                &raw.to_string_lossy(),
+                &cutout.to_string_lossy(),
+                &profile.to_string_lossy(),
+                "acceptable",
+            )
+            .unwrap_err()
+            .contains("configured jobs root"));
+    }
+
+    #[test]
+    fn candidate_rejects_a_job_directory_link_escape() {
+        let test = CandidateHarness::upload();
+        test.store
+            .create_job_for_session("job-1", &test.session_id, "p", "h", None)
+            .unwrap();
+        let outside = test.root.join("outside-job-1");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("raw.png"), b"raw").unwrap();
+        std::fs::write(outside.join("cutout.png"), b"cutout").unwrap();
+        std::fs::write(outside.join("motion-profile.json"), b"{}").unwrap();
+        let jobs_root = test.root.join("jobs");
+        std::fs::create_dir_all(&jobs_root).unwrap();
+        crate::platform::create_directory_link(&outside, &jobs_root.join("job-1"));
+
+        assert!(test
+            .store
+            .record_upload_candidate(
+                "job-1",
+                &test.session_id,
+                &jobs_root,
+                &jobs_root.join("job-1/raw.png").to_string_lossy(),
+                &jobs_root.join("job-1/cutout.png").to_string_lossy(),
+                &jobs_root
+                    .join("job-1/motion-profile.json")
+                    .to_string_lossy(),
+                "acceptable",
+            )
+            .unwrap_err()
+            .contains("link or reparse point"));
     }
 
     #[test]

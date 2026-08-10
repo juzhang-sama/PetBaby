@@ -3,7 +3,7 @@ use crate::storage::Storage;
 use rusqlite::{Connection, OptionalExtension};
 use std::io::Write;
 use std::path::{Path, PathBuf};
-use std::sync::{Arc, Mutex, OnceLock};
+use std::sync::{Arc, Mutex, MutexGuard, OnceLock};
 
 static DELETION_OPERATION_LOCK: OnceLock<Mutex<()>> = OnceLock::new();
 const JOURNAL_FILE: &str = "journal.json";
@@ -62,9 +62,7 @@ impl PetDeletionService {
     }
 
     pub fn delete(&self, pet_id: &str) -> Result<DeleteOutcome, String> {
-        let _operation = deletion_operation_lock()
-            .lock()
-            .map_err(|_| "deletion operation lock poisoned")?;
+        let _operation = deletion_operation_guard()?;
         validate_component(pet_id, "pet id")?;
         if pet_id == BUILTIN_PET_ID {
             return Err("the built-in pet cannot be deleted".into());
@@ -128,9 +126,7 @@ impl PetDeletionService {
     }
 
     pub fn abandon_creation(&self, session_id: &str) -> Result<(), String> {
-        let _operation = deletion_operation_lock()
-            .lock()
-            .map_err(|_| "deletion operation lock poisoned")?;
+        let _operation = deletion_operation_guard()?;
         validate_component(session_id, "session id")?;
 
         let Some((pet_id, method, status, job_ids)) = self.creation_abandon_plan(session_id)?
@@ -210,9 +206,7 @@ impl PetDeletionService {
     }
 
     pub fn cleanup_quarantine(&self) -> Result<(), String> {
-        let _operation = deletion_operation_lock()
-            .lock()
-            .map_err(|_| "deletion operation lock poisoned")?;
+        let _operation = deletion_operation_guard()?;
         let root = self.app_data_dir.join("trash").join("pet-delete");
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
@@ -542,6 +536,12 @@ impl PetDeletionService {
 
 fn deletion_operation_lock() -> &'static Mutex<()> {
     DELETION_OPERATION_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+pub(crate) fn deletion_operation_guard() -> Result<MutexGuard<'static, ()>, String> {
+    deletion_operation_lock()
+        .lock()
+        .map_err(|_| "deletion operation lock poisoned".into())
 }
 
 fn creation_job_ids(
