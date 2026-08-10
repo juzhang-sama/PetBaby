@@ -41,6 +41,62 @@ pub(crate) fn is_link_or_reparse_point(metadata: &std::fs::Metadata) -> bool {
     }
 }
 
+pub(crate) fn durable_replace_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::durable_replace_file(source, target)
+    }
+    #[cfg(unix)]
+    {
+        std::fs::rename(source, target).map_err(|error| error.to_string())?;
+        sync_directory(
+            target
+                .parent()
+                .ok_or_else(|| "journal target has no parent".to_string())?,
+        )?;
+        if source.parent() != target.parent() {
+            sync_directory(
+                source
+                    .parent()
+                    .ok_or_else(|| "journal source has no parent".to_string())?,
+            )?;
+        }
+        Ok(())
+    }
+    #[cfg(not(any(target_os = "windows", unix)))]
+    {
+        std::fs::rename(source, target).map_err(|error| error.to_string())
+    }
+}
+
+pub(crate) fn durable_directory_entry(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        sync_directory(
+            path.parent()
+                .ok_or_else(|| "durable directory has no parent".to_string())?,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        // Windows orders the newly-created operation directory before resource isolation by
+        // publishing journal.json inside it with MOVEFILE_WRITE_THROUGH. No isolation starts
+        // until that child publication succeeds.
+        let _ = path;
+        Ok(())
+    }
+}
+
+#[cfg(unix)]
+fn sync_directory(path: &std::path::Path) -> Result<(), String> {
+    std::fs::File::open(path)
+        .and_then(|directory| directory.sync_all())
+        .map_err(|error| error.to_string())
+}
+
 #[cfg(test)]
 pub(crate) fn create_directory_link(target: &std::path::Path, link: &std::path::Path) {
     #[cfg(target_os = "windows")]

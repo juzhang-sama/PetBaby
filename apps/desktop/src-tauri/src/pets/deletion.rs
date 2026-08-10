@@ -22,14 +22,27 @@ pub struct PetDeletionService {
     active: SharedActivePetService,
     app_data_dir: PathBuf,
     mutation_gate: SharedPetMutationGate,
+    journal_publish_ops: Arc<dyn JournalPublishOps>,
 }
 
-#[derive(Debug)]
+#[derive(Debug, Clone)]
 struct QuarantinedPath {
     original: PathBuf,
     quarantined: PathBuf,
     original_parent: PathBuf,
     quarantine_parent: PathBuf,
+}
+
+#[derive(Debug)]
+struct QuarantineMoveError {
+    message: String,
+    uncertain_path: Option<QuarantinedPath>,
+}
+
+impl std::fmt::Display for QuarantineMoveError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.message)
+    }
 }
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq)]
@@ -56,6 +69,29 @@ struct DeletionPlan {
     session_ids: Vec<String>,
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum JournalPublishStep {
+    StagingSynced,
+    PreviousPublished,
+    CurrentPublished,
+}
+
+trait JournalPublishOps: Send + Sync {
+    fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String>;
+
+    fn checkpoint(&self, _step: JournalPublishStep) -> Result<(), String> {
+        Ok(())
+    }
+}
+
+struct PlatformJournalPublishOps;
+
+impl JournalPublishOps for PlatformJournalPublishOps {
+    fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String> {
+        crate::platform::durable_replace_file(source, target)
+    }
+}
+
 impl PetDeletionService {
     pub fn new(
         storage: Arc<Mutex<Storage>>,
@@ -68,6 +104,7 @@ impl PetDeletionService {
             active,
             app_data_dir,
             mutation_gate,
+            journal_publish_ops: Arc::new(PlatformJournalPublishOps),
         }
     }
 
@@ -90,7 +127,11 @@ impl PetDeletionService {
             session_ids: plan.session_ids.clone(),
             phase: DeletionPhase::Prepared,
         };
-        write_journal(&quarantine_root, &journal)?;
+        write_journal_with_ops(
+            &quarantine_root,
+            &journal,
+            self.journal_publish_ops.as_ref(),
+        )?;
         let pets_root = self.app_data_dir.join("pets");
         let jobs_root = self.app_data_dir.join("jobs");
         let sessions_root = self.app_data_dir.join("creation-sessions");
@@ -121,26 +162,44 @@ impl PetDeletionService {
 
         let mut quarantined = Vec::new();
         for (source, _, name) in &planned_paths {
-            match quarantine_path(source, &quarantine_root, name) {
+            match quarantine_path_with_ops(
+                source,
+                &quarantine_root,
+                name,
+                self.journal_publish_ops.as_ref(),
+            ) {
                 Ok(Some(path)) => quarantined.push(path),
                 Ok(None) => {}
                 Err(error) => {
-                    return Err(recover_uncommitted(
+                    if let Some(path) = error.uncertain_path.clone() {
+                        quarantined.push(path);
+                    }
+                    return Err(recover_uncommitted_with_ops(
                         &quarantine_root,
                         format!("failed to quarantine {}: {error}", source.display()),
                         &quarantined,
+                        self.journal_publish_ops.as_ref(),
                     ));
                 }
             }
         }
 
         if let Err(error) = self.delete_rows(pet_id, &plan.job_ids, &plan.session_ids) {
-            return Err(recover_uncommitted(&quarantine_root, error, &quarantined));
+            return Err(recover_uncommitted_with_ops(
+                &quarantine_root,
+                error,
+                &quarantined,
+                self.journal_publish_ops.as_ref(),
+            ));
         }
 
         journal.phase = DeletionPhase::Committed;
         let mut warnings = Vec::new();
-        if let Err(error) = write_journal(&quarantine_root, &journal) {
+        if let Err(error) = write_journal_with_ops(
+            &quarantine_root,
+            &journal,
+            self.journal_publish_ops.as_ref(),
+        ) {
             warnings.push(format!("could not record committed deletion: {error}"));
         }
         if let Err(error) = remove_operation(&quarantine_root) {
@@ -178,7 +237,11 @@ impl PetDeletionService {
             session_ids: vec![session_id.into()],
             phase: DeletionPhase::Prepared,
         };
-        write_journal(&quarantine_root, &journal)?;
+        write_journal_with_ops(
+            &quarantine_root,
+            &journal,
+            self.journal_publish_ops.as_ref(),
+        )?;
 
         let pets_root = self.app_data_dir.join("pets");
         let jobs_root = self.app_data_dir.join("jobs");
@@ -207,25 +270,43 @@ impl PetDeletionService {
 
         let mut quarantined = Vec::new();
         for (source, _, name) in &planned_paths {
-            match quarantine_path(source, &quarantine_root, name) {
+            match quarantine_path_with_ops(
+                source,
+                &quarantine_root,
+                name,
+                self.journal_publish_ops.as_ref(),
+            ) {
                 Ok(Some(path)) => quarantined.push(path),
                 Ok(None) => {}
                 Err(error) => {
-                    return Err(recover_uncommitted(
+                    if let Some(path) = error.uncertain_path.clone() {
+                        quarantined.push(path);
+                    }
+                    return Err(recover_uncommitted_with_ops(
                         &quarantine_root,
                         format!("failed to quarantine {}: {error}", source.display()),
                         &quarantined,
+                        self.journal_publish_ops.as_ref(),
                     ));
                 }
             }
         }
 
         if let Err(error) = self.abandon_creation_rows(session_id, &pet_id, &method, &job_ids) {
-            return Err(recover_uncommitted(&quarantine_root, error, &quarantined));
+            return Err(recover_uncommitted_with_ops(
+                &quarantine_root,
+                error,
+                &quarantined,
+                self.journal_publish_ops.as_ref(),
+            ));
         }
 
         journal.phase = DeletionPhase::Committed;
-        if let Err(error) = write_journal(&quarantine_root, &journal) {
+        if let Err(error) = write_journal_with_ops(
+            &quarantine_root,
+            &journal,
+            self.journal_publish_ops.as_ref(),
+        ) {
             eprintln!(
                 "[desktop-pet] could not record committed creation abandonment {session_id}: {error}"
             );
@@ -512,7 +593,7 @@ impl PetDeletionService {
         if journal.phase == DeletionPhase::Committed || !pet_exists {
             return remove_operation(operation);
         }
-        restore_all(&paths)?;
+        restore_all_with_ops(&paths, self.journal_publish_ops.as_ref())?;
         remove_operation(operation)
     }
 
@@ -762,7 +843,8 @@ fn prepare_quarantine_root(app_data_dir: &Path, operation: &Path) -> Result<(), 
     let delete_root = trash.join("pet-delete");
     validate_owned_root(app_data_dir, &trash)?;
     validate_owned_root(&trash, &delete_root)?;
-    validate_owned_root(&delete_root, operation)
+    validate_owned_root(&delete_root, operation)?;
+    crate::platform::durable_directory_entry(operation)
 }
 
 fn validate_path_parent(path: &Path, expected_parent: &Path) -> Result<(), String> {
@@ -808,32 +890,70 @@ fn validate_path_parent(path: &Path, expected_parent: &Path) -> Result<(), Strin
     Ok(())
 }
 
+#[cfg(test)]
 fn quarantine_path(
     source: &Path,
     root: &Path,
     name: &str,
 ) -> Result<Option<QuarantinedPath>, String> {
+    quarantine_path_with_ops(source, root, name, &PlatformJournalPublishOps)
+        .map_err(|error| error.message)
+}
+
+fn quarantine_path_with_ops(
+    source: &Path,
+    root: &Path,
+    name: &str,
+    ops: &dyn JournalPublishOps,
+) -> Result<Option<QuarantinedPath>, QuarantineMoveError> {
     if !source.exists() {
         return Ok(None);
     }
-    std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    std::fs::create_dir_all(root).map_err(|error| QuarantineMoveError {
+        message: error.to_string(),
+        uncertain_path: None,
+    })?;
     let target = root.join(name);
-    std::fs::rename(source, &target).map_err(|error| error.to_string())?;
-    Ok(Some(QuarantinedPath {
+    if target.exists() {
+        return Err(QuarantineMoveError {
+            message: format!("quarantine target already exists: {}", target.display()),
+            uncertain_path: None,
+        });
+    }
+    let path = QuarantinedPath {
         original: source.into(),
-        quarantined: target,
+        quarantined: target.clone(),
         original_parent: source
             .parent()
-            .ok_or_else(|| "deletion source has no parent".to_string())?
+            .ok_or_else(|| QuarantineMoveError {
+                message: "deletion source has no parent".to_string(),
+                uncertain_path: None,
+            })?
             .into(),
         quarantine_parent: root.into(),
-    }))
+    };
+    if let Err(error) = ops.durable_rename(source, &target) {
+        return Err(QuarantineMoveError {
+            message: error,
+            uncertain_path: Some(path),
+        });
+    }
+    Ok(Some(path))
 }
 
-fn restore_all(paths: &[QuarantinedPath]) -> Result<(), String> {
+fn restore_all_with_ops(
+    paths: &[QuarantinedPath],
+    ops: &dyn JournalPublishOps,
+) -> Result<(), String> {
     let mut errors = Vec::new();
     for path in paths.iter().rev() {
         if !path.quarantined.exists() {
+            if !path.original.exists() {
+                errors.push(format!(
+                    "resource exists at neither original nor quarantine path: {}",
+                    path.original.display()
+                ));
+            }
             continue;
         }
         if let Err(error) = std::fs::create_dir_all(&path.original_parent) {
@@ -855,7 +975,7 @@ fn restore_all(paths: &[QuarantinedPath]) -> Result<(), String> {
             ));
             continue;
         }
-        if let Err(error) = std::fs::rename(&path.quarantined, &path.original) {
+        if let Err(error) = ops.durable_rename(&path.quarantined, &path.original) {
             errors.push(format!("{}: {error}", path.original.display()));
         }
     }
@@ -866,8 +986,18 @@ fn restore_all(paths: &[QuarantinedPath]) -> Result<(), String> {
     }
 }
 
+#[cfg(test)]
 fn recover_uncommitted(root: &Path, error: String, paths: &[QuarantinedPath]) -> String {
-    match restore_all(paths) {
+    recover_uncommitted_with_ops(root, error, paths, &PlatformJournalPublishOps)
+}
+
+fn recover_uncommitted_with_ops(
+    root: &Path,
+    error: String,
+    paths: &[QuarantinedPath],
+    ops: &dyn JournalPublishOps,
+) -> String {
+    match restore_all_with_ops(paths, ops) {
         Ok(()) => match remove_operation(root) {
             Ok(()) => error,
             Err(cleanup_error) => {
@@ -878,7 +1008,16 @@ fn recover_uncommitted(root: &Path, error: String, paths: &[QuarantinedPath]) ->
     }
 }
 
+#[cfg(test)]
 fn write_journal(root: &Path, journal: &DeletionJournal) -> Result<(), String> {
+    write_journal_with_ops(root, journal, &PlatformJournalPublishOps)
+}
+
+fn write_journal_with_ops(
+    root: &Path,
+    journal: &DeletionJournal,
+    ops: &dyn JournalPublishOps,
+) -> Result<(), String> {
     validate_journal(journal)?;
     std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
     validate_regular_directory(root, "deletion journal directory")?;
@@ -899,54 +1038,71 @@ fn write_journal(root: &Path, journal: &DeletionJournal) -> Result<(), String> {
         return Err(error.to_string());
     }
     drop(file);
+    if let Err(error) = ops.checkpoint(JournalPublishStep::StagingSynced) {
+        return Err(error);
+    }
 
     let current = root.join(JOURNAL_FILE);
     let previous = root.join(PREVIOUS_JOURNAL_FILE);
-    if previous.exists() {
-        let metadata = std::fs::symlink_metadata(&previous).map_err(|error| error.to_string())?;
-        if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+    validate_journal_path(&current, "deletion journal")?;
+    validate_journal_path(&previous, "previous deletion journal")?;
+
+    if current.exists() && read_valid_journal(&current).is_ok() {
+        if let Err(error) = ops.durable_rename(&current, &previous) {
             let _ = std::fs::remove_file(&staging);
-            return Err("previous deletion journal is not a regular file".into());
+            return Err(error);
         }
-        std::fs::remove_file(&previous).map_err(|error| error.to_string())?;
+        if let Err(error) = ops.checkpoint(JournalPublishStep::PreviousPublished) {
+            return Err(error);
+        }
     }
-    let had_current = current.exists();
-    if had_current {
-        let metadata = std::fs::symlink_metadata(&current).map_err(|error| error.to_string())?;
-        if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
-            let _ = std::fs::remove_file(&staging);
-            return Err("deletion journal is not a regular file".into());
-        }
-        std::fs::rename(&current, &previous).map_err(|error| error.to_string())?;
-    }
-    if let Err(error) = std::fs::rename(&staging, &current) {
-        if had_current {
-            let _ = std::fs::rename(&previous, &current);
-        }
+    if let Err(error) = ops.durable_rename(&staging, &current) {
         let _ = std::fs::remove_file(&staging);
-        return Err(error.to_string());
+        return Err(error);
     }
-    if had_current {
-        std::fs::remove_file(previous).map_err(|error| error.to_string())?;
-    }
-    Ok(())
+    ops.checkpoint(JournalPublishStep::CurrentPublished)
 }
 
 fn read_journal(operation: &Path) -> Result<DeletionJournal, String> {
     let current = operation.join(JOURNAL_FILE);
-    let path = if current.exists() {
-        current
-    } else {
-        operation.join(PREVIOUS_JOURNAL_FILE)
-    };
+    match read_valid_journal(&current) {
+        Ok(journal) => return Ok(journal),
+        Err(current_error) => {
+            let previous = operation.join(PREVIOUS_JOURNAL_FILE);
+            match read_valid_journal(&previous) {
+                Ok(journal) => return Ok(journal),
+                Err(previous_error) => {
+                    return Err(format!(
+                        "current journal invalid: {current_error}; previous journal invalid: {previous_error}"
+                    ));
+                }
+            }
+        }
+    }
+}
+
+fn read_valid_journal(path: &Path) -> Result<DeletionJournal, String> {
     let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
-    if !metadata.file_type().is_file() {
+    if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.file_type().is_file() {
         return Err("journal is not a regular file".into());
     }
     let journal = serde_json::from_slice(&std::fs::read(path).map_err(|error| error.to_string())?)
         .map_err(|error| format!("invalid journal: {error}"))?;
     validate_journal(&journal)?;
     Ok(journal)
+}
+
+fn validate_journal_path(path: &Path, label: &str) -> Result<(), String> {
+    match std::fs::symlink_metadata(path) {
+        Ok(metadata)
+            if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() =>
+        {
+            Err(format!("{label} is not a regular file"))
+        }
+        Ok(_) => Ok(()),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => Ok(()),
+        Err(error) => Err(error.to_string()),
+    }
 }
 
 fn validate_journal(journal: &DeletionJournal) -> Result<(), String> {
@@ -992,6 +1148,41 @@ mod tests {
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+    struct InterruptingJournalPublishOps {
+        interrupt_after: JournalPublishStep,
+    }
+
+    impl JournalPublishOps for InterruptingJournalPublishOps {
+        fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String> {
+            crate::platform::durable_replace_file(source, target)
+        }
+
+        fn checkpoint(&self, step: JournalPublishStep) -> Result<(), String> {
+            if step == self.interrupt_after {
+                Err(format!("interrupted after {step:?}"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
+    struct FailAfterDurableRenameOps {
+        fail_call: u32,
+        calls: AtomicU32,
+    }
+
+    impl JournalPublishOps for FailAfterDurableRenameOps {
+        fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String> {
+            crate::platform::durable_replace_file(source, target)?;
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_call {
+                Err(format!("durability barrier failed after rename {call}"))
+            } else {
+                Ok(())
+            }
+        }
+    }
+
     struct DeletionHarness {
         root: PathBuf,
         storage: Arc<Mutex<Storage>>,
@@ -1002,8 +1193,14 @@ mod tests {
     impl DeletionHarness {
         fn two_pets() -> Self {
             let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let root = std::env::temp_dir()
-                .join(format!("desktop-pet-deletion-{}-{n}", std::process::id()));
+            let nonce = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "desktop-pet-deletion-{}-{n}-{nonce}",
+                std::process::id()
+            ));
             let pets_dir = root.join("pets");
             let storage = Arc::new(Mutex::new(Storage::open(&pets_dir).unwrap()));
             let session: SharedActivePetSession = Arc::new(Mutex::new(ActivePetSession::new()));
@@ -1044,6 +1241,12 @@ mod tests {
                     rusqlite::params![pet_id],
                 )
                 .unwrap();
+            test
+        }
+
+        fn with_journal_publish_ops(ops: Arc<dyn JournalPublishOps>) -> Self {
+            let mut test = Self::two_pets();
+            test.service.journal_publish_ops = ops;
             test
         }
 
@@ -1750,6 +1953,299 @@ mod tests {
         .unwrap();
 
         assert_eq!(read_journal(&operation).unwrap().pet_id, "pet-a");
+    }
+
+    #[test]
+    fn unconfirmed_initial_prepared_journal_never_starts_resource_isolation() {
+        let test =
+            DeletionHarness::with_journal_publish_ops(Arc::new(InterruptingJournalPublishOps {
+                interrupt_after: JournalPublishStep::StagingSynced,
+            }));
+        test.bind_pet_a_job_to_creation_session();
+
+        assert!(test.service.delete("pet-a").is_err());
+
+        assert!(test.pet_exists("pet-a"));
+        assert!(test.job_exists("job-a"));
+        assert!(test.session_exists("session-a"));
+        assert!(test.pet_dir("pet-a").join("assets/asset.txt").exists());
+        assert!(test.job_dir("job-a").join("result.txt").exists());
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
+    }
+
+    #[test]
+    fn resource_barrier_failure_after_os_move_restores_before_database_deletion() {
+        let test = DeletionHarness::with_journal_publish_ops(Arc::new(FailAfterDurableRenameOps {
+            fail_call: 2,
+            calls: AtomicU32::new(0),
+        }));
+        test.bind_pet_a_job_to_creation_session();
+
+        assert!(test.service.delete("pet-a").is_err());
+
+        assert!(test.pet_exists("pet-a"));
+        assert!(test.job_exists("job-a"));
+        assert!(test.session_exists("session-a"));
+        assert!(test.pet_dir("pet-a").join("assets/asset.txt").exists());
+        assert!(test.job_dir("job-a").join("result.txt").exists());
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
+    }
+
+    #[test]
+    fn unknown_resource_ownership_keeps_the_operation_journal_for_later_recovery() {
+        let test = DeletionHarness::two_pets();
+        let operation = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("unknown-resource-ownership");
+        let journal = DeletionJournal {
+            pet_id: "pet-a".into(),
+            job_ids: Vec::new(),
+            session_ids: Vec::new(),
+            phase: DeletionPhase::Prepared,
+        };
+        write_journal(&operation, &journal).unwrap();
+        let missing = QuarantinedPath {
+            original: test.root.join("missing-original"),
+            quarantined: operation.join("missing-quarantine"),
+            original_parent: test.root.clone(),
+            quarantine_parent: operation.clone(),
+        };
+
+        let error = recover_uncommitted(&operation, "barrier result unknown".into(), &[missing]);
+
+        assert!(error.contains("exists at neither original nor quarantine path"));
+        assert!(operation.exists());
+        assert!(operation.join(JOURNAL_FILE).exists());
+    }
+
+    #[test]
+    fn interrupted_current_rotation_leaves_previous_generation_readable() {
+        let test = DeletionHarness::two_pets();
+        let operation = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("journal-current-rotation");
+        let prepared = DeletionJournal {
+            pet_id: "pet-a".into(),
+            job_ids: vec!["job-a".into()],
+            session_ids: Vec::new(),
+            phase: DeletionPhase::Prepared,
+        };
+        write_journal(&operation, &prepared).unwrap();
+        let committed = DeletionJournal {
+            phase: DeletionPhase::Committed,
+            ..prepared.clone()
+        };
+        let ops = InterruptingJournalPublishOps {
+            interrupt_after: JournalPublishStep::PreviousPublished,
+        };
+
+        assert!(write_journal_with_ops(&operation, &committed, &ops).is_err());
+        assert_eq!(
+            read_journal(&operation).unwrap().phase,
+            DeletionPhase::Prepared
+        );
+    }
+
+    #[test]
+    fn interrupted_new_current_publish_prefers_the_new_durable_generation() {
+        let test = DeletionHarness::two_pets();
+        let operation = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("journal-new-current");
+        let prepared = DeletionJournal {
+            pet_id: "pet-a".into(),
+            job_ids: vec!["job-a".into()],
+            session_ids: Vec::new(),
+            phase: DeletionPhase::Prepared,
+        };
+        write_journal(&operation, &prepared).unwrap();
+        let committed = DeletionJournal {
+            phase: DeletionPhase::Committed,
+            ..prepared.clone()
+        };
+        let ops = InterruptingJournalPublishOps {
+            interrupt_after: JournalPublishStep::CurrentPublished,
+        };
+
+        assert!(write_journal_with_ops(&operation, &committed, &ops).is_err());
+        assert_eq!(
+            read_journal(&operation).unwrap().phase,
+            DeletionPhase::Committed
+        );
+        assert_eq!(
+            read_valid_journal(&operation.join(PREVIOUS_JOURNAL_FILE))
+                .unwrap()
+                .phase,
+            DeletionPhase::Prepared
+        );
+    }
+
+    #[test]
+    fn committed_database_with_interrupted_journal_publish_cleans_quarantine_without_originals() {
+        let test = DeletionHarness::two_pets();
+        let operation = test.quarantined_creation_operation("prepared");
+        test.service
+            .delete_rows("pet-a", &["job-a".into()], &["session-a".into()])
+            .unwrap();
+        let committed = DeletionJournal {
+            pet_id: "pet-a".into(),
+            job_ids: vec!["job-a".into()],
+            session_ids: vec!["session-a".into()],
+            phase: DeletionPhase::Committed,
+        };
+        let ops = InterruptingJournalPublishOps {
+            interrupt_after: JournalPublishStep::PreviousPublished,
+        };
+        assert!(write_journal_with_ops(&operation, &committed, &ops).is_err());
+
+        test.service.cleanup_quarantine().unwrap();
+
+        assert!(!test.pet_exists("pet-a"));
+        assert!(!test.pet_dir("pet-a").exists());
+        assert!(!test.job_dir("job-a").exists());
+        assert!(!test.session_dir("session-a").exists());
+        assert!(!operation.exists());
+    }
+
+    #[test]
+    fn rotating_with_an_existing_previous_keeps_the_former_current_not_the_stale_backup() {
+        let test = DeletionHarness::two_pets();
+        let operation = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("journal-existing-previous");
+        let prepared = DeletionJournal {
+            pet_id: "pet-a".into(),
+            job_ids: vec!["job-a".into()],
+            session_ids: Vec::new(),
+            phase: DeletionPhase::Prepared,
+        };
+        write_journal(&operation, &prepared).unwrap();
+        let quarantined = DeletionJournal {
+            phase: DeletionPhase::Quarantined,
+            ..prepared.clone()
+        };
+        write_journal(&operation, &quarantined).unwrap();
+        let committed = DeletionJournal {
+            phase: DeletionPhase::Committed,
+            ..prepared
+        };
+        let ops = InterruptingJournalPublishOps {
+            interrupt_after: JournalPublishStep::PreviousPublished,
+        };
+
+        assert!(write_journal_with_ops(&operation, &committed, &ops).is_err());
+        assert_eq!(
+            read_journal(&operation).unwrap().phase,
+            DeletionPhase::Quarantined
+        );
+    }
+
+    #[test]
+    fn startup_cleanup_falls_back_to_valid_previous_when_current_journal_is_corrupt() {
+        let test = DeletionHarness::two_pets();
+        let operation = test.quarantined_creation_operation("prepared");
+        std::fs::rename(
+            operation.join(JOURNAL_FILE),
+            operation.join(PREVIOUS_JOURNAL_FILE),
+        )
+        .unwrap();
+        std::fs::write(operation.join(JOURNAL_FILE), b"truncated-json").unwrap();
+
+        test.service.cleanup_quarantine().unwrap();
+
+        assert!(test.pet_exists("pet-a"));
+        assert!(test.job_exists("job-a"));
+        assert!(test.session_exists("session-a"));
+        assert!(test.pet_dir("pet-a").join("assets/asset.txt").exists());
+        assert!(test.job_dir("job-a").join("result.txt").exists());
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
+        assert!(!operation.exists());
+    }
+
+    #[test]
+    fn startup_cleanup_prefers_valid_current_over_stale_previous_journal() {
+        let test = DeletionHarness::two_pets();
+        let operation = test.quarantined_creation_operation("prepared");
+        std::fs::write(
+            operation.join(PREVIOUS_JOURNAL_FILE),
+            br#"{"petId":"pet-b","jobIds":["job-b"],"sessionIds":[],"phase":"committed"}"#,
+        )
+        .unwrap();
+
+        test.service.cleanup_quarantine().unwrap();
+
+        assert!(test.pet_exists("pet-a"));
+        assert!(test.job_exists("job-a"));
+        assert!(test.session_exists("session-a"));
+        assert!(test.pet_dir("pet-a").join("assets/asset.txt").exists());
+        assert!(test.job_dir("job-a").join("result.txt").exists());
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
+        assert!(!operation.exists());
+    }
+
+    #[test]
+    fn current_validation_failure_falls_back_and_both_errors_keep_their_context() {
+        let test = DeletionHarness::two_pets();
+        let operation = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("journal-validation-fallback");
+        std::fs::create_dir_all(&operation).unwrap();
+        std::fs::write(
+            operation.join(JOURNAL_FILE),
+            br#"{"petId":"../pet-a","jobIds":[],"sessionIds":[],"phase":"prepared"}"#,
+        )
+        .unwrap();
+        std::fs::write(
+            operation.join(PREVIOUS_JOURNAL_FILE),
+            br#"{"petId":"pet-a","jobIds":["job-a"],"sessionIds":[],"phase":"prepared"}"#,
+        )
+        .unwrap();
+
+        assert_eq!(read_journal(&operation).unwrap().pet_id, "pet-a");
+
+        std::fs::write(operation.join(PREVIOUS_JOURNAL_FILE), b"also-corrupt").unwrap();
+        let error = read_journal(&operation).unwrap_err();
+        assert!(error.contains("current journal invalid: invalid journal pet id"));
+        assert!(error.contains("previous journal invalid: invalid journal"));
+    }
+
+    #[test]
+    fn journal_publish_rejects_current_and_previous_reparse_points() {
+        for journal_name in [JOURNAL_FILE, PREVIOUS_JOURNAL_FILE] {
+            let test = DeletionHarness::two_pets();
+            let operation = test
+                .root
+                .join("trash")
+                .join("pet-delete")
+                .join(format!("journal-link-{journal_name}"));
+            let outside = test.root.join(format!("outside-{journal_name}"));
+            std::fs::create_dir_all(&operation).unwrap();
+            std::fs::create_dir_all(&outside).unwrap();
+            std::fs::write(outside.join("sentinel.txt"), "outside").unwrap();
+            crate::platform::create_directory_link(&outside, &operation.join(journal_name));
+            let journal = DeletionJournal {
+                pet_id: "pet-a".into(),
+                job_ids: Vec::new(),
+                session_ids: Vec::new(),
+                phase: DeletionPhase::Prepared,
+            };
+
+            assert!(write_journal(&operation, &journal).is_err());
+            assert_eq!(
+                std::fs::read_to_string(outside.join("sentinel.txt")).unwrap(),
+                "outside"
+            );
+        }
     }
 
     #[test]

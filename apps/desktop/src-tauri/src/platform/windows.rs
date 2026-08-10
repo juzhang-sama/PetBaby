@@ -6,6 +6,39 @@ use windows_sys::Win32::{
     },
 };
 
+pub(crate) fn durable_replace_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    use std::os::windows::ffi::OsStrExt;
+    use windows_sys::Win32::Storage::FileSystem::{
+        MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
+    };
+
+    let encode_path = |path: &std::path::Path| -> Result<Vec<u16>, String> {
+        let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
+        if encoded.contains(&0) {
+            return Err("Windows path contains an embedded NUL".into());
+        }
+        encoded.push(0);
+        Ok(encoded)
+    };
+    let source = encode_path(source)?;
+    let target = encode_path(target)?;
+    let moved = unsafe {
+        MoveFileExW(
+            source.as_ptr(),
+            target.as_ptr(),
+            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
+        )
+    };
+    if moved == 0 {
+        Err(std::io::Error::last_os_error().to_string())
+    } else {
+        Ok(())
+    }
+}
+
 use crate::{
     platform::{FullscreenSnapshot, PlatformAdapter, PlatformError, ScreenRect},
     windowing::RegionSpan,
