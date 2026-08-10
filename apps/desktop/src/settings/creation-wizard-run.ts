@@ -25,6 +25,11 @@ export function refreshFailureDisposition(input: {
   };
 }
 
+export function resumeDisposition(status: string, canApply: boolean): "ignore" | "corrupt" | "restore" {
+  if (!canApply) return "ignore";
+  return status === "corrupt" ? "corrupt" : "restore";
+}
+
 export class CreationWizardRun {
   private visit = 0;
   private active = false;

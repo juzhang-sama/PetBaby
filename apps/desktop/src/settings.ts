@@ -7,6 +7,7 @@ import { requestPetSwitch } from "./settings/pet-switch-client";
 import {
   CreationWizardRun,
   refreshFailureDisposition,
+  resumeDisposition,
   type WizardOperationToken,
 } from "./settings/creation-wizard-run";
 
@@ -300,6 +301,10 @@ async function restoreWizardView(): Promise<void> {
     syncWizardOperationControls(petId);
     const snapshot = await invoke<CreationResume>("pet_creation_resume", { petId });
     if (!isCurrentWizard(visit, restoredFlow)) return;
+    if (resumeDisposition(snapshot.status, true) === "corrupt") {
+      handleCorruptSnapshot(snapshot, visit, restoredFlow);
+      return;
+    }
     restoredFlow.restore(snapshot);
     persistCreationPet(snapshot.petId);
     resetPhoto();
@@ -490,12 +495,28 @@ async function refreshCurrentVisitForPet(operation: WizardOperationToken): Promi
       recoverRefreshControls(refresh, currentFlow);
       return;
     }
+    if (resumeDisposition(snapshot.status, true) === "corrupt") {
+      handleCorruptSnapshot(snapshot, visit, currentFlow);
+      return;
+    }
     currentFlow.restore(snapshot);
     syncWizardOperationControls(currentFlow.petId);
     await renderResumedSnapshot(snapshot, visit, currentFlow);
   } catch {
     recoverRefreshControls(refresh, currentFlow);
   }
+}
+
+function handleCorruptSnapshot(snapshot: CreationResume, visit: number, expectedFlow: CreationFlow): void {
+  if (!isCurrentWizard(visit, expectedFlow) || (expectedFlow.petId !== null && expectedFlow.petId !== snapshot.petId)) return;
+  stopPolling();
+  clearCreationPet(snapshot.petId);
+  reviewAccept.disabled = true;
+  reviewRetry.disabled = true;
+  reviewAbandon.disabled = true;
+  confirmRetry.disabled = true;
+  switchView("list");
+  setCatalogStatus("本地资料损坏，请删除后重新创建", "error");
 }
 
 function recoverRefreshControls(refresh: { visit: number; petId: string; revision: number }, currentFlow: CreationFlow): void {

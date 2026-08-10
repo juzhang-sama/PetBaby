@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CreationWizardRun, refreshFailureDisposition } from "./creation-wizard-run";
+import { CreationWizardRun, refreshFailureDisposition, resumeDisposition } from "./creation-wizard-run";
 
 describe("CreationWizardRun", () => {
   it("allows one submission for the current wizard visit", () => {
@@ -100,5 +100,15 @@ describe("CreationWizardRun", () => {
       syncControls: true,
       message: null,
     });
+  });
+
+  it.each([
+    ["initial corrupt", true, "corrupt"],
+    ["stale current same-pet corrupt", true, "corrupt"],
+    ["stale token invalidated", false, "ignore"],
+    ["ordinary resumable snapshot", true, "restore"],
+  ] as const)("routes %s without treating it as a retryable restore failure", (_case, canApply, expected) => {
+    const status = expected === "restore" ? "awaitingConfirm" : "corrupt";
+    expect(resumeDisposition(status, canApply)).toBe(expected);
   });
 });
