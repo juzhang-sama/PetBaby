@@ -69,6 +69,11 @@ struct LatestJob {
     error: Option<String>,
 }
 
+struct ManifestIdentity {
+    pet_id: String,
+    variant_id: String,
+}
+
 impl PetCatalogService {
     pub fn new(
         storage: Arc<Mutex<Storage>>,
@@ -199,7 +204,8 @@ impl PetCatalogService {
             .db
             .query_row(
                 "SELECT job_id, status, error FROM generation_jobs
-                 WHERE pet_id = ?1 ORDER BY created_at DESC, rowid DESC LIMIT 1",
+                 WHERE pet_id = ?1 AND status <> 'cancelled'
+                 ORDER BY created_at DESC, rowid DESC LIMIT 1",
                 rusqlite::params![pet_id],
                 |row| {
                     Ok(LatestJob {
@@ -234,7 +240,7 @@ impl PetCatalogService {
             .optional()
             .map_err(|error| error.to_string())?;
         facts.has_runtime_variant = runtime.is_some();
-        facts.accepted = runtime.is_some_and(|(_, accepted)| accepted);
+        facts.accepted = runtime.as_ref().is_some_and(|(_, accepted)| *accepted);
         facts.compile_error = storage
             .db
             .query_row(
@@ -245,9 +251,18 @@ impl PetCatalogService {
             .optional()
             .map_err(|error| error.to_string())?;
         drop(storage);
-        facts.asset_healthy = inspect_pet_asset(&self.pets_dir, pet_id).status == "healthy";
-        facts.legacy_healthy_asset =
-            facts.asset_healthy && self.manifest_variant_has_no_runtime_row(pet_id)?;
+        let manifest = self.healthy_manifest_identity(pet_id);
+        facts.asset_healthy = runtime.as_ref().is_some_and(|(variant_id, _)| {
+            manifest.as_ref().is_some_and(|manifest| {
+                manifest.pet_id == pet_id && manifest.variant_id == *variant_id
+            })
+        });
+        facts.legacy_healthy_asset = match manifest.as_ref() {
+            Some(manifest) if manifest.pet_id == pet_id => {
+                self.manifest_variant_has_no_runtime_row(pet_id, &manifest.variant_id)?
+            }
+            _ => false,
+        };
         Ok(facts)
     }
 
@@ -286,7 +301,12 @@ impl PetCatalogService {
             .optional()
             .map_err(|error| error.to_string())?;
         drop(storage);
-        let asset_healthy = inspect_pet_asset(&self.pets_dir, pet_id).status == "healthy";
+        let asset_healthy = runtime.is_some() && {
+            self.healthy_manifest_identity(pet_id)
+                .is_some_and(|manifest| {
+                    manifest.pet_id == pet_id && manifest.variant_id == job.job_id
+                })
+        };
         Ok(PetFacts {
             latest_job_status: Some(job.status.clone()),
             has_candidate,
@@ -298,17 +318,31 @@ impl PetCatalogService {
         })
     }
 
-    fn manifest_variant_has_no_runtime_row(&self, pet_id: &str) -> Result<bool, String> {
+    fn healthy_manifest_identity(&self, pet_id: &str) -> Option<ManifestIdentity> {
+        if inspect_pet_asset(&self.pets_dir, pet_id).status != "healthy" {
+            return None;
+        }
         let manifest_path = self
             .pets_dir
             .join(pet_id)
             .join("assets")
             .join("manifest.json");
-        let manifest = std::fs::read_to_string(manifest_path).map_err(|error| error.to_string())?;
-        let variant_id = match parse_manifest(&manifest).map_err(|error| error.to_string())? {
-            RuntimeAssetManifest::V1(manifest) => manifest.variant_id,
-            RuntimeAssetManifest::V2(manifest) => manifest.variant_id,
+        let manifest = std::fs::read_to_string(manifest_path).ok()?;
+        let (manifest_pet_id, variant_id) = match parse_manifest(&manifest).ok()? {
+            RuntimeAssetManifest::V1(manifest) => (manifest.pet_id, manifest.variant_id),
+            RuntimeAssetManifest::V2(manifest) => (manifest.pet_id, manifest.variant_id),
         };
+        Some(ManifestIdentity {
+            pet_id: manifest_pet_id,
+            variant_id,
+        })
+    }
+
+    fn manifest_variant_has_no_runtime_row(
+        &self,
+        pet_id: &str,
+        variant_id: &str,
+    ) -> Result<bool, String> {
         let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         storage
             .db
@@ -486,16 +520,31 @@ mod tests {
         }
 
         fn write_healthy_asset(&self, pet_id: &str, variant_id: &str) {
-            let source = self.root.join(format!("{pet_id}.png"));
+            self.write_healthy_asset_with_manifest_identity(pet_id, pet_id, variant_id);
+        }
+
+        fn write_healthy_asset_with_manifest_identity(
+            &self,
+            asset_pet_id: &str,
+            manifest_pet_id: &str,
+            variant_id: &str,
+        ) {
+            let source = self.root.join(format!("{asset_pet_id}.png"));
             write_png(&source, 32, 32);
-            import_png_source(pet_id, &source, &self.pets_dir.join(pet_id).join("assets")).unwrap();
+            import_png_source(
+                asset_pet_id,
+                &source,
+                &self.pets_dir.join(asset_pet_id).join("assets"),
+            )
+            .unwrap();
             let manifest_path = self
                 .pets_dir
-                .join(pet_id)
+                .join(asset_pet_id)
                 .join("assets")
                 .join("manifest.json");
             let mut manifest: serde_json::Value =
                 serde_json::from_slice(&std::fs::read(&manifest_path).unwrap()).unwrap();
+            manifest["petId"] = serde_json::Value::String(manifest_pet_id.into());
             manifest["variantId"] = serde_json::Value::String(variant_id.into());
             std::fs::write(&manifest_path, serde_json::to_vec(&manifest).unwrap()).unwrap();
         }
@@ -670,6 +719,92 @@ mod tests {
         assert_eq!(entry.status, PetLifecycle::Ready);
         assert!(entry.is_current);
         assert!(entry.deletable);
+        test.cleanup();
+    }
+
+    #[test]
+    fn runtime_variant_must_match_the_healthy_manifest_variant_id() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.insert_pet("pet-1", "1");
+        test.insert_runtime_variant("runtime-variant", "pet-1");
+        test.write_healthy_asset("pet-1", "manifest-variant");
+
+        let entry = test
+            .service
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.pet_id == "pet-1")
+            .unwrap();
+        assert_eq!(entry.status, PetLifecycle::Corrupt);
+        test.cleanup();
+    }
+
+    #[test]
+    fn mismatched_manifest_pet_id_is_not_a_healthy_legacy_asset() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.insert_pet("pet-1", "1");
+        test.write_healthy_asset_with_manifest_identity("pet-1", "other-pet", "legacy-variant");
+
+        let entry = test
+            .service
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.pet_id == "pet-1")
+            .unwrap();
+        assert_ne!(entry.status, PetLifecycle::Ready);
+        test.cleanup();
+    }
+
+    #[test]
+    fn runtime_variant_with_a_wrong_manifest_pet_id_is_corrupt() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.insert_pet("pet-1", "1");
+        test.insert_runtime_variant("runtime-variant", "pet-1");
+        test.write_healthy_asset_with_manifest_identity("pet-1", "other-pet", "runtime-variant");
+
+        let entry = test
+            .service
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.pet_id == "pet-1")
+            .unwrap();
+        assert_eq!(entry.status, PetLifecycle::Corrupt);
+        test.cleanup();
+    }
+
+    #[test]
+    fn creation_resume_skips_the_latest_cancelled_job() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.insert_pet("pet-1", "1");
+        test.insert_job("job-running", "pet-1", "running", None, "1");
+        test.insert_job("job-cancelled", "pet-1", "cancelled", None, "2");
+
+        let resume = test.service.creation_resume("pet-1").unwrap();
+        assert_eq!(resume.status, PetLifecycle::Generating);
+        assert_eq!(resume.job_id.as_deref(), Some("job-running"));
+        test.cleanup();
+    }
+
+    #[test]
+    fn pending_job_takes_priority_over_an_older_compile_error() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.insert_pet("pet-1", "1");
+        test.insert_job("job-old", "pet-1", "success", None, "1");
+        test.insert_candidate("job-old", "pet-1", false);
+        test.set_compile_error("pet-1", "old compiler failure");
+        test.insert_job("job-new", "pet-1", "pending", None, "2");
+
+        let entry = test
+            .service
+            .list()
+            .unwrap()
+            .into_iter()
+            .find(|entry| entry.pet_id == "pet-1")
+            .unwrap();
+        assert_eq!(entry.status, PetLifecycle::Generating);
         test.cleanup();
     }
 }
