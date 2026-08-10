@@ -15,6 +15,11 @@ export interface MotionFrame {
   swayXRatio: number;
 }
 
+export interface HitEnvelopeTransform {
+  swayXRatio: number;
+  swayRadians: number;
+}
+
 export interface BreathSlice {
   sourceX: number;
   sourceY: number;
@@ -38,6 +43,17 @@ export function computeMotionFrame(elapsedMs: number): MotionFrame {
     swayRadians: Math.sin(swayPhase) * LIFE_V1.swayRadians,
     swayXRatio: Math.sin(swayPhase) * LIFE_V1.swayXRatio,
   };
+}
+
+export function planHitEnvelopeTransforms(): HitEnvelopeTransform[] {
+  const intervalCount = 32;
+  return Array.from({ length: intervalCount + 1 }, (_, index) => {
+    const scalar = -1 + 2 * index / intervalCount;
+    return {
+      swayXRatio: scalar * LIFE_V1.swayXRatio,
+      swayRadians: scalar * LIFE_V1.swayRadians,
+    };
+  });
 }
 
 export function breathWeight(normalizedY: number): number {

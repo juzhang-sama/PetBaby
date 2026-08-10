@@ -5,6 +5,7 @@ import {
   breathWeight,
   computeMotionFrame,
   planBreathSlices,
+  planHitEnvelopeTransforms,
 } from "./animated-image-motion";
 
 describe("animated image motion", () => {
@@ -32,6 +33,35 @@ describe("animated image motion", () => {
       expect(frame.breath).toBeLessThanOrEqual(1);
       expect(Math.abs(frame.swayRadians)).toBeLessThanOrEqual(0.7 * Math.PI / 180);
       expect(Math.abs(frame.swayXRatio)).toBeLessThanOrEqual(0.0045);
+    }
+  });
+
+  it("plans a dense uniform envelope along the correlated sway trajectory", () => {
+    const transforms = planHitEnvelopeTransforms();
+    const normalized = transforms.map((transform) =>
+      transform.swayXRatio / LIFE_V1.swayXRatio,
+    );
+
+    expect(normalized[0]).toBe(-1);
+    expect(normalized.at(-1)).toBe(1);
+    expect(Math.max(...normalized.slice(1).map((value, index) =>
+      value - normalized[index]!,
+    ))).toBeLessThanOrEqual(1 / 16 + 1e-12);
+    for (const transform of transforms) {
+      expect(transform.swayRadians / LIFE_V1.swayRadians).toBeCloseTo(
+        transform.swayXRatio / LIFE_V1.swayXRatio,
+      );
+    }
+  });
+
+  it("includes representative real display phases in the hit envelope plan", () => {
+    const transforms = planHitEnvelopeTransforms();
+    for (const elapsedMs of [0, 5200 / 12, 1300, 5200 * 7 / 12, 3900]) {
+      const frame = computeMotionFrame(elapsedMs);
+      expect(transforms.some((transform) =>
+        Math.abs(transform.swayXRatio - frame.swayXRatio) < 1e-12
+        && Math.abs(transform.swayRadians - frame.swayRadians) < 1e-12
+      )).toBe(true);
     }
   });
 

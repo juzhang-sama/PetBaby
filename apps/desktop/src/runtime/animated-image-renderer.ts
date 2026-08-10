@@ -1,8 +1,8 @@
 import type { MotionProfileV1 } from "./animated-image-manifest";
 import {
-  LIFE_V1,
   computeMotionFrame,
   planBreathSlices,
+  planHitEnvelopeTransforms,
   type BreathSlice,
 } from "./animated-image-motion";
 import { computeContainRect, type LayoutRect } from "./geometry";
@@ -231,19 +231,12 @@ export class AnimatedImageRenderer implements PetRenderer {
     if (!this.image || !this.profile || !this.viewport || !this.bounds || this.destroyed) return;
     const pivotX = this.bounds.x + this.profile.swayPivot.x * this.bounds.width;
     const pivotY = this.bounds.y + this.profile.swayPivot.y * this.bounds.height;
-    const maxShiftX = this.viewport.width * LIFE_V1.swayXRatio;
-    const poses = [
-      { shiftX: 0, radians: 0 },
-      { shiftX: -maxShiftX, radians: 0 },
-      { shiftX: maxShiftX, radians: 0 },
-      { shiftX: 0, radians: -LIFE_V1.swayRadians },
-      { shiftX: 0, radians: LIFE_V1.swayRadians },
-    ];
+    const poses = planHitEnvelopeTransforms();
     this.hitContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
     for (const pose of poses) {
       this.hitContext.save();
-      this.hitContext.translate(pivotX + pose.shiftX, pivotY);
-      this.hitContext.rotate(pose.radians);
+      this.hitContext.translate(pivotX + this.viewport.width * pose.swayXRatio, pivotY);
+      this.hitContext.rotate(pose.swayRadians);
       this.hitContext.translate(-pivotX, -pivotY);
       this.hitContext.drawImage(
         this.image,

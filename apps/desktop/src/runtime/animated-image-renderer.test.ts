@@ -1,6 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import { validMotionProfile } from "./animated-image-test-fixtures";
-import { planBreathSlices, type BreathSlice } from "./animated-image-motion";
+import { LIFE_V1, planBreathSlices, type BreathSlice } from "./animated-image-motion";
 import { AnimatedImageRenderer } from "./animated-image-renderer";
 
 function rendererHarness() {
@@ -84,7 +84,7 @@ describe("AnimatedImageRenderer", () => {
     expect(test.context.translate).toHaveBeenCalledWith(-200, -288);
   });
 
-  it("draws a stable hit envelope on load or resize but not on each update", async () => {
+  it("draws the correlated sway trajectory into a stable load-or-resize hit envelope", async () => {
     const test = rendererHarness();
     test.renderer.resize({ width: 420, height: 520, dpr: 2 });
     await test.renderer.load({
@@ -93,8 +93,19 @@ describe("AnimatedImageRenderer", () => {
       motionProfile: validMotionProfile(),
     });
     expect(test.renderer.getHitSurface()).toBe(test.hitCanvas);
-    expect(test.hitContext.drawImage).toHaveBeenCalledTimes(5);
+    const pivotX = 210;
+    const hitTransforms = test.hitContext.rotate.mock.calls.map((call, index) => ({
+      swayX: test.hitContext.translate.mock.calls[index * 2]![0] - pivotX,
+      swayRadians: call[0],
+    }));
+    for (const scalar of [-1, 0.5, 1]) {
+      expect(hitTransforms.some((transform) =>
+        Math.abs(transform.swayX - 420 * LIFE_V1.swayXRatio * scalar) < 1e-12
+        && Math.abs(transform.swayRadians - LIFE_V1.swayRadians * scalar) < 1e-12
+      )).toBe(true);
+    }
     const hitDrawsAfterLoad = test.hitContext.drawImage.mock.calls.length;
+    expect(hitDrawsAfterLoad).toBeGreaterThan(5);
 
     test.renderer.playMotion("idle");
     test.renderer.update(100);
@@ -102,7 +113,7 @@ describe("AnimatedImageRenderer", () => {
     expect(test.hitContext.drawImage).toHaveBeenCalledTimes(hitDrawsAfterLoad);
 
     test.renderer.resize({ width: 300, height: 450, dpr: 1 });
-    expect(test.hitContext.drawImage).toHaveBeenCalledTimes(hitDrawsAfterLoad + 5);
+    expect(test.hitContext.drawImage).toHaveBeenCalledTimes(hitDrawsAfterLoad * 2);
   });
 
   it("uses anonymous browser image loading through the shared loader", async () => {
