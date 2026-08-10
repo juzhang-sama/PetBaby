@@ -255,6 +255,101 @@ describe("PetRuntimeSlot", () => {
     expect(candidateIdle.cancel).not.toHaveBeenCalled();
   });
 
+  it("destroys the pending candidate and clears idle owners when previous destruction fails", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(oldRuntime.host.destroy).mockImplementation(() => {
+      throw new Error("old destroy failed");
+    });
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    slot.prepare(candidate);
+
+    expect(() => slot.destroy()).toThrow("old destroy failed");
+    idle.cancel();
+
+    expect(oldRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    expect(oldIdle.cancel).not.toHaveBeenCalled();
+  });
+
+  it("destroys the pending previous runtime and clears owners when candidate destruction fails", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    vi.mocked(candidate.host.destroy).mockImplementation(() => {
+      throw new Error("candidate destroy failed");
+    });
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    slot.prepare(candidate).activate();
+
+    expect(() => slot.destroy()).toThrow("candidate destroy failed");
+    idle.cancel();
+
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    expect(oldRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(candidateIdle.cancel).not.toHaveBeenCalled();
+    expect(oldIdle.cancel).not.toHaveBeenCalled();
+  });
+
+  it("attempts every pending destroy once and reports the first failure", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    vi.mocked(candidate.host.destroy).mockImplementation(() => {
+      throw new Error("candidate destroy failed first");
+    });
+    vi.mocked(oldRuntime.host.destroy).mockImplementation(() => {
+      throw new Error("old destroy failed second");
+    });
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    slot.prepare(candidate).activate();
+
+    expect(() => slot.destroy()).toThrow("candidate destroy failed first");
+    idle.cancel();
+
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    expect(oldRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(candidateIdle.cancel).not.toHaveBeenCalled();
+    expect(oldIdle.cancel).not.toHaveBeenCalled();
+  });
+
+  it("forgets a failed previous cleanup after commit so cancellation only reaches the candidate", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    vi.mocked(oldRuntime.host.destroy).mockImplementation(() => {
+      throw new Error("old cleanup failed");
+    });
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    const swap = slot.prepare(candidate);
+    swap.activate();
+
+    expect(() => swap.commit()).toThrow("old cleanup failed");
+    idle.cancel();
+    idle.cancel();
+
+    expect(slot.activePetId).toBe("candidate");
+    expect(oldRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(oldIdle.cancel).not.toHaveBeenCalled();
+    expect(candidateIdle.cancel).toHaveBeenCalledOnce();
+    expect(candidate.host.destroy).not.toHaveBeenCalled();
+  });
+
   it("prepares the candidate with the current viewport and visibility before activation", () => {
     const slot = new PetRuntimeSlot(fakeRoot(), fakeRuntime("old"));
     const candidate = fakeRuntime("next");

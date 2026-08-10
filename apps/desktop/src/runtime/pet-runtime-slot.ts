@@ -145,8 +145,11 @@ export class PetRuntimeSlot implements PetRenderer {
         if (!state.activated || this.active !== candidate) throw new Error("swap is not committable");
         state.settled = true;
         this.pending = null;
-        state.previous.host.destroy();
-        this.removeIdleOwner(state.previous, state);
+        try {
+          state.previous.host.destroy();
+        } finally {
+          this.removeIdleOwner(state.previous, state);
+        }
       },
       rollback: () => {
         if (state.settled || !this.isPending(state)) return;
@@ -236,17 +239,11 @@ export class PetRuntimeSlot implements PetRenderer {
     this.pending = null;
     if (pending) {
       pending.settled = true;
-      this.active.host.destroy();
-      this.removeIdleOwner(this.active, pending);
       const inactive = this.active === pending.previous ? pending.candidate : pending.previous;
-      inactive.host.destroy();
-      this.removeIdleOwner(inactive, pending);
-      this.continuousIdle = null;
+      this.destroySlotRuntimes([this.active, inactive], pending);
       return;
     }
-    this.active.host.destroy();
-    this.removeIdleOwner(this.active);
-    this.continuousIdle = null;
+    this.destroySlotRuntimes([this.active]);
   }
 
   private isPending(state: PendingRuntimeSwap): boolean {
@@ -307,5 +304,25 @@ export class PetRuntimeSlot implements PetRenderer {
   private removeIdleOwner(runtime: MountedPetRuntime, pending?: PendingRuntimeSwap): void {
     this.continuousIdle?.owners.delete(runtime);
     pending?.candidateIdle?.owners.delete(runtime);
+  }
+
+  private destroySlotRuntimes(
+    runtimes: MountedPetRuntime[],
+    pending?: PendingRuntimeSwap,
+  ): void {
+    let firstError: unknown;
+    let failed = false;
+    for (const runtime of new Set(runtimes)) {
+      try {
+        runtime.host.destroy();
+      } catch (error) {
+        if (!failed) firstError = error;
+        failed = true;
+      } finally {
+        this.removeIdleOwner(runtime, pending);
+      }
+    }
+    this.continuousIdle = null;
+    if (failed) throw firstError;
   }
 }
