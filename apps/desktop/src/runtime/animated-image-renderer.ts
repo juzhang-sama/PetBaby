@@ -40,8 +40,10 @@ interface Viewport {
 export class AnimatedImageRenderer implements PetRenderer {
   private readonly displayCanvas: HTMLCanvasElement;
   private readonly hitCanvas: HTMLCanvasElement;
+  private readonly composeCanvas: HTMLCanvasElement;
   private readonly displayContext: CanvasRenderingContext2D;
   private readonly hitContext: CanvasRenderingContext2D;
+  private readonly composeContext: CanvasRenderingContext2D;
   private readonly loadImage: (url: string) => Promise<AnimatedImage>;
   private readonly makeBreathSlices: BreathPlanner;
   private image: AnimatedImage | undefined;
@@ -61,13 +63,16 @@ export class AnimatedImageRenderer implements PetRenderer {
     const createCanvas = options.createCanvas ?? (() => document.createElement("canvas"));
     this.displayCanvas = createCanvas();
     this.hitCanvas = createCanvas();
+    this.composeCanvas = createCanvas();
     const displayContext = this.displayCanvas.getContext("2d");
     const hitContext = this.hitCanvas.getContext("2d");
-    if (!displayContext || !hitContext) {
+    const composeContext = this.composeCanvas.getContext("2d");
+    if (!displayContext || !hitContext || !composeContext) {
       throw new Error("2D canvas is unavailable for animated image rendering");
     }
     this.displayContext = displayContext;
     this.hitContext = hitContext;
+    this.composeContext = composeContext;
     this.loadImage = options.loadImage ?? loadBrowserImage;
     this.makeBreathSlices = options.planBreathSlices ?? planBreathSlices;
     this.displayCanvas.style.display = "block";
@@ -106,7 +111,7 @@ export class AnimatedImageRenderer implements PetRenderer {
       throw new RangeError("viewport dimensions and dpr must be positive");
     }
     this.viewport = { ...viewport };
-    for (const canvas of [this.displayCanvas, this.hitCanvas]) {
+    for (const canvas of [this.displayCanvas, this.hitCanvas, this.composeCanvas]) {
       canvas.width = Math.max(1, Math.round(viewport.width * viewport.dpr));
       canvas.height = Math.max(1, Math.round(viewport.height * viewport.dpr));
       canvas.style.width = `${viewport.width}px`;
@@ -114,6 +119,7 @@ export class AnimatedImageRenderer implements PetRenderer {
     }
     this.displayContext.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     this.hitContext.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    this.composeContext.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     this.recomputeLayout();
     this.renderDisplay();
     this.renderHitEnvelope();
@@ -173,10 +179,12 @@ export class AnimatedImageRenderer implements PetRenderer {
     const clearHeight = this.viewport?.height ?? this.displayCanvas.height;
     this.displayContext.clearRect(0, 0, clearWidth, clearHeight);
     this.hitContext.clearRect(0, 0, clearWidth, clearHeight);
+    this.composeContext.clearRect(0, 0, clearWidth, clearHeight);
     this.displayCanvas.style.visibility = "hidden";
     this.hitCanvas.style.visibility = "hidden";
     this.displayCanvas.remove();
     this.hitCanvas.remove();
+    this.composeCanvas.remove();
     this.image = undefined;
     this.profile = undefined;
     this.bounds = undefined;
@@ -206,13 +214,9 @@ export class AnimatedImageRenderer implements PetRenderer {
     const pivotX = this.bounds.x + this.profile.swayPivot.x * this.bounds.width;
     const pivotY = this.bounds.y + this.profile.swayPivot.y * this.bounds.height;
     const shiftX = this.viewport.width * frame.swayXRatio;
-    this.displayContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
-    this.displayContext.save();
-    this.displayContext.translate(pivotX + shiftX, pivotY);
-    this.displayContext.rotate(frame.swayRadians);
-    this.displayContext.translate(-pivotX, -pivotY);
+    this.composeContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
     for (const slice of slices) {
-      this.displayContext.drawImage(
+      this.composeContext.drawImage(
         this.image,
         slice.sourceX,
         slice.sourceY,
@@ -224,6 +228,22 @@ export class AnimatedImageRenderer implements PetRenderer {
         slice.destHeight * this.bounds.scale,
       );
     }
+    this.displayContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
+    this.displayContext.save();
+    this.displayContext.translate(pivotX + shiftX, pivotY);
+    this.displayContext.rotate(frame.swayRadians);
+    this.displayContext.translate(-pivotX, -pivotY);
+    this.displayContext.drawImage(
+      this.composeCanvas,
+      0,
+      0,
+      this.composeCanvas.width,
+      this.composeCanvas.height,
+      0,
+      0,
+      this.viewport.width,
+      this.viewport.height,
+    );
     this.displayContext.restore();
   }
 

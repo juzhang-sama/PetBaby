@@ -4,7 +4,7 @@ import { LIFE_V1, planBreathSlices, type BreathSlice } from "./animated-image-mo
 import { AnimatedImageRenderer } from "./animated-image-renderer";
 
 function rendererHarness() {
-  const contexts = Array.from({ length: 2 }, () => ({
+  const contexts = Array.from({ length: 3 }, () => ({
     clearRect: vi.fn(),
     drawImage: vi.fn(),
     setTransform: vi.fn(),
@@ -38,14 +38,62 @@ function rendererHarness() {
     loadImage,
     context: contexts[0]!,
     hitContext: contexts[1]!,
+    composeContext: contexts[2]!,
     displayCanvas: canvases[0]!,
     hitCanvas: canvases[1]!,
+    composeCanvas: canvases[2]!,
     faceSafeY: 500,
     localPlans: () => lastPlans,
   };
 }
 
 describe("AnimatedImageRenderer", () => {
+  it("precomposes every breath slice before drawing one texture through the sway transform", async () => {
+    const test = rendererHarness();
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.renderer.load({
+      kind: "animated-image",
+      imageUrl: "pet.png",
+      motionProfile: validMotionProfile(),
+    });
+    test.context.drawImage.mockClear();
+    test.composeContext.drawImage.mockClear();
+
+    test.renderer.playMotion("idle");
+    test.renderer.update(1300);
+
+    expect(test.composeContext.drawImage).toHaveBeenCalledTimes(test.localPlans().length);
+    expect(test.context.drawImage).toHaveBeenCalledOnce();
+    expect(test.context.drawImage).toHaveBeenCalledWith(
+      test.composeCanvas,
+      0,
+      0,
+      800,
+      1000,
+      0,
+      0,
+      400,
+      500,
+    );
+    expect(test.context.rotate).toHaveBeenLastCalledWith(0.7 * Math.PI / 180);
+  });
+
+  it("keeps the offscreen compose canvas out of the rendered DOM", async () => {
+    const test = rendererHarness();
+    await test.renderer.load({
+      kind: "animated-image",
+      imageUrl: "pet.png",
+      motionProfile: validMotionProfile(),
+    });
+
+    expect(test.root.replaceChildren).toHaveBeenCalledWith(test.displayCanvas, test.hitCanvas);
+    expect(test.root.replaceChildren).not.toHaveBeenCalledWith(
+      test.displayCanvas,
+      test.hitCanvas,
+      test.composeCanvas,
+    );
+  });
+
   it("renders idle updates and keeps the face slices locally unchanged", async () => {
     const test = rendererHarness();
     await test.renderer.load({
@@ -201,7 +249,9 @@ describe("AnimatedImageRenderer", () => {
     test.renderer.destroy();
     expect(test.context.clearRect).toHaveBeenCalledOnce();
     expect(test.hitContext.clearRect).toHaveBeenCalledOnce();
+    expect(test.composeContext.clearRect).toHaveBeenCalledOnce();
     expect(test.displayCanvas.remove).toHaveBeenCalledOnce();
     expect(test.hitCanvas.remove).toHaveBeenCalledOnce();
+    expect(test.composeCanvas.remove).toHaveBeenCalledOnce();
   });
 });
