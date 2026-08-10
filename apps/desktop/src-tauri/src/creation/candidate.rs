@@ -156,6 +156,30 @@ mod tests {
     }
 
     #[test]
+    fn submitting_job_cannot_record_a_candidate_before_task_attachment() {
+        let test = CandidateHarness::upload();
+        test.store
+            .create_job_for_session("job-1", &test.session_id, "prompt", "sha", None)
+            .unwrap();
+        let (raw, cutout, profile) = test.candidate_files("job-1");
+
+        assert!(test
+            .store
+            .record_upload_candidate(
+                "job-1",
+                &test.session_id,
+                &test.root.join("jobs"),
+                &raw,
+                &cutout,
+                &profile,
+                "acceptable",
+            )
+            .is_err());
+        assert_eq!(test.store.job("job-1").unwrap().status, "submitting");
+        assert!(test.store.candidate_for_session(&test.session_id).is_err());
+    }
+
+    #[test]
     fn composer_session_cannot_start_an_upload_job() {
         let test = CandidateHarness::composer();
         assert!(test
@@ -221,7 +245,7 @@ mod tests {
     fn a_second_current_candidate_requires_explicit_replacement() {
         let test = CandidateHarness::upload();
         test.store
-            .create_job_for_session("job-1", &test.session_id, "p", "h", None)
+            .create_job_for_session("job-1", &test.session_id, "p", "h", Some("task-1"))
             .unwrap();
         let (raw, cutout, profile) = test.candidate_files("job-1");
         test.store
@@ -409,7 +433,7 @@ mod tests {
             Some(test.session_id.as_str())
         );
         assert_eq!(jobs[0].status, "failed");
-        assert_eq!(jobs[1].status, "pending");
+        assert_eq!(jobs[1].status, "submitting");
         assert_eq!(
             test.session_state(),
             ("draft".into(), "draft".into(), "generating".into(), None)

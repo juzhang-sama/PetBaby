@@ -544,6 +544,14 @@ pub(crate) fn deletion_operation_guard() -> Result<MutexGuard<'static, ()>, Stri
         .map_err(|_| "deletion operation lock poisoned".into())
 }
 
+#[cfg(test)]
+pub(crate) fn operation_lock_is_held() -> bool {
+    matches!(
+        deletion_operation_lock().try_lock(),
+        Err(std::sync::TryLockError::WouldBlock)
+    )
+}
+
 fn creation_job_ids(
     db: &Connection,
     session_id: &str,

@@ -27,6 +27,14 @@ pub struct GenerationManager {
     before_candidate_commit_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     fail_next_stage_promote_rename: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    submit_hook: Mutex<Option<Arc<dyn Fn() -> Result<String, String> + Send + Sync>>>,
+    #[cfg(test)]
+    after_task_attach_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    fail_next_task_attach: std::sync::atomic::AtomicBool,
+    #[cfg(test)]
+    fail_next_backup_cleanup: std::sync::atomic::AtomicBool,
 }
 
 impl GenerationManager {
@@ -45,6 +53,14 @@ impl GenerationManager {
             before_candidate_commit_hook: Mutex::new(None),
             #[cfg(test)]
             fail_next_stage_promote_rename: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            submit_hook: Mutex::new(None),
+            #[cfg(test)]
+            after_task_attach_hook: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_task_attach: std::sync::atomic::AtomicBool::new(false),
+            #[cfg(test)]
+            fail_next_backup_cleanup: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -61,6 +77,28 @@ impl GenerationManager {
     #[cfg(test)]
     fn fail_next_stage_promote_rename(&self) {
         self.fail_next_stage_promote_rename
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn set_submit_hook(&self, hook: impl Fn() -> Result<String, String> + Send + Sync + 'static) {
+        *self.submit_hook.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    #[cfg(test)]
+    fn set_after_task_attach_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.after_task_attach_hook.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    #[cfg(test)]
+    fn fail_next_task_attach(&self) {
+        self.fail_next_task_attach
+            .store(true, std::sync::atomic::Ordering::SeqCst);
+    }
+
+    #[cfg(test)]
+    fn fail_next_backup_cleanup(&self) {
+        self.fail_next_backup_cleanup
             .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
@@ -83,6 +121,16 @@ impl GenerationManager {
         Ok(Lk888Client::new(key))
     }
 
+    fn submit_task(&self, prompt: &str, ref_png: &[u8]) -> Result<String, String> {
+        #[cfg(test)]
+        if let Some(hook) = self.submit_hook.lock().unwrap().clone() {
+            return hook();
+        }
+        let client = self.client_for()?;
+        tauri::async_runtime::block_on(client.submit(prompt, Some(ref_png), "auto"))
+            .map_err(|error| format!("submit failed: {error}"))
+    }
+
     pub fn start(
         &self,
         pet_id: &str,
@@ -90,18 +138,32 @@ impl GenerationManager {
         ref_png: &[u8],
         ref_sha256: &str,
     ) -> Result<String, String> {
+        let _operation = crate::pets::deletion::deletion_operation_guard()?;
+        let job_id = new_entity_id("job");
         self.store
             .lock()
             .map_err(|_| "store lock poisoned")?
-            .ensure_legacy_generation_pet(pet_id)?;
-        let job_id = new_entity_id("job");
-        let client = self.client_for()?;
-        let task_id = tauri::async_runtime::block_on(client.submit(prompt, Some(ref_png), "auto"))
-            .map_err(|error| format!("submit failed: {error}"))?;
-        {
-            let store = self.store.lock().map_err(|_| "store lock poisoned")?;
-            store.create_job(&job_id, pet_id, prompt, ref_sha256, Some(&task_id))?;
+            .create_job(&job_id, pet_id, prompt, ref_sha256, None)?;
+        let task_id = match self.submit_task(prompt, ref_png) {
+            Ok(task_id) => task_id,
+            Err(error) => {
+                self.store
+                    .lock()
+                    .map_err(|_| "store lock poisoned")?
+                    .fail_legacy_job_if_active(&job_id, &error)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.attach_legacy_task(&job_id, pet_id, &task_id) {
+            let preservation = self
+                .store
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .preserve_legacy_task_after_attach_failure(&job_id, pet_id, &task_id);
+            return Err(combine_attach_and_preservation_error(error, preservation));
         }
+        #[cfg(test)]
+        Self::run_hook(&self.after_task_attach_hook);
         let state = self.state_store.lock().map_err(|_| "state lock poisoned")?;
         state.remove(&format!("creation:{pet_id}:compile_error"))?;
         Ok(job_id)
@@ -114,6 +176,7 @@ impl GenerationManager {
         ref_png: &[u8],
         ref_sha256: &str,
     ) -> Result<String, String> {
+        let _operation = crate::pets::deletion::deletion_operation_guard()?;
         let pet_id = self
             .store
             .lock()
@@ -125,29 +188,65 @@ impl GenerationManager {
             .map_err(|_| "store lock poisoned")?
             .create_job_for_session(&job_id, session_id, prompt, ref_sha256, None)?;
 
-        let result: Result<(), String> = (|| {
-            let client = self.client_for()?;
-            let task_id =
-                tauri::async_runtime::block_on(client.submit(prompt, Some(ref_png), "auto"))
-                    .map_err(|error| format!("submit failed: {error}"))?;
-            self.store
+        let task_id = match self.submit_task(prompt, ref_png) {
+            Ok(task_id) => task_id,
+            Err(error) => {
+                self.store
+                    .lock()
+                    .map_err(|_| "store lock poisoned")?
+                    .fail_upload_job(&job_id, session_id, &pet_id, &error)?;
+                return Err(error);
+            }
+        };
+        if let Err(error) = self.attach_upload_task(&job_id, session_id, &pet_id, &task_id) {
+            let preservation = self
+                .store
                 .lock()
                 .map_err(|_| "store lock poisoned")?
-                .attach_task_to_upload_job(&job_id, session_id, &pet_id, &task_id)?;
-            self.state_store
-                .lock()
-                .map_err(|_| "state lock poisoned")?
-                .remove(&format!("creation:{pet_id}:compile_error"))?;
-            Ok(())
-        })();
-        if let Err(error) = result {
-            self.store
-                .lock()
-                .map_err(|_| "store lock poisoned")?
-                .fail_upload_job(&job_id, session_id, &pet_id, &error)?;
-            return Err(error);
+                .preserve_upload_task_after_attach_failure(&job_id, session_id, &pet_id, &task_id);
+            return Err(combine_attach_and_preservation_error(error, preservation));
         }
+        #[cfg(test)]
+        Self::run_hook(&self.after_task_attach_hook);
+        self.state_store
+            .lock()
+            .map_err(|_| "state lock poisoned")?
+            .remove(&format!("creation:{pet_id}:compile_error"))?;
         Ok(job_id)
+    }
+
+    fn attach_upload_task(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        pet_id: &str,
+        task_id: &str,
+    ) -> Result<(), String> {
+        #[cfg(test)]
+        if self
+            .fail_next_task_attach
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("injected upload task attachment failure".into());
+        }
+        self.store
+            .lock()
+            .map_err(|_| "store lock poisoned")?
+            .attach_task_to_upload_job(job_id, session_id, pet_id, task_id)
+    }
+
+    fn attach_legacy_task(&self, job_id: &str, pet_id: &str, task_id: &str) -> Result<(), String> {
+        #[cfg(test)]
+        if self
+            .fail_next_task_attach
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return Err("injected legacy task attachment failure".into());
+        }
+        self.store
+            .lock()
+            .map_err(|_| "store lock poisoned")?
+            .attach_task_to_legacy_job(job_id, pet_id, task_id)
     }
 
     pub fn cancel(&self, job_id: &str) -> Result<(), String> {
@@ -164,23 +263,24 @@ impl GenerationManager {
         let mut finished = Vec::new();
         for job in running {
             let Some(task_id) = job.task_id.clone() else {
-                self.settle_failure(&job, "generation job has no remote task id")?;
-                finished.push(job.job_id);
+                self.record_failed_poll(
+                    &job,
+                    "generation job has no remote task id",
+                    &mut finished,
+                )?;
                 continue;
             };
             let client = match self.client_for() {
                 Ok(client) => client,
                 Err(error) => {
-                    self.settle_failure(&job, &error)?;
-                    finished.push(job.job_id);
+                    self.record_failed_poll(&job, &error, &mut finished)?;
                     continue;
                 }
             };
             let state = match tauri::async_runtime::block_on(client.poll(&task_id)) {
                 Ok(state) => state,
                 Err(error) => {
-                    self.settle_failure(&job, &error.to_string())?;
-                    finished.push(job.job_id);
+                    self.record_failed_poll(&job, &error.to_string(), &mut finished)?;
                     continue;
                 }
             };
@@ -189,8 +289,7 @@ impl GenerationManager {
             }
             let error = if state.state == "success" {
                 let Some(url) = state.result_url.clone() else {
-                    self.settle_failure(&job, "no result url")?;
-                    finished.push(job.job_id);
+                    self.record_failed_poll(&job, "no result url", &mut finished)?;
                     continue;
                 };
                 match tauri::async_runtime::block_on(client.download(&url)) {
@@ -204,16 +303,22 @@ impl GenerationManager {
             } else {
                 state.error.unwrap_or_else(|| "generation failed".into())
             };
-            self.settle_failure(&job, &error)?;
-            finished.push(job.job_id);
+            self.record_failed_poll(&job, &error, &mut finished)?;
         }
         Ok(finished)
     }
 
     /// Resume unfinished jobs from a previous run.
     pub fn resume(&self) -> Result<usize, String> {
+        let stale = {
+            let _operation = crate::pets::deletion::deletion_operation_guard()?;
+            self.store
+                .lock()
+                .map_err(|_| "store lock poisoned")?
+                .fail_stale_submitting_jobs("generation submission was interrupted")?
+        };
         let finished = self.poll_all()?;
-        Ok(finished.len())
+        Ok(stale + finished.len())
     }
 
     fn stage_result(&self, job_id: &str, bytes: &[u8]) -> Result<StagedCandidate, String> {
@@ -312,7 +417,13 @@ impl GenerationManager {
             let rollback = staged.rollback();
             return Err(self.failure_with_rollback_and_settlement(&job, &error, rollback));
         }
-        staged.commit();
+        #[cfg(test)]
+        let skip_backup_cleanup = self
+            .fail_next_backup_cleanup
+            .swap(false, std::sync::atomic::Ordering::SeqCst);
+        #[cfg(not(test))]
+        let skip_backup_cleanup = false;
+        staged.commit(skip_backup_cleanup);
         Ok(())
     }
 
@@ -382,8 +493,18 @@ impl GenerationManager {
         if let Some(session_id) = job.session_id.as_deref() {
             store.fail_upload_job(&job.job_id, session_id, &job.pet_id, error)
         } else {
-            store.update_job_status(&job.job_id, "failed", None, Some(error))
+            store.fail_legacy_job_if_active(&job.job_id, error)
         }
+    }
+
+    fn record_failed_poll(
+        &self,
+        job: &JobRecord,
+        error: &str,
+        finished: &mut Vec<String>,
+    ) -> Result<(), String> {
+        let settlement = self.settle_failure(job, error);
+        self.record_poll_completion(&job.job_id, settlement, finished)
     }
 
     fn record_poll_completion(
@@ -534,8 +655,11 @@ impl StagedCandidate {
         Ok(())
     }
 
-    fn commit(&mut self) {
+    fn commit(&mut self, skip_backup_cleanup: bool) {
         self.committed = true;
+        if skip_backup_cleanup {
+            return;
+        }
         if let Some(backup_dir) = self.backup_dir.as_ref() {
             let removable = std::fs::symlink_metadata(backup_dir)
                 .map(|metadata| {
@@ -553,6 +677,18 @@ impl Drop for StagedCandidate {
     fn drop(&mut self) {
         if !self.committed {
             let _ = self.rollback();
+        }
+    }
+}
+
+fn combine_attach_and_preservation_error(
+    attach_error: String,
+    preservation: Result<(), String>,
+) -> String {
+    match preservation {
+        Ok(()) => format!("{attach_error}; remote task id was preserved for retryable recovery"),
+        Err(preservation_error) => {
+            format!("{attach_error}; remote task preservation failed: {preservation_error}")
         }
     }
 }
@@ -607,7 +743,22 @@ mod tests {
         png: Vec<u8>,
     }
 
+    struct LegacyManagerHarness {
+        root: std::path::PathBuf,
+        manager: GenerationManager,
+        store: Arc<Mutex<CreationStore>>,
+        storage: Arc<Mutex<Storage>>,
+        pet_id: String,
+        png: Vec<u8>,
+    }
+
     impl Drop for ManagerHarness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    impl Drop for LegacyManagerHarness {
         fn drop(&mut self) {
             let _ = std::fs::remove_dir_all(&self.root);
         }
@@ -664,6 +815,31 @@ mod tests {
         manager_harness_with_job(true)
     }
 
+    fn legacy_manager_harness() -> LegacyManagerHarness {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-legacy-manager-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        let pet = PetRepository::new(storage.clone())
+            .create(Species::Cat, IdentityMode::RealPet)
+            .unwrap();
+        let store = Arc::new(Mutex::new(CreationStore::new(storage.clone())));
+        let state = Arc::new(Mutex::new(StateStore::new(storage.clone())));
+        let manager =
+            GenerationManager::new(store.clone(), state, Arc::from(root.join("jobs").as_path()));
+        LegacyManagerHarness {
+            root,
+            manager,
+            store,
+            storage,
+            pet_id: pet.pet_id,
+            png: png_bytes(),
+        }
+    }
+
     fn png_bytes() -> Vec<u8> {
         let mut bytes = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(RgbaImage::from_pixel(
@@ -689,6 +865,21 @@ mod tests {
     }
 
     fn deletion_service(test: &ManagerHarness) -> PetDeletionService {
+        let session: SharedActivePetSession = Arc::new(Mutex::new(ActivePetSession::new()));
+        session
+            .lock()
+            .unwrap()
+            .set_active(BUILTIN_PET_ID.into())
+            .unwrap();
+        let active = Arc::new(ActivePetService::new(
+            test.storage.clone(),
+            session,
+            test.root.join("pets"),
+        ));
+        PetDeletionService::new(test.storage.clone(), active, test.root.clone())
+    }
+
+    fn legacy_deletion_service(test: &LegacyManagerHarness) -> PetDeletionService {
         let session: SharedActivePetSession = Arc::new(Mutex::new(ActivePetSession::new()));
         session
             .lock()
@@ -885,6 +1076,327 @@ mod tests {
     }
 
     #[test]
+    fn upload_submit_reservation_is_not_polled_before_task_attachment() {
+        let test = manager_harness_with_job(false);
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        test.manager.set_submit_hook({
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                entered.wait();
+                release.wait();
+                Ok("remote-task".into())
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let start = scope.spawn(|| {
+                test.manager
+                    .start_for_session(&test.session_id, "p", &test.png, "h")
+            });
+            entered.wait();
+            let jobs = test
+                .store
+                .lock()
+                .unwrap()
+                .upload_jobs(&test.session_id)
+                .unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].status, "submitting");
+            assert!(jobs[0].task_id.is_none());
+            assert!(test.manager.poll_all().unwrap().is_empty());
+            release.wait();
+            let job_id = start.join().unwrap().unwrap();
+            let attached = test.store.lock().unwrap().job(&job_id).unwrap();
+            assert_eq!(attached.status, "running");
+            assert_eq!(attached.task_id.as_deref(), Some("remote-task"));
+        });
+    }
+
+    #[test]
+    fn legacy_submit_reserves_an_unpollable_job_before_remote_completion() {
+        let test = legacy_manager_harness();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        test.manager.set_submit_hook({
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                entered.wait();
+                release.wait();
+                Ok("remote-task".into())
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let start = scope.spawn(|| test.manager.start(&test.pet_id, "p", &test.png, "h"));
+            entered.wait();
+            let jobs = test.store.lock().unwrap().job_list(&test.pet_id).unwrap();
+            let polled = test.manager.poll_all().unwrap();
+            release.wait();
+            let start_result = start.join().unwrap();
+            assert_eq!(jobs.len(), 1);
+            assert_eq!(jobs[0].status, "submitting");
+            assert!(polled.is_empty());
+            let job_id = start_result.unwrap();
+            let attached = test.store.lock().unwrap().job(&job_id).unwrap();
+            assert_eq!(attached.status, "running");
+            assert_eq!(attached.task_id.as_deref(), Some("remote-task"));
+        });
+    }
+
+    #[test]
+    fn resume_converges_stale_session_and_legacy_submissions_to_failed() {
+        let session = manager_harness_with_job(false);
+        session
+            .store
+            .lock()
+            .unwrap()
+            .create_job_for_session("stale-session", &session.session_id, "p", "h", None)
+            .unwrap();
+        let legacy = legacy_manager_harness();
+        legacy
+            .store
+            .lock()
+            .unwrap()
+            .create_job("stale-legacy", &legacy.pet_id, "p", "h", None)
+            .unwrap();
+
+        assert_eq!(session.manager.resume().unwrap(), 1);
+        assert_eq!(legacy.manager.resume().unwrap(), 1);
+        assert_eq!(
+            session
+                .store
+                .lock()
+                .unwrap()
+                .job("stale-session")
+                .unwrap()
+                .status,
+            "failed"
+        );
+        assert_eq!(
+            legacy
+                .store
+                .lock()
+                .unwrap()
+                .job("stale-legacy")
+                .unwrap()
+                .status,
+            "failed"
+        );
+        let session_state: (String, String, String) = session
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT status, last_stable_status, current_step
+                 FROM creation_sessions WHERE session_id=?1",
+                [&session.session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .unwrap();
+        assert_eq!(
+            session_state,
+            ("retryableFailure".into(), "draft".into(), "upload".into())
+        );
+    }
+
+    #[test]
+    fn upload_start_holds_deletion_until_remote_task_is_attached() {
+        let test = manager_harness_with_job(false);
+        let deletion = deletion_service(&test);
+        let submit_entered = Arc::new(std::sync::Barrier::new(2));
+        let submit_release = Arc::new(std::sync::Barrier::new(2));
+        test.manager.set_submit_hook({
+            let entered = submit_entered.clone();
+            let release = submit_release.clone();
+            move || {
+                entered.wait();
+                release.wait();
+                Ok("remote-task".into())
+            }
+        });
+        let (attached_tx, attached_rx) = std::sync::mpsc::channel();
+        let (attach_release_tx, attach_release_rx) = std::sync::mpsc::channel();
+        let attach_release_rx = Arc::new(Mutex::new(attach_release_rx));
+        test.manager.set_after_task_attach_hook(move || {
+            attached_tx.send(()).unwrap();
+            attach_release_rx.lock().unwrap().recv().unwrap();
+        });
+
+        std::thread::scope(|scope| {
+            let start = scope.spawn(|| {
+                test.manager
+                    .start_for_session(&test.session_id, "p", &test.png, "h")
+            });
+            submit_entered.wait();
+            let operation_locked = crate::pets::deletion::operation_lock_is_held();
+            let abandon = scope.spawn(|| deletion.abandon_creation(&test.session_id));
+            submit_release.wait();
+            let attached = attached_rx.recv_timeout(std::time::Duration::from_secs(1));
+            if attached.is_ok() {
+                let job = test
+                    .store
+                    .lock()
+                    .unwrap()
+                    .upload_jobs(&test.session_id)
+                    .unwrap()
+                    .remove(0);
+                assert_eq!(job.status, "running");
+                assert_eq!(job.task_id.as_deref(), Some("remote-task"));
+            }
+            let _ = attach_release_tx.send(());
+            assert!(
+                operation_locked,
+                "start did not hold the deletion operation lock"
+            );
+            assert!(attached.is_ok(), "attach did not win before abandon");
+            assert!(start.join().unwrap().is_ok());
+            assert!(abandon.join().unwrap().is_ok());
+        });
+        assert!(test
+            .store
+            .lock()
+            .unwrap()
+            .upload_jobs(&test.session_id)
+            .unwrap()
+            .is_empty());
+        let tombstoned: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM creation_session_tombstones WHERE session_id=?1",
+                [&test.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(tombstoned, 1);
+    }
+
+    #[test]
+    fn legacy_start_holds_deletion_until_remote_task_is_attached() {
+        let test = legacy_manager_harness();
+        let deletion = legacy_deletion_service(&test);
+        let submit_entered = Arc::new(std::sync::Barrier::new(2));
+        let submit_release = Arc::new(std::sync::Barrier::new(2));
+        test.manager.set_submit_hook({
+            let entered = submit_entered.clone();
+            let release = submit_release.clone();
+            move || {
+                entered.wait();
+                release.wait();
+                Ok("remote-task".into())
+            }
+        });
+        let (attached_tx, attached_rx) = std::sync::mpsc::channel();
+        let (attach_release_tx, attach_release_rx) = std::sync::mpsc::channel();
+        let attach_release_rx = Arc::new(Mutex::new(attach_release_rx));
+        test.manager.set_after_task_attach_hook(move || {
+            attached_tx.send(()).unwrap();
+            attach_release_rx.lock().unwrap().recv().unwrap();
+        });
+
+        std::thread::scope(|scope| {
+            let start = scope.spawn(|| test.manager.start(&test.pet_id, "p", &test.png, "h"));
+            submit_entered.wait();
+            let operation_locked = crate::pets::deletion::operation_lock_is_held();
+            let delete = scope.spawn(|| deletion.delete(&test.pet_id));
+            submit_release.wait();
+            let attached = attached_rx.recv_timeout(std::time::Duration::from_secs(1));
+            if attached.is_ok() {
+                let job = test
+                    .store
+                    .lock()
+                    .unwrap()
+                    .job_list(&test.pet_id)
+                    .unwrap()
+                    .remove(0);
+                assert_eq!(job.status, "running");
+                assert_eq!(job.task_id.as_deref(), Some("remote-task"));
+            }
+            let _ = attach_release_tx.send(());
+            assert!(
+                operation_locked,
+                "start did not hold the deletion operation lock"
+            );
+            assert!(attached.is_ok(), "attach did not win before delete");
+            assert!(start.join().unwrap().is_ok());
+            assert!(delete.join().unwrap().is_ok());
+        });
+        assert!(test
+            .store
+            .lock()
+            .unwrap()
+            .job_list(&test.pet_id)
+            .unwrap()
+            .is_empty());
+        let pet_count: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM pets WHERE pet_id=?1",
+                [&test.pet_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pet_count, 0);
+    }
+
+    #[test]
+    fn attach_failure_preserves_the_remote_task_without_reporting_finished() {
+        let test = manager_harness_with_job(false);
+        test.manager.set_submit_hook(|| Ok("remote-task".into()));
+        test.manager.fail_next_task_attach();
+
+        assert!(test
+            .manager
+            .start_for_session(&test.session_id, "p", &test.png, "h")
+            .is_err());
+
+        let job = test
+            .store
+            .lock()
+            .unwrap()
+            .upload_jobs(&test.session_id)
+            .unwrap()
+            .remove(0);
+        assert_eq!(job.status, "submitting");
+        assert_eq!(job.task_id.as_deref(), Some("remote-task"));
+        assert!(test.manager.poll_all().unwrap().is_empty());
+    }
+
+    #[test]
+    fn cancelled_legacy_job_is_not_overwritten_by_late_failure() {
+        let test = legacy_manager_harness();
+        test.store
+            .lock()
+            .unwrap()
+            .create_job("job-legacy", &test.pet_id, "p", "h", Some("task"))
+            .unwrap();
+        let observed = test.store.lock().unwrap().job("job-legacy").unwrap();
+        test.manager.cancel("job-legacy").unwrap();
+        let completion = test
+            .manager
+            .settle_failure(&observed, "late remote failure");
+        let mut finished = Vec::new();
+
+        test.manager
+            .record_poll_completion("job-legacy", completion, &mut finished)
+            .unwrap();
+
+        assert_eq!(finished, vec!["job-legacy"]);
+        let job = test.store.lock().unwrap().job("job-legacy").unwrap();
+        assert_eq!(job.status, "cancelled");
+        assert!(job.error.is_none());
+    }
+
+    #[test]
     fn stage_promote_rename_failure_restores_the_existing_final_directory() {
         let test = manager_harness();
         install_existing_final(&test);
@@ -964,6 +1476,72 @@ mod tests {
         assert_eq!(std::fs::read(final_dir.join("raw.png")).unwrap(), test.png);
         assert!(!final_dir.join("sentinel").exists());
         assert_no_job_siblings(&test);
+    }
+
+    #[test]
+    fn existing_final_directory_link_is_never_moved_or_deleted() {
+        let test = manager_harness();
+        let outside = test.root.join("outside-existing-final");
+        std::fs::create_dir_all(&outside).unwrap();
+        std::fs::write(outside.join("raw.png"), b"outside raw").unwrap();
+        std::fs::write(outside.join("cutout.png"), b"outside cutout").unwrap();
+        std::fs::write(outside.join("motion-profile.json"), b"outside profile").unwrap();
+        std::fs::write(outside.join("sentinel"), b"outside sentinel").unwrap();
+        let jobs_root = test.root.join("jobs");
+        std::fs::create_dir_all(&jobs_root).unwrap();
+        crate::platform::create_directory_link(&outside, &jobs_root.join("job-1"));
+
+        assert!(test
+            .manager
+            .complete_download("job-1", "https://example.invalid/out.png", &test.png)
+            .is_err());
+
+        let link_metadata = std::fs::symlink_metadata(jobs_root.join("job-1")).unwrap();
+        assert!(crate::platform::is_link_or_reparse_point(&link_metadata));
+        assert_eq!(
+            std::fs::read(outside.join("sentinel")).unwrap(),
+            b"outside sentinel"
+        );
+        assert_eq!(
+            std::fs::read(outside.join("raw.png")).unwrap(),
+            b"outside raw"
+        );
+    }
+
+    #[test]
+    fn backup_cleanup_failure_preserves_durable_candidate_and_identifiable_backup() {
+        let test = manager_harness();
+        install_existing_final(&test);
+        test.manager.fail_next_backup_cleanup();
+
+        test.manager
+            .complete_download("job-1", "https://example.invalid/out.png", &test.png)
+            .unwrap();
+
+        let job = test.store.lock().unwrap().job("job-1").unwrap();
+        assert_eq!(job.status, "success");
+        assert!(test
+            .store
+            .lock()
+            .unwrap()
+            .candidate_for_session(&test.session_id)
+            .is_ok());
+        let final_dir = test.root.join("jobs/job-1");
+        assert_eq!(std::fs::read(final_dir.join("raw.png")).unwrap(), test.png);
+        let backups: Vec<_> = std::fs::read_dir(test.root.join("jobs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().path())
+            .filter(|path| {
+                path.file_name()
+                    .and_then(|name| name.to_str())
+                    .is_some_and(|name| name.starts_with(".job-1-backup-candidate-backup-"))
+            })
+            .collect();
+        assert_eq!(backups.len(), 1);
+        assert_eq!(
+            std::fs::read(backups[0].join("sentinel")).unwrap(),
+            b"keep old final"
+        );
     }
 
     #[test]

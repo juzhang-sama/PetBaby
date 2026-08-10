@@ -33,7 +33,8 @@ impl CreationStore {
         tx.execute(
             "INSERT INTO generation_jobs
              (job_id, pet_id, prompt, ref_sha256, task_id, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, 'pending', ?6)",
+             VALUES (?1, ?2, ?3, ?4, ?5,
+                     CASE WHEN ?5 IS NULL THEN 'submitting' ELSE 'running' END, ?6)",
             rusqlite::params![
                 job_id,
                 pet_id,
@@ -45,11 +46,6 @@ impl CreationStore {
         )
         .map_err(|error| error.to_string())?;
         tx.commit().map_err(|error| error.to_string())
-    }
-
-    pub fn ensure_legacy_generation_pet(&self, pet_id: &str) -> Result<(), String> {
-        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
-        ensure_legacy_generation_pet(db, pet_id)
     }
 
     pub fn upload_session_pet(&self, session_id: &str) -> Result<String, String> {
@@ -115,7 +111,7 @@ impl CreationStore {
         let active_jobs: i64 = tx
             .query_row(
                 "SELECT COUNT(*) FROM generation_jobs
-                 WHERE session_id=?1 AND status IN ('pending','running')",
+                 WHERE session_id=?1 AND status IN ('submitting','pending','running')",
                 [session_id],
                 |row| row.get(0),
             )
@@ -127,7 +123,8 @@ impl CreationStore {
         tx.execute(
             "INSERT INTO generation_jobs
              (job_id, pet_id, session_id, prompt, ref_sha256, task_id, status, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, 'pending', ?7)",
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6,
+                     CASE WHEN ?6 IS NULL THEN 'submitting' ELSE 'running' END, ?7)",
             rusqlite::params![job_id, pet_id, session_id, prompt, ref_sha256, task_id, now],
         )
         .map_err(|error| error.to_string())?;
@@ -158,7 +155,7 @@ impl CreationStore {
         let affected = db
             .execute(
                 "UPDATE generation_jobs SET task_id=?4, status='running'
-                 WHERE job_id=?1 AND session_id=?2 AND pet_id=?3 AND status='pending'",
+                 WHERE job_id=?1 AND session_id=?2 AND pet_id=?3 AND status='submitting'",
                 rusqlite::params![job_id, session_id, pet_id, task_id],
             )
             .map_err(|error| error.to_string())?;
@@ -166,6 +163,86 @@ impl CreationStore {
             return Err("upload job ownership changed before task attachment".into());
         }
         Ok(())
+    }
+
+    pub fn attach_task_to_legacy_job(
+        &self,
+        job_id: &str,
+        pet_id: &str,
+        task_id: &str,
+    ) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        let affected = db
+            .execute(
+                "UPDATE generation_jobs SET task_id=?3, status='running'
+                 WHERE job_id=?1 AND pet_id=?2 AND session_id IS NULL
+                   AND status='submitting'",
+                rusqlite::params![job_id, pet_id, task_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("legacy job ownership changed before task attachment".into());
+        }
+        Ok(())
+    }
+
+    pub fn preserve_upload_task_after_attach_failure(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        pet_id: &str,
+        task_id: &str,
+    ) -> Result<(), String> {
+        self.preserve_task_after_attach_failure(job_id, Some(session_id), pet_id, task_id)
+    }
+
+    pub fn preserve_legacy_task_after_attach_failure(
+        &self,
+        job_id: &str,
+        pet_id: &str,
+        task_id: &str,
+    ) -> Result<(), String> {
+        self.preserve_task_after_attach_failure(job_id, None, pet_id, task_id)
+    }
+
+    fn preserve_task_after_attach_failure(
+        &self,
+        job_id: &str,
+        session_id: Option<&str>,
+        pet_id: &str,
+        task_id: &str,
+    ) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        let affected = db
+            .execute(
+                "UPDATE generation_jobs SET task_id=?4
+                 WHERE job_id=?1 AND pet_id=?2 AND session_id IS ?3
+                   AND status='submitting' AND task_id IS NULL",
+                rusqlite::params![job_id, pet_id, session_id, task_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected == 1 {
+            return Ok(());
+        }
+        let durable: Option<(Option<String>, String, Option<String>)> = db
+            .query_row(
+                "SELECT session_id, status, task_id FROM generation_jobs
+                 WHERE job_id=?1 AND pet_id=?2",
+                rusqlite::params![job_id, pet_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        match durable {
+            Some((actual_session, status, Some(actual_task)))
+                if actual_session.as_deref() == session_id
+                    && actual_task == task_id
+                    && matches!(status.as_str(), "submitting" | "running") =>
+            {
+                Ok(())
+            }
+            _ => Err("remote task id could not be preserved after attachment failure".into()),
+        }
     }
 
     pub fn record_upload_candidate(
@@ -358,7 +435,7 @@ impl CreationStore {
             .execute(
                 "UPDATE generation_jobs SET status='failed', result_url=NULL, error=?4
                  WHERE job_id=?1 AND session_id=?2 AND pet_id=?3
-                   AND status IN ('pending','running')",
+                   AND status IN ('submitting','pending','running')",
                 rusqlite::params![job_id, session_id, pet_id, error],
             )
             .map_err(|db_error| db_error.to_string())?;
@@ -379,6 +456,91 @@ impl CreationStore {
             return Err("upload session is not eligible for failure recovery".into());
         }
         tx.commit().map_err(|db_error| db_error.to_string())
+    }
+
+    pub fn fail_legacy_job_if_active(&self, job_id: &str, error: &str) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        let affected = db
+            .execute(
+                "UPDATE generation_jobs SET status='failed', result_url=NULL, error=?2
+                 WHERE job_id=?1 AND session_id IS NULL
+                   AND status IN ('submitting','pending','running')",
+                rusqlite::params![job_id, error],
+            )
+            .map_err(|db_error| db_error.to_string())?;
+        if affected == 1 {
+            return Ok(());
+        }
+        let current: Option<(Option<String>, String)> = db
+            .query_row(
+                "SELECT session_id, status FROM generation_jobs WHERE job_id=?1",
+                [job_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .optional()
+            .map_err(|db_error| db_error.to_string())?;
+        match current {
+            Some((None, status))
+                if matches!(status.as_str(), "cancelled" | "success" | "failed") =>
+            {
+                Ok(())
+            }
+            Some((None, status)) => Err(format!(
+                "legacy generation job is not durably terminal after failure: {status}"
+            )),
+            Some((Some(_), _)) => Err("generation job is not a legacy job".into()),
+            None => Err(format!("generation job not found: {job_id}")),
+        }
+    }
+
+    pub fn fail_stale_submitting_jobs(&self, error: &str) -> Result<usize, String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|db_error| db_error.to_string())?;
+        let jobs: Vec<(String, String, Option<String>)> = {
+            let mut statement = tx
+                .prepare(
+                    "SELECT job_id, pet_id, session_id FROM generation_jobs
+                     WHERE status='submitting'",
+                )
+                .map_err(|db_error| db_error.to_string())?;
+            let rows = statement
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
+                .map_err(|db_error| db_error.to_string())?;
+            rows.collect::<Result<Vec<_>, _>>()
+                .map_err(|db_error| db_error.to_string())?
+        };
+        for (job_id, pet_id, session_id) in &jobs {
+            let job_affected = tx
+                .execute(
+                    "UPDATE generation_jobs SET status='failed', result_url=NULL, error=?2
+                     WHERE job_id=?1 AND status='submitting'",
+                    rusqlite::params![job_id, error],
+                )
+                .map_err(|db_error| db_error.to_string())?;
+            if job_affected != 1 {
+                return Err("stale submitting job changed during recovery".into());
+            }
+            if let Some(session_id) = session_id {
+                let session_affected = tx
+                    .execute(
+                        "UPDATE creation_sessions
+                         SET status='retryableFailure', last_stable_status='draft',
+                             current_step='upload', error=?3, updated_at=?4
+                         WHERE session_id=?1 AND pet_id=?2 AND method='upload'
+                           AND status NOT IN ('completed','abandoned')",
+                        rusqlite::params![session_id, pet_id, error, profiles::now_iso()],
+                    )
+                    .map_err(|db_error| db_error.to_string())?;
+                if session_affected != 1 {
+                    return Err("stale upload session is not eligible for recovery".into());
+                }
+            }
+        }
+        tx.commit().map_err(|db_error| db_error.to_string())?;
+        Ok(jobs.len())
     }
 
     pub fn candidate_for_session(&self, session_id: &str) -> Result<StandardCandidate, String> {
@@ -469,7 +631,7 @@ impl CreationStore {
                     "UPDATE generation_jobs
                      SET status='cancelled', result_url=NULL, error=NULL
                      WHERE job_id=?1 AND session_id=?2 AND pet_id=?3
-                       AND status IN ('pending','running')",
+                       AND status IN ('submitting','pending','running')",
                     rusqlite::params![job_id, session_id, pet_id],
                 )
                 .map_err(|error| error.to_string())?;
@@ -493,7 +655,8 @@ impl CreationStore {
             let affected = tx
                 .execute(
                     "UPDATE generation_jobs SET status='cancelled', result_url=NULL, error=NULL
-                     WHERE job_id=?1 AND session_id IS NULL",
+                     WHERE job_id=?1 AND session_id IS NULL
+                       AND status IN ('submitting','pending','running')",
                     [job_id],
                 )
                 .map_err(|error| error.to_string())?;
@@ -732,7 +895,8 @@ impl CreationStore {
         let mut statement = db
             .prepare(
                 "SELECT job_id, pet_id, session_id, prompt, ref_sha256, task_id, status, result_url, error, created_at
-                 FROM generation_jobs WHERE status IN ('pending','running')",
+                 FROM generation_jobs
+                 WHERE status IN ('pending','running') AND task_id IS NOT NULL",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
@@ -969,7 +1133,7 @@ mod tests {
         let running = store.running_jobs().unwrap();
         assert_eq!(running.len(), 1);
         assert_eq!(running[0].job_id, "j1");
-        assert_eq!(running[0].status, "pending");
+        assert_eq!(running[0].status, "running");
 
         store
             .update_job_status("j1", "running", None, None)
@@ -985,6 +1149,62 @@ mod tests {
         assert_eq!(listed.len(), 1);
         assert_eq!(listed[0].status, "success");
         assert_eq!(listed[0].result_url.as_deref(), Some("https://x/out.png"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_job_is_submitting_and_unpollable_until_task_attachment() {
+        let (store, root, pet_id) = temp_store();
+        store
+            .create_job("job-submitting", &pet_id, "p", "h", None)
+            .unwrap();
+
+        let reserved = store.job("job-submitting").unwrap();
+        assert_eq!(reserved.status, "submitting");
+        assert!(reserved.task_id.is_none());
+        assert!(store.running_jobs().unwrap().is_empty());
+
+        store
+            .attach_task_to_legacy_job("job-submitting", &pet_id, "task-1")
+            .unwrap();
+        let attached = store.job("job-submitting").unwrap();
+        assert_eq!(attached.status, "running");
+        assert_eq!(attached.task_id.as_deref(), Some("task-1"));
+        assert_eq!(store.running_jobs().unwrap().len(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn upload_job_is_submitting_and_unpollable_until_task_attachment() {
+        let (store, root, pet_id) = temp_store();
+        let session_id = "session-submitting";
+        store
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO creation_sessions
+                 (session_id, pet_id, method, status, last_stable_status, current_step,
+                  schema_version, created_at, updated_at)
+                 VALUES (?1, ?2, 'upload', 'draft', 'draft', 'upload', 1, ?3, ?3)",
+                rusqlite::params![session_id, pet_id, now_iso()],
+            )
+            .unwrap();
+        store
+            .create_job_for_session("job-submitting", session_id, "p", "h", None)
+            .unwrap();
+
+        let reserved = store.job("job-submitting").unwrap();
+        assert_eq!(reserved.status, "submitting");
+        assert!(store.running_jobs().unwrap().is_empty());
+
+        store
+            .attach_task_to_upload_job("job-submitting", session_id, &pet_id, "task-1")
+            .unwrap();
+        let attached = store.job("job-submitting").unwrap();
+        assert_eq!(attached.status, "running");
+        assert_eq!(attached.task_id.as_deref(), Some("task-1"));
         let _ = std::fs::remove_dir_all(root);
     }
 

@@ -375,7 +375,7 @@ fn project(facts: &PetFacts) -> PetLifecycle {
         return PetLifecycle::Ready;
     }
     match facts.latest_job_status.as_deref() {
-        Some("pending" | "running") => PetLifecycle::Generating,
+        Some("submitting" | "pending" | "running") => PetLifecycle::Generating,
         Some("failed" | "cancelled") => PetLifecycle::GenerationFailed,
         Some("success") if facts.compile_error.is_some() => PetLifecycle::CompileRetryable,
         Some("success") if facts.has_candidate => PetLifecycle::AwaitingConfirm,
@@ -629,6 +629,7 @@ mod tests {
 
     #[test]
     fn projects_every_creation_lifecycle() {
+        assert_eq!(project(&facts("submitting")), PetLifecycle::Generating);
         assert_eq!(project(&facts("running")), PetLifecycle::Generating);
         assert_eq!(project(&facts("failed")), PetLifecycle::GenerationFailed);
         assert_eq!(
