@@ -1,4 +1,6 @@
 pub mod candidate;
+pub mod composer;
+pub mod content;
 pub mod domain;
 pub mod finalization;
 pub mod name;

@@ -28,5 +28,10 @@
     ],
     "security": { "csp": "default-src 'self'; script-src 'self' 'unsafe-inline'; img-src 'self' pet-asset: http://pet-asset.localhost https://pet-asset.localhost asset: blob: data:; style-src 'self' 'unsafe-inline'" }
   },
-  "bundle": { "active": false }
+  "bundle": {
+    "active": false,
+    "resources": {
+      "../public/creation-content/**/*": "creation-content/"
+    }
+  }
 }
