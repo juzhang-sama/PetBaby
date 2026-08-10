@@ -4,39 +4,9 @@
     <meta charset="UTF-8" />
     <meta name="viewport" content="width=device-width, initial-scale=1.0" />
     <title>桌面宠物设置</title>
-    <style>
-      body { font-family: system-ui, sans-serif; margin: 24px; background: #f5f6f8; color: #222; }
-      h1 { font-size: 18px; }
-      .tabs { display: flex; gap: 8px; margin-bottom: 16px; }
-      .tab { padding: 6px 14px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
-      .tab.active { background: #4a90d9; color: #fff; border-color: #4a90d9; }
-      .pet-list { display: flex; flex-direction: column; gap: 8px; margin: 16px 0; }
-      .pet-item { display: flex; align-items: center; gap: 12px; padding: 10px 14px; background: #fff; border: 1px solid #ddd; border-radius: 8px; }
-      .pet-item.active { border-color: #4a90d9; background: #eef5fd; }
-      button { padding: 6px 14px; border-radius: 6px; border: 1px solid #ccc; background: #fff; cursor: pointer; }
-      button.primary { background: #4a90d9; color: #fff; border-color: #4a90d9; }
-      button:disabled { opacity: 0.5; cursor: not-allowed; }
-      .actions { display: flex; gap: 8px; margin-left: auto; }
-      .empty { color: #888; }
-      #status, #wizard-status { margin-top: 12px; font-size: 13px; color: #666; }
-      .wizard { background: #fff; border: 1px solid #ddd; border-radius: 8px; padding: 16px; max-width: 720px; }
-      .wizard-step { margin: 12px 0; }
-      .wizard-status { font-size: 13px; color: #a33; margin: 8px 0; min-height: 18px; }
-      .wizard-actions { display: flex; gap: 8px; margin-top: 16px; }
-      .privacy-note { font-size: 12px; color: #a33; background: #fdecec; border: 1px solid #f5c6c6; border-radius: 6px; padding: 8px; margin: 10px 0; }
-      .job-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(160px, 1fr)); gap: 10px; }
-      .job-card { background: #f8f9fa; border: 1px solid #e0e0e0; border-radius: 6px; padding: 10px; font-size: 13px; }
-      .job-card.success { border-color: #7ac47a; background: #f0faf0; }
-      .job-card.failed { border-color: #e08080; background: #fdf0f0; }
-      .candidate-grid { display: grid; grid-template-columns: repeat(auto-fill, minmax(200px, 1fr)); gap: 12px; }
-      .candidate { background: #fff; border: 2px solid #ddd; border-radius: 8px; padding: 8px; cursor: pointer; }
-      .candidate.selected { border-color: #4a90d9; }
-      .candidate img { width: 100%; border-radius: 6px; background: linear-gradient(45deg,#eee 25%,#fff 25%,#fff 50%,#eee 50%,#eee 75%,#fff 75%); background-size: 16px 16px; }
-      input[type="file"] { margin: 8px 0; }
-      #photo-preview { max-width: 240px; border-radius: 8px; display: none; }
-    </style>
+    <link rel="stylesheet" href="/src/styles.css" />
   </head>
-  <body>
+  <body class="settings-shell">
     <h1>桌面宠物设置</h1>
     <div class="tabs">
       <button id="tab-list" class="tab active">我的宠物</button>
@@ -45,7 +15,7 @@
 
     <div id="view-list">
       <div class="pet-list" id="list"></div>
-      <div id="status"></div>
+      <div id="status" role="status" aria-live="polite"></div>
     </div>
 
     <div id="view-create" style="display:none">

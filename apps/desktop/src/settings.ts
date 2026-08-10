@@ -1,5 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { CreationFlow } from "./creation/creation-flow";
+import type { PetCatalogEntry } from "./pets/pet-catalog-contract";
+import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-view-model";
+import { requestPetSwitch } from "./settings/pet-switch-client";
 
 interface PetSummary {
   petId: string;
@@ -12,6 +15,10 @@ interface JobInfo {
   jobId: string;
   status: string;
   error: string | null;
+}
+
+interface DeleteOutcome {
+  warning: string | null;
 }
 
 const $ = <T extends HTMLElement>(id: string): T => {
@@ -27,60 +34,134 @@ const tabCreate = $<HTMLButtonElement>("tab-create");
 const viewList = $<HTMLDivElement>("view-list");
 const viewCreate = $<HTMLDivElement>("view-create");
 
-const petList = (): Promise<PetSummary[]> => invoke("pet_list");
 const petSetActive = (petId: string): Promise<void> => invoke("pet_set_active", { petId });
-const petDelete = (petId: string): Promise<void> => invoke("pet_delete", { petId });
 const genList = (petId: string): Promise<JobInfo[]> => invoke("gen_list", { petId });
 const assetCompile = (petId: string, variantId: string, cutoutPath: string): Promise<{ manifestPath: string; degraded: boolean }> =>
   invoke("asset_compile", { petId, variantId, cutoutPath });
 
-const speciesLabel: Record<string, string> = { cat: "猫", dog: "狗" };
-const modeLabel: Record<string, string> = {
-  real_pet: "真实宠物",
-  reference: "参考图片",
-  guided: "引导创建",
-  adopted: "直接领养",
-};
+let catalogEntries: PetCatalogEntry[] = [];
+let catalogBusy: "switch" | "delete" | null = null;
 
-async function renderList(): Promise<void> {
-  const pets = await petList();
-  const health = await invoke<Array<{ petId: string; status: string }>>("asset_scan");
-  const healthyIds = new Set(health.filter((h) => h.status === "healthy").map((h) => h.petId));
+function setCatalogStatus(message: string, tone: "info" | "error" | "warning" = "info"): void {
+  statusEl.textContent = message;
+  statusEl.classList.toggle("error", tone === "error");
+  statusEl.classList.toggle("warning", tone === "warning");
+}
+
+function renderCatalogRows(): void {
   listEl.replaceChildren();
-  if (pets.length === 0) {
+  if (catalogEntries.length === 0) {
     const empty = document.createElement("div");
     empty.className = "empty";
-    empty.textContent = "还没有宠物，去「创建宠物」页签新建一只吧";
+    empty.textContent = "还没有宠物。前往“创建宠物”新建一只吧。";
     listEl.append(empty);
     return;
   }
-  const active = await invoke<string | null>("pet_get_active");
-  for (const pet of pets) {
+
+  for (const row of buildPetListRows(catalogEntries)) {
+    const entry = catalogEntries.find((item) => item.petId === row.petId);
     const item = document.createElement("div");
-    item.className = pet.petId === active ? "pet-item active" : "pet-item";
+    item.className = entry?.isCurrent ? "pet-item active" : "pet-item";
+    const copy = document.createElement("div");
+    copy.className = "pet-copy";
+    const heading = document.createElement("div");
+    heading.className = "pet-heading";
     const name = document.createElement("span");
-    const hasAsset = healthyIds.has(pet.petId);
-    name.textContent = `${speciesLabel[pet.species] ?? pet.species} · ${modeLabel[pet.identityMode] ?? pet.identityMode}${hasAsset ? "" : "（无资产）"}`;
+    name.className = "pet-name";
+    name.textContent = row.title;
+    heading.append(name);
+    if (row.badge) {
+      const badge = document.createElement("span");
+      badge.className = "pet-badge";
+      badge.textContent = row.badge;
+      heading.append(badge);
+    }
+    const detail = document.createElement("p");
+    detail.className = "pet-detail";
+    detail.textContent = row.detail;
+    copy.append(heading, detail);
     const actions = document.createElement("div");
     actions.className = "actions";
-    if (pet.petId !== active && hasAsset) {
-      const activate = document.createElement("button");
-      activate.textContent = "设为当前";
-      activate.addEventListener("click", async () => {
-        await petSetActive(pet.petId);
-        await renderList();
-      });
-      actions.append(activate);
+    for (const action of row.actions) {
+      const button = document.createElement("button");
+      button.className = action.kind === "switch" ? "primary" : action.kind === "delete" ? "danger" : "";
+      button.disabled = catalogBusy !== null;
+      button.textContent = catalogBusy === action.kind
+        ? action.kind === "switch" ? "正在切换…" : "正在删除…"
+        : action.label;
+      button.addEventListener("click", () => { void handleCatalogAction(row.petId, action); });
+      actions.append(button);
     }
-    const remove = document.createElement("button");
-    remove.textContent = "删除";
-    remove.addEventListener("click", async () => {
-      await petDelete(pet.petId);
-      await renderList();
-    });
-    actions.append(remove);
-    item.append(name, actions);
+    item.append(copy, actions);
     listEl.append(item);
+  }
+}
+
+async function renderList(): Promise<boolean> {
+  try {
+    catalogEntries = await invoke<PetCatalogEntry[]>("pet_catalog_list");
+    renderCatalogRows();
+    return true;
+  } catch (error) {
+    setCatalogStatus(`读取宠物目录失败。请确认桌面宠物正在运行后重试：${String(error)}`, "error");
+    return false;
+  }
+}
+
+async function handleCatalogAction(petId: string, action: PetListAction): Promise<void> {
+  if (action.kind === "continue") {
+    enterCreationResume(petId);
+    return;
+  }
+  if (catalogBusy) return;
+  if (action.kind === "switch") {
+    await switchCatalogPet(petId);
+    return;
+  }
+  await deleteCatalogPet(petId);
+}
+
+async function switchCatalogPet(petId: string): Promise<void> {
+  catalogBusy = "switch";
+  renderCatalogRows();
+  try {
+    const result = await requestPetSwitch(petId);
+    if (!result.ok) {
+      setCatalogStatus(`切换失败。请确认宠物窗口可用后重试：${result.message}`, "error");
+      return;
+    }
+    if (await renderList()) setCatalogStatus("已设为当前桌面宠物。");
+  } catch (error) {
+    setCatalogStatus(`切换失败。请稍后重试：${String(error)}`, "error");
+  } finally {
+    catalogBusy = null;
+    renderCatalogRows();
+  }
+}
+
+async function deleteCatalogPet(petId: string): Promise<void> {
+  const entry = catalogEntries.find((item) => item.petId === petId);
+  if (!entry || !window.confirm("确定删除这只宠物吗？此操作会移除它的本地资料和生成任务。")) return;
+
+  catalogBusy = "delete";
+  renderCatalogRows();
+  try {
+    if (entry.isCurrent) {
+      const switched = await requestPetSwitch("pet-live2d-v1");
+      if (!switched.ok) {
+        setCatalogStatus(`无法切换至默认猫，因此未删除当前宠物。请确认宠物窗口可用后重试：${switched.message}`, "error");
+        return;
+      }
+    }
+    const outcome = await invoke<DeleteOutcome>("pet_delete_full", { petId });
+    if (await renderList()) {
+      setCatalogStatus(outcome.warning ?? "宠物已删除。", outcome.warning ? "warning" : "info");
+    }
+  } catch (error) {
+    setCatalogStatus(`删除失败。请稍后重试：${String(error)}`, "error");
+  } finally {
+    catalogBusy = null;
+    renderCatalogRows();
   }
 }
 
@@ -107,6 +188,14 @@ let petId = "";
 let pollTimer: number | undefined;
 let selectedVariant: string | null = null;
 let wizardPhase: "idle" | "generating" | "review" = "idle";
+const creationResumeStorageKey = "desktop-pet.creation.resumePetId";
+let pendingCreationResumePetId = window.sessionStorage.getItem(creationResumeStorageKey);
+
+function enterCreationResume(petId: string): void {
+  pendingCreationResumePetId = petId;
+  window.sessionStorage.setItem(creationResumeStorageKey, petId);
+  switchView("create");
+}
 
 function showStep(step: "upload" | "generating" | "review"): void {
   stepUpload.style.display = step === "upload" ? "" : "none";
@@ -162,6 +251,14 @@ function startWizard(): void {
 
 /** Restore the wizard view from memory when switching back to the tab. */
 function restoreWizardView(): void {
+  if (pendingCreationResumePetId) {
+    wizardStatus.textContent = "已选择继续创建，正在准备恢复…";
+    viewCreate.dataset.resumePetId = pendingCreationResumePetId;
+    window.dispatchEvent(new CustomEvent("pet-creation-resume-requested", {
+      detail: { petId: pendingCreationResumePetId },
+    }));
+    return;
+  }
   if (wizardPhase === "generating") {
     showStep("generating");
     void pollJobs();
