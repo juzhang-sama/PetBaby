@@ -1,3 +1,4 @@
+use crate::creation::domain::CreationMethod;
 use crate::pets::active::{SharedActivePetService, BUILTIN_PET_ID};
 use crate::runtime_assets::{
     loader::inspect_pet_asset,
@@ -24,6 +25,9 @@ pub enum PetLifecycle {
 #[serde(rename_all = "camelCase")]
 pub struct PetCatalogEntry {
     pub pet_id: String,
+    pub display_name: String,
+    pub creation_method: CreationMethod,
+    pub source_template_id: Option<String>,
     pub source: String,
     pub species: String,
     pub identity_mode: String,
@@ -75,6 +79,17 @@ struct ManifestIdentity {
     variant_id: String,
 }
 
+struct DurablePet {
+    pet_id: String,
+    display_name: String,
+    creation_method: CreationMethod,
+    source_template_id: Option<String>,
+    species: String,
+    identity_mode: String,
+    lifecycle: String,
+    created_at: String,
+}
+
 impl PetCatalogService {
     pub fn new(
         storage: Arc<Mutex<Storage>>,
@@ -94,6 +109,9 @@ impl PetCatalogService {
         let mut entries = Vec::with_capacity(pets.len() + 1);
         entries.push(PetCatalogEntry {
             pet_id: BUILTIN_PET_ID.into(),
+            display_name: "默认猫 · Live2D".into(),
+            creation_method: CreationMethod::Upload,
+            source_template_id: None,
             source: "builtin".into(),
             species: "cat".into(),
             identity_mode: "builtin".into(),
@@ -103,16 +121,23 @@ impl PetCatalogService {
             status: PetLifecycle::Ready,
             issue: None,
         });
-        for (pet_id, species, identity_mode, created_at) in pets {
-            let facts = self.facts_for_pet(&pet_id)?;
-            let status = project(&facts);
-            let is_current = active_pet_id == pet_id;
+        for pet in pets {
+            let facts = self.facts_for_pet(&pet.pet_id)?;
+            let status = if pet.lifecycle == "corrupt" || project(&facts) != PetLifecycle::Ready {
+                PetLifecycle::Corrupt
+            } else {
+                PetLifecycle::Ready
+            };
+            let is_current = active_pet_id == pet.pet_id;
             entries.push(PetCatalogEntry {
-                pet_id,
+                pet_id: pet.pet_id,
+                display_name: pet.display_name,
+                creation_method: pet.creation_method,
+                source_template_id: pet.source_template_id,
                 source: "user".into(),
-                species,
-                identity_mode,
-                created_at: Some(created_at),
+                species: pet.species,
+                identity_mode: pet.identity_mode,
+                created_at: Some(pet.created_at),
                 is_current,
                 deletable: true,
                 issue: issue_for(&facts, status, None),
@@ -167,18 +192,41 @@ impl PetCatalogService {
         })
     }
 
-    fn pets(&self) -> Result<Vec<(String, String, String, String)>, String> {
+    fn pets(&self) -> Result<Vec<DurablePet>, String> {
         let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let mut statement = storage
             .db
             .prepare(
-                "SELECT pet_id, species, identity_mode, created_at
-                 FROM pets ORDER BY created_at, rowid",
+                "SELECT pet_id, display_name, creation_method, source_template_id,
+                        species, identity_mode, lifecycle, created_at
+                 FROM pets
+                 WHERE lifecycle IN ('ready','corrupt')
+                 ORDER BY created_at, rowid",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([], |row| {
-                Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?))
+                let method: String = row.get(2)?;
+                let creation_method = parse_creation_method(&method).map_err(|error| {
+                    rusqlite::Error::FromSqlConversionFailure(
+                        2,
+                        rusqlite::types::Type::Text,
+                        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+                    )
+                })?;
+                Ok(DurablePet {
+                    pet_id: row.get(0)?,
+                    display_name: row
+                        .get::<_, Option<String>>(1)?
+                        .filter(|name| !name.trim().is_empty())
+                        .unwrap_or_else(|| "我的猫咪".into()),
+                    creation_method,
+                    source_template_id: row.get(3)?,
+                    species: row.get(4)?,
+                    identity_mode: row.get(5)?,
+                    lifecycle: row.get(6)?,
+                    created_at: row.get(7)?,
+                })
             })
             .map_err(|error| error.to_string())?;
         rows.map(|row| row.map_err(|error| error.to_string()))
@@ -392,9 +440,19 @@ fn issue_for(facts: &PetFacts, status: PetLifecycle, job_error: Option<String>) 
     }
 }
 
+fn parse_creation_method(value: &str) -> Result<CreationMethod, String> {
+    match value {
+        "upload" => Ok(CreationMethod::Upload),
+        "composer" => Ok(CreationMethod::Composer),
+        "adoption" => Ok(CreationMethod::Adoption),
+        _ => Err(format!("unknown creation method: {value}")),
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::creation::domain::CreationMethod;
     use crate::pets::{
         active::{ActivePetService, BUILTIN_PET_ID},
         mutation::PetMutationGate,
@@ -464,6 +522,31 @@ mod tests {
                      (pet_id, schema_version, species, identity_mode, created_at, updated_at)
                      VALUES (?1, 1, 'cat', 'realpet', ?2, ?2)",
                     rusqlite::params![pet_id, created_at],
+                )
+                .unwrap();
+        }
+
+        fn insert_pet_with_lifecycle(
+            &self,
+            pet_id: &str,
+            lifecycle: &str,
+            display_name: Option<&str>,
+            method: &str,
+            source_template_id: Option<&str>,
+        ) {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute(
+                    "INSERT INTO pets
+                     (pet_id, schema_version, species, identity_mode, display_name,
+                      creation_method, source_template_id, source_template_version,
+                      lifecycle, completed_at, created_at, updated_at)
+                     VALUES (?1, 1, 'cat', 'realpet', ?2, ?3, ?4,
+                             CASE WHEN ?4 IS NULL THEN NULL ELSE 7 END,
+                             ?5, CASE WHEN ?5='ready' THEN '2' ELSE NULL END, '1', '2')",
+                    rusqlite::params![pet_id, display_name, method, source_template_id, lifecycle],
                 )
                 .unwrap();
         }
@@ -665,11 +748,44 @@ mod tests {
         assert_eq!(entries[0].status, PetLifecycle::Ready);
         assert!(entries[0].is_current);
         assert!(!entries[0].deletable);
+        assert_eq!(entries[0].display_name, "默认猫 · Live2D");
+        assert_eq!(entries[0].creation_method, CreationMethod::Upload);
+        assert_eq!(entries[0].source_template_id, None);
         test.cleanup();
     }
 
     #[test]
-    fn catalog_projects_durable_creation_facts() {
+    fn catalog_hides_drafts_and_projects_ready_pet_creation_metadata() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.insert_pet_with_lifecycle("draft-pet", "draft", None, "upload", None);
+        test.insert_pet_with_lifecycle(
+            "ready-pet",
+            "ready",
+            Some("奶糖"),
+            "adoption",
+            Some("template-misty"),
+        );
+
+        let entries = test.service.list().unwrap();
+
+        assert!(!entries.iter().any(|entry| entry.pet_id == "draft-pet"));
+        let ready = entries
+            .iter()
+            .find(|entry| entry.pet_id == "ready-pet")
+            .unwrap();
+        assert_eq!(ready.display_name, "奶糖");
+        assert_eq!(ready.creation_method, CreationMethod::Adoption);
+        assert_eq!(ready.source_template_id.as_deref(), Some("template-misty"));
+        let json = serde_json::to_value(ready).unwrap();
+        assert_eq!(json["displayName"], "奶糖");
+        assert_eq!(json["creationMethod"], "adoption");
+        assert_eq!(json["sourceTemplateId"], "template-misty");
+        assert!(json.get("display_name").is_none());
+        test.cleanup();
+    }
+
+    #[test]
+    fn catalog_projects_inconsistent_ready_facts_as_corrupt() {
         let test = CatalogHarness::new(BUILTIN_PET_ID);
         test.insert_pet("pet-1", "1");
         test.insert_job("job-1", "pet-1", "success", None, "1");
@@ -686,8 +802,8 @@ mod tests {
         assert_eq!(entry.source, "user");
         assert_eq!(entry.species, "cat");
         assert_eq!(entry.identity_mode, "realpet");
-        assert_eq!(entry.status, PetLifecycle::CompileRetryable);
-        assert_eq!(entry.issue.as_deref(), Some("compiler unavailable"));
+        assert_eq!(entry.status, PetLifecycle::Corrupt);
+        assert_eq!(entry.issue.as_deref(), Some("runtime asset is unavailable"));
         test.cleanup();
     }
 
@@ -816,7 +932,7 @@ mod tests {
     }
 
     #[test]
-    fn pending_job_takes_priority_over_an_older_compile_error() {
+    fn creation_resume_gives_pending_job_priority_over_an_older_compile_error() {
         let test = CatalogHarness::new(BUILTIN_PET_ID);
         test.insert_pet("pet-1", "1");
         test.insert_job("job-old", "pet-1", "success", None, "1");
@@ -824,14 +940,60 @@ mod tests {
         test.set_compile_error("pet-1", "old compiler failure");
         test.insert_job("job-new", "pet-1", "pending", None, "2");
 
+        let resume = test.service.creation_resume("pet-1").unwrap();
+        assert_eq!(resume.status, PetLifecycle::Generating);
+        assert_eq!(resume.job_id.as_deref(), Some("job-new"));
+        test.cleanup();
+    }
+
+    #[test]
+    fn catalog_uses_a_safe_name_for_blank_legacy_ready_metadata() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.insert_pet_with_lifecycle("ready-pet", "ready", Some("   "), "upload", None);
+
         let entry = test
             .service
             .list()
             .unwrap()
             .into_iter()
-            .find(|entry| entry.pet_id == "pet-1")
+            .find(|entry| entry.pet_id == "ready-pet")
             .unwrap();
-        assert_eq!(entry.status, PetLifecycle::Generating);
+
+        assert_eq!(entry.display_name, "我的猫咪");
+        test.cleanup();
+    }
+
+    #[test]
+    fn catalog_never_parses_or_leaks_invalid_draft_metadata() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        test.insert_pet_with_lifecycle("draft-pet", "draft", None, "obsolete", None);
+
+        let entries = test.service.list().unwrap();
+
+        assert!(!entries.iter().any(|entry| entry.pet_id == "draft-pet"));
+        test.cleanup();
+    }
+
+    #[test]
+    fn catalog_rejects_an_invalid_creation_method_on_a_durable_pet() {
+        let test = CatalogHarness::new(BUILTIN_PET_ID);
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch("PRAGMA ignore_check_constraints=ON")
+            .unwrap();
+        test.insert_pet_with_lifecycle("ready-pet", "ready", Some("奶糖"), "obsolete", None);
+
+        let error = test.service.list().unwrap_err();
+
+        assert!(error.contains("unknown creation method"));
         test.cleanup();
     }
 }

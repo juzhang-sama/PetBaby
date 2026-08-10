@@ -7,6 +7,7 @@ use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 const JOURNAL_FILE: &str = "journal.json";
+const PREVIOUS_JOURNAL_FILE: &str = "journal.previous.json";
 
 pub type SharedPetDeletionService = Arc<PetDeletionService>;
 
@@ -49,6 +50,12 @@ struct DeletionJournal {
     phase: DeletionPhase,
 }
 
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct DeletionPlan {
+    job_ids: Vec<String>,
+    session_ids: Vec<String>,
+}
+
 impl PetDeletionService {
     pub fn new(
         storage: Arc<Mutex<Storage>>,
@@ -74,24 +81,37 @@ impl PetDeletionService {
             return Err("the built-in pet cannot be deleted".into());
         }
 
-        let job_ids = self.require_deletable_pet(pet_id)?;
+        let plan = self.require_deletable_pet(pet_id)?;
         let quarantine_root = self.quarantine_root();
+        prepare_quarantine_root(&self.app_data_dir, &quarantine_root)?;
         let mut journal = DeletionJournal {
             pet_id: pet_id.into(),
-            job_ids: job_ids.clone(),
-            session_ids: Vec::new(),
+            job_ids: plan.job_ids.clone(),
+            session_ids: plan.session_ids.clone(),
             phase: DeletionPhase::Prepared,
         };
         write_journal(&quarantine_root, &journal)?;
         let pets_root = self.app_data_dir.join("pets");
         let jobs_root = self.app_data_dir.join("jobs");
+        let sessions_root = self.app_data_dir.join("creation-sessions");
+        validate_owned_root(&self.app_data_dir, &pets_root)?;
+        validate_owned_root(&self.app_data_dir, &jobs_root)?;
+        validate_owned_root(&self.app_data_dir, &sessions_root)?;
         let mut planned_paths = vec![(pets_root.join(pet_id), pets_root, "pet".to_owned())];
-        for job_id in &job_ids {
+        for job_id in &plan.job_ids {
             validate_component(job_id, "job id")?;
             planned_paths.push((
                 jobs_root.join(job_id),
                 jobs_root.clone(),
                 format!("job-{job_id}"),
+            ));
+        }
+        for session_id in &plan.session_ids {
+            validate_component(session_id, "session id")?;
+            planned_paths.push((
+                sessions_root.join(session_id),
+                sessions_root.clone(),
+                format!("session-{session_id}"),
             ));
         }
 
@@ -114,7 +134,7 @@ impl PetDeletionService {
             }
         }
 
-        if let Err(error) = self.delete_rows(pet_id, &job_ids) {
+        if let Err(error) = self.delete_rows(pet_id, &plan.job_ids, &plan.session_ids) {
             return Err(recover_uncommitted(&quarantine_root, error, &quarantined));
         }
 
@@ -151,6 +171,7 @@ impl PetDeletionService {
         }
 
         let quarantine_root = self.quarantine_root();
+        prepare_quarantine_root(&self.app_data_dir, &quarantine_root)?;
         let mut journal = DeletionJournal {
             pet_id: pet_id.clone(),
             job_ids: job_ids.clone(),
@@ -162,6 +183,9 @@ impl PetDeletionService {
         let pets_root = self.app_data_dir.join("pets");
         let jobs_root = self.app_data_dir.join("jobs");
         let sessions_root = self.app_data_dir.join("creation-sessions");
+        validate_owned_root(&self.app_data_dir, &pets_root)?;
+        validate_owned_root(&self.app_data_dir, &jobs_root)?;
+        validate_owned_root(&self.app_data_dir, &sessions_root)?;
         let mut planned_paths = vec![
             (
                 sessions_root.join(session_id),
@@ -219,7 +243,13 @@ impl PetDeletionService {
         let _operation =
             self.mutation_gate
                 .scoped(&request_id, MutationKind::Delete, "quarantine")?;
-        let root = self.app_data_dir.join("trash").join("pet-delete");
+        let trash_root = self.app_data_dir.join("trash");
+        let root = trash_root.join("pet-delete");
+        if !root.exists() {
+            return Ok(());
+        }
+        validate_owned_root(&self.app_data_dir, &trash_root)?;
+        validate_owned_root(&trash_root, &root)?;
         let entries = match std::fs::read_dir(&root) {
             Ok(entries) => entries,
             Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(()),
@@ -260,7 +290,7 @@ impl PetDeletionService {
         }
     }
 
-    fn require_deletable_pet(&self, pet_id: &str) -> Result<Vec<String>, String> {
+    fn require_deletable_pet(&self, pet_id: &str) -> Result<DeletionPlan, String> {
         let session_active = self.active.active().ok();
         let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let persisted_active: Option<String> = storage
@@ -292,15 +322,7 @@ impl PetDeletionService {
             return Err("pet not found".into());
         }
 
-        let mut statement = storage
-            .db
-            .prepare("SELECT job_id FROM generation_jobs WHERE pet_id = ?1")
-            .map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map(rusqlite::params![pet_id], |row| row.get::<_, String>(0))
-            .map_err(|error| error.to_string())?;
-        rows.map(|row| row.map_err(|error| error.to_string()))
-            .collect()
+        deletion_plan(&storage.db, pet_id)
     }
 
     fn creation_abandon_plan(
@@ -360,21 +382,53 @@ impl PetDeletionService {
         if tombstoned {
             return Ok(());
         }
-        let current: Option<(String, String, String)> = tx
+        let current: Option<(
+            String,
+            String,
+            String,
+            String,
+            Option<String>,
+            Option<String>,
+        )> = tx
             .query_row(
-                "SELECT pet_id, method, status FROM creation_sessions WHERE session_id=?1",
+                "SELECT cs.pet_id, cs.method, cs.status, p.lifecycle, p.completed_at,
+                        (SELECT value FROM state WHERE key='app:active_pet_id')
+                 FROM creation_sessions cs JOIN pets p ON p.pet_id=cs.pet_id
+                 WHERE cs.session_id=?1",
                 [session_id],
-                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                        row.get(5)?,
+                    ))
+                },
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        let (current_pet_id, current_method, current_status) = current
+        let (
+            current_pet_id,
+            current_method,
+            current_status,
+            pet_lifecycle,
+            pet_completed_at,
+            active_pet_id,
+        ) = current
             .ok_or_else(|| format!("creation session changed during abandonment: {session_id}"))?;
         if current_pet_id != pet_id || current_method != method {
             return Err("creation session ownership changed during abandonment".into());
         }
         if current_status == "completed" {
             return Err("a completed creation session cannot be abandoned".into());
+        }
+        if pet_lifecycle == "ready"
+            || pet_completed_at.is_some()
+            || active_pet_id.as_deref() == Some(pet_id)
+        {
+            return Err("a ready or active pet cannot be abandoned".into());
         }
         let current_job_ids = creation_job_ids(&tx, session_id, pet_id)?;
         let mut expected_job_ids = expected_job_ids.to_vec();
@@ -394,6 +448,7 @@ impl PetDeletionService {
             ],
         )
         .map_err(|error| error.to_string())?;
+        delete_owned_rows(&tx, pet_id, &[session_id.to_owned()])?;
         let affected = tx
             .execute("DELETE FROM pets WHERE pet_id=?1", [pet_id])
             .map_err(|error| error.to_string())?;
@@ -403,7 +458,12 @@ impl PetDeletionService {
         tx.commit().map_err(|error| error.to_string())
     }
 
-    fn delete_rows(&self, pet_id: &str, expected_job_ids: &[String]) -> Result<(), String> {
+    fn delete_rows(
+        &self,
+        pet_id: &str,
+        expected_job_ids: &[String],
+        expected_session_ids: &[String],
+    ) -> Result<(), String> {
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let tx = storage
             .db
@@ -420,47 +480,18 @@ impl PetDeletionService {
         if active_pet.as_deref() == Some(pet_id) {
             return Err("the active pet cannot be deleted".into());
         }
-        let current_job_ids = {
-            let mut statement = tx
-                .prepare("SELECT job_id FROM generation_jobs WHERE pet_id = ?1 ORDER BY job_id")
-                .map_err(|error| error.to_string())?;
-            let job_ids = statement
-                .query_map(rusqlite::params![pet_id], |row| row.get::<_, String>(0))
-                .map_err(|error| error.to_string())?
-                .map(|row| row.map_err(|error| error.to_string()))
-                .collect::<Result<Vec<_>, _>>()?;
-            job_ids
-        };
+        let current_plan = deletion_plan(&tx, pet_id)?;
         let mut expected_job_ids = expected_job_ids.to_vec();
         expected_job_ids.sort();
-        if current_job_ids != expected_job_ids {
+        let mut expected_session_ids = expected_session_ids.to_vec();
+        expected_session_ids.sort();
+        if current_plan.job_ids != expected_job_ids {
             return Err("generation jobs changed during deletion".into());
         }
-        tx.execute(
-            "DELETE FROM variants WHERE pet_id = ?1",
-            rusqlite::params![pet_id],
-        )
-        .map_err(|error| error.to_string())?;
-        tx.execute(
-            "DELETE FROM appearance_variants WHERE pet_id = ?1",
-            rusqlite::params![pet_id],
-        )
-        .map_err(|error| error.to_string())?;
-        tx.execute(
-            "DELETE FROM generation_jobs WHERE pet_id = ?1",
-            rusqlite::params![pet_id],
-        )
-        .map_err(|error| error.to_string())?;
-        tx.execute(
-            "DELETE FROM identity_profiles WHERE pet_id = ?1",
-            rusqlite::params![pet_id],
-        )
-        .map_err(|error| error.to_string())?;
-        tx.execute(
-            "DELETE FROM state WHERE key = ?1",
-            rusqlite::params![format!("creation:{pet_id}:compile_error")],
-        )
-        .map_err(|error| error.to_string())?;
+        if current_plan.session_ids != expected_session_ids {
+            return Err("creation sessions changed during deletion".into());
+        }
+        delete_owned_rows(&tx, pet_id, &expected_session_ids)?;
         let affected = tx
             .execute(
                 "DELETE FROM pets WHERE pet_id = ?1",
@@ -546,6 +577,104 @@ impl PetDeletionService {
     }
 }
 
+fn deletion_plan(db: &Connection, pet_id: &str) -> Result<DeletionPlan, String> {
+    let session_ids = {
+        let mut statement = db
+            .prepare("SELECT session_id FROM creation_sessions WHERE pet_id=?1 ORDER BY session_id")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([pet_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .map(|row| row.map_err(|error| error.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    for session_id in &session_ids {
+        validate_component(session_id, "session id")?;
+    }
+    let owned_sessions = session_ids
+        .iter()
+        .collect::<std::collections::BTreeSet<_>>();
+    let mut statement = db
+        .prepare(
+            "SELECT job_id, pet_id, session_id FROM generation_jobs
+             WHERE pet_id=?1 OR session_id IN
+                   (SELECT session_id FROM creation_sessions WHERE pet_id=?1)
+             ORDER BY job_id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([pet_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut job_ids = Vec::new();
+    for row in rows {
+        let (job_id, actual_pet_id, session_id) = row.map_err(|error| error.to_string())?;
+        validate_component(&job_id, "job id")?;
+        if actual_pet_id != pet_id
+            || session_id
+                .as_ref()
+                .is_some_and(|session_id| !owned_sessions.contains(session_id))
+        {
+            return Err(format!(
+                "generation job {job_id} is not owned by pet {pet_id}"
+            ));
+        }
+        job_ids.push(job_id);
+    }
+    Ok(DeletionPlan {
+        job_ids,
+        session_ids,
+    })
+}
+
+fn delete_owned_rows(
+    tx: &rusqlite::Transaction<'_>,
+    pet_id: &str,
+    expected_session_ids: &[String],
+) -> Result<(), String> {
+    let mut actual_session_ids = {
+        let mut statement = tx
+            .prepare("SELECT session_id FROM creation_sessions WHERE pet_id=?1 ORDER BY session_id")
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map([pet_id], |row| row.get::<_, String>(0))
+            .map_err(|error| error.to_string())?
+            .map(|row| row.map_err(|error| error.to_string()))
+            .collect::<Result<Vec<_>, _>>()?;
+        rows
+    };
+    let mut expected_session_ids = expected_session_ids.to_vec();
+    actual_session_ids.sort();
+    expected_session_ids.sort();
+    if actual_session_ids != expected_session_ids {
+        return Err("creation sessions changed during row deletion".into());
+    }
+    for sql in [
+        "DELETE FROM variants WHERE pet_id=?1",
+        "DELETE FROM appearance_variants WHERE pet_id=?1",
+        "DELETE FROM generation_jobs WHERE pet_id=?1",
+        "DELETE FROM composer_recipes WHERE session_id IN
+             (SELECT session_id FROM creation_sessions WHERE pet_id=?1)",
+        "DELETE FROM creation_sessions WHERE pet_id=?1",
+        "DELETE FROM identity_profiles WHERE pet_id=?1",
+    ] {
+        tx.execute(sql, [pet_id])
+            .map_err(|error| error.to_string())?;
+    }
+    tx.execute(
+        "DELETE FROM state WHERE key=?1",
+        [format!("creation:{pet_id}:compile_error")],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
 fn creation_job_ids(
     db: &Connection,
     session_id: &str,
@@ -598,9 +727,58 @@ fn validate_source_path(source: &Path, expected_parent: &Path) -> Result<(), Str
     validate_path_parent(source, expected_parent)
 }
 
+fn validate_regular_directory(path: &Path, label: &str) -> Result<(), String> {
+    let metadata = std::fs::symlink_metadata(path)
+        .map_err(|error| format!("cannot inspect {label}: {error}"))?;
+    if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+        return Err(format!("{label} cannot be a link or reparse point"));
+    }
+    Ok(())
+}
+
+fn validate_owned_root(parent: &Path, root: &Path) -> Result<(), String> {
+    validate_regular_directory(parent, "deletion parent")?;
+    if !root.exists() {
+        std::fs::create_dir(root).map_err(|error| error.to_string())?;
+    }
+    validate_regular_directory(root, "deletion root")?;
+    let canonical_parent = parent
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve deletion parent: {error}"))?;
+    let canonical_root = root
+        .canonicalize()
+        .map_err(|error| format!("cannot resolve deletion root: {error}"))?;
+    if canonical_root.parent() != Some(canonical_parent.as_path()) {
+        return Err(format!(
+            "deletion root is outside its authoritative parent: {}",
+            root.display()
+        ));
+    }
+    Ok(())
+}
+
+fn prepare_quarantine_root(app_data_dir: &Path, operation: &Path) -> Result<(), String> {
+    let trash = app_data_dir.join("trash");
+    let delete_root = trash.join("pet-delete");
+    validate_owned_root(app_data_dir, &trash)?;
+    validate_owned_root(&trash, &delete_root)?;
+    validate_owned_root(&delete_root, operation)
+}
+
 fn validate_path_parent(path: &Path, expected_parent: &Path) -> Result<(), String> {
-    if path.exists() && !path.is_dir() {
-        return Err(format!("refusing non-directory source: {}", path.display()));
+    validate_regular_directory(expected_parent, "deletion source parent")?;
+    if path.exists() {
+        let metadata = std::fs::symlink_metadata(path)
+            .map_err(|error| format!("cannot inspect deletion source: {error}"))?;
+        if crate::platform::is_link_or_reparse_point(&metadata) {
+            return Err(format!(
+                "deletion source cannot be a link or reparse point: {}",
+                path.display()
+            ));
+        }
+        if !metadata.is_dir() {
+            return Err(format!("refusing non-directory source: {}", path.display()));
+        }
     }
     let expected_parent = expected_parent
         .canonicalize()
@@ -703,19 +881,64 @@ fn recover_uncommitted(root: &Path, error: String, paths: &[QuarantinedPath]) ->
 fn write_journal(root: &Path, journal: &DeletionJournal) -> Result<(), String> {
     validate_journal(journal)?;
     std::fs::create_dir_all(root).map_err(|error| error.to_string())?;
+    validate_regular_directory(root, "deletion journal directory")?;
     let bytes = serde_json::to_vec(journal).map_err(|error| error.to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let staging = root.join(format!(".journal-{}-{nonce}.staging", std::process::id()));
     let mut file = std::fs::OpenOptions::new()
-        .create(true)
-        .truncate(true)
+        .create_new(true)
         .write(true)
-        .open(root.join(JOURNAL_FILE))
+        .open(&staging)
         .map_err(|error| error.to_string())?;
-    file.write_all(&bytes).map_err(|error| error.to_string())?;
-    file.sync_all().map_err(|error| error.to_string())
+    if let Err(error) = file.write_all(&bytes).and_then(|()| file.sync_all()) {
+        drop(file);
+        let _ = std::fs::remove_file(&staging);
+        return Err(error.to_string());
+    }
+    drop(file);
+
+    let current = root.join(JOURNAL_FILE);
+    let previous = root.join(PREVIOUS_JOURNAL_FILE);
+    if previous.exists() {
+        let metadata = std::fs::symlink_metadata(&previous).map_err(|error| error.to_string())?;
+        if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+            let _ = std::fs::remove_file(&staging);
+            return Err("previous deletion journal is not a regular file".into());
+        }
+        std::fs::remove_file(&previous).map_err(|error| error.to_string())?;
+    }
+    let had_current = current.exists();
+    if had_current {
+        let metadata = std::fs::symlink_metadata(&current).map_err(|error| error.to_string())?;
+        if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+            let _ = std::fs::remove_file(&staging);
+            return Err("deletion journal is not a regular file".into());
+        }
+        std::fs::rename(&current, &previous).map_err(|error| error.to_string())?;
+    }
+    if let Err(error) = std::fs::rename(&staging, &current) {
+        if had_current {
+            let _ = std::fs::rename(&previous, &current);
+        }
+        let _ = std::fs::remove_file(&staging);
+        return Err(error.to_string());
+    }
+    if had_current {
+        std::fs::remove_file(previous).map_err(|error| error.to_string())?;
+    }
+    Ok(())
 }
 
 fn read_journal(operation: &Path) -> Result<DeletionJournal, String> {
-    let path = operation.join(JOURNAL_FILE);
+    let current = operation.join(JOURNAL_FILE);
+    let path = if current.exists() {
+        current
+    } else {
+        operation.join(PREVIOUS_JOURNAL_FILE)
+    };
     let metadata = std::fs::symlink_metadata(&path).map_err(|error| error.to_string())?;
     if !metadata.file_type().is_file() {
         return Err("journal is not a regular file".into());
@@ -945,11 +1168,61 @@ mod tests {
                       schema_version, created_at, updated_at)
                      VALUES ('session-a', 'pet-a', 'upload', 'draft', 'draft', 'upload',
                              1, '0', '0');
+                     UPDATE pets SET lifecycle='draft', completed_at=NULL WHERE pet_id='pet-a';
                      UPDATE generation_jobs SET session_id='session-a' WHERE job_id='job-a';",
                 )
                 .unwrap();
             std::fs::create_dir_all(self.session_dir("session-a")).unwrap();
             std::fs::write(self.session_dir("session-a").join("draft.txt"), b"session").unwrap();
+        }
+
+        fn bind_completed_adoption(&self, template_id: &str) {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute_batch(&format!(
+                    "UPDATE pets
+                     SET display_name='雾团', identity_mode='adopted', creation_method='adoption',
+                         source_template_id='{template_id}', source_template_version=3,
+                         lifecycle='ready', completed_at='1'
+                     WHERE pet_id='pet-a';
+                     INSERT INTO creation_sessions
+                     (session_id, pet_id, method, status, last_stable_status, current_step,
+                      schema_version, created_at, updated_at, completed_at)
+                     VALUES ('session-a', 'pet-a', 'adoption', 'completed', 'completed',
+                             'completed', 1, '0', '1', '1');
+                     UPDATE generation_jobs SET session_id='session-a' WHERE job_id='job-a';"
+                ))
+                .unwrap();
+            std::fs::create_dir_all(self.session_dir("session-a")).unwrap();
+            std::fs::write(self.session_dir("session-a").join("source.txt"), b"session").unwrap();
+        }
+
+        fn source_count(&self, template_id: &str) -> i64 {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM pets WHERE source_template_id=?1",
+                    [template_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        }
+
+        fn session_exists(&self, session_id: &str) -> bool {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT 1 FROM creation_sessions WHERE session_id=?1",
+                    [session_id],
+                    |_| Ok(()),
+                )
+                .is_ok()
         }
 
         fn isolate_creation_resources(&self, operation: &Path) -> Vec<QuarantinedPath> {
@@ -1026,6 +1299,194 @@ mod tests {
     }
 
     #[test]
+    fn deleting_an_adopted_pet_removes_its_session_and_releases_template_id() {
+        let test = DeletionHarness::two_pets();
+        test.bind_completed_adoption("template-misty");
+
+        test.service.delete("pet-a").unwrap();
+
+        assert_eq!(test.source_count("template-misty"), 0);
+        assert!(!test.session_dir("session-a").exists());
+        assert!(!test.job_dir("job-a").exists());
+        assert!(!test.pet_dir("pet-a").exists());
+    }
+
+    #[test]
+    fn failed_adopted_pet_delete_restores_session_job_and_pet_resources() {
+        let test = DeletionHarness::two_pets();
+        test.bind_completed_adoption("template-misty");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_pet_delete BEFORE DELETE ON pets
+                 WHEN OLD.pet_id='pet-a'
+                 BEGIN SELECT RAISE(ABORT, 'forced adopted delete failure'); END;",
+            )
+            .unwrap();
+
+        assert!(test.service.delete("pet-a").is_err());
+
+        assert!(test.pet_exists("pet-a"));
+        assert!(test.session_exists("session-a"));
+        assert_eq!(test.source_count("template-misty"), 1);
+        assert!(test.pet_dir("pet-a").join("assets/asset.txt").exists());
+        assert!(test.job_dir("job-a").join("result.txt").exists());
+        assert!(test.session_dir("session-a").join("source.txt").exists());
+        let source_version: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT source_template_version FROM pets WHERE pet_id='pet-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_version, 3);
+    }
+
+    #[test]
+    fn deletion_explicitly_removes_all_owned_rows_without_foreign_key_cascades() {
+        let test = DeletionHarness::two_pets();
+        test.bind_completed_adoption("template-misty");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO composer_recipes
+                 (session_id, recipe_version, pack_id, pack_version, layer_contract_version,
+                  body_id, ears_id, eyes_id, muzzle_id, tail_id, color_id, pattern_id, updated_at)
+                 VALUES ('session-a', 1, 'pack', 1, 1, 'body', 'ears', 'eyes', 'muzzle',
+                         'tail', 'color', 'pattern', '1')",
+                [],
+            )
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch("PRAGMA foreign_keys=OFF")
+            .unwrap();
+
+        test.service.delete("pet-a").unwrap();
+
+        let storage = test.storage.lock().unwrap();
+        for (table, column, value) in [
+            ("variants", "pet_id", "pet-a"),
+            ("appearance_variants", "pet_id", "pet-a"),
+            ("generation_jobs", "pet_id", "pet-a"),
+            ("composer_recipes", "session_id", "session-a"),
+            ("creation_sessions", "pet_id", "pet-a"),
+            ("identity_profiles", "pet_id", "pet-a"),
+            ("pets", "pet_id", "pet-a"),
+        ] {
+            let count: i64 = storage
+                .db
+                .query_row(
+                    &format!("SELECT COUNT(*) FROM {table} WHERE {column}=?1"),
+                    [value],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            assert_eq!(count, 0, "{table} retained an owned row");
+        }
+    }
+
+    #[test]
+    fn deletion_refuses_a_jobs_root_junction_without_touching_external_files() {
+        let test = DeletionHarness::two_pets();
+        let outside = test.root.with_file_name(format!(
+            "{}-outside-jobs",
+            test.root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(outside.join("job-a")).unwrap();
+        let sentinel = outside.join("job-a/sentinel.txt");
+        std::fs::write(&sentinel, b"outside must remain").unwrap();
+        std::fs::remove_dir_all(test.root.join("jobs")).unwrap();
+        crate::platform::create_directory_link(&outside, &test.root.join("jobs"));
+
+        let result = test.service.delete("pet-a");
+
+        assert!(result.unwrap_err().contains("link or reparse point"));
+        assert!(test.pet_exists("pet-a"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside must remain");
+        let _ = std::fs::remove_dir_all(test.root.join("jobs"));
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn deletion_refuses_a_creation_sessions_root_junction_without_touching_external_files() {
+        let test = DeletionHarness::two_pets();
+        test.bind_completed_adoption("template-misty");
+        let outside = test.root.with_file_name(format!(
+            "{}-outside-sessions",
+            test.root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(outside.join("session-a")).unwrap();
+        let sentinel = outside.join("session-a/sentinel.txt");
+        std::fs::write(&sentinel, b"outside must remain").unwrap();
+        std::fs::remove_dir_all(test.root.join("creation-sessions")).unwrap();
+        crate::platform::create_directory_link(&outside, &test.root.join("creation-sessions"));
+
+        let result = test.service.delete("pet-a");
+
+        assert!(result.unwrap_err().contains("link or reparse point"));
+        assert!(test.pet_exists("pet-a"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside must remain");
+        let _ = std::fs::remove_dir_all(test.root.join("creation-sessions"));
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn deletion_refuses_a_session_directory_junction_without_touching_external_files() {
+        let test = DeletionHarness::two_pets();
+        test.bind_completed_adoption("template-misty");
+        let outside = test.root.with_file_name(format!(
+            "{}-outside-session",
+            test.root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.txt");
+        std::fs::write(&sentinel, b"outside must remain").unwrap();
+        std::fs::remove_dir_all(test.session_dir("session-a")).unwrap();
+        crate::platform::create_directory_link(&outside, &test.session_dir("session-a"));
+
+        let result = test.service.delete("pet-a");
+
+        assert!(result.unwrap_err().contains("link or reparse point"));
+        assert!(test.pet_exists("pet-a"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside must remain");
+        let _ = std::fs::remove_dir_all(test.session_dir("session-a"));
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
+    fn deletion_refuses_a_pet_directory_junction_without_touching_external_files() {
+        let test = DeletionHarness::two_pets();
+        let outside = test.root.with_file_name(format!(
+            "{}-outside-pet",
+            test.root.file_name().unwrap().to_string_lossy()
+        ));
+        std::fs::create_dir_all(&outside).unwrap();
+        let sentinel = outside.join("sentinel.txt");
+        std::fs::write(&sentinel, b"outside must remain").unwrap();
+        std::fs::remove_dir_all(test.pet_dir("pet-a")).unwrap();
+        crate::platform::create_directory_link(&outside, &test.pet_dir("pet-a"));
+
+        let result = test.service.delete("pet-a");
+
+        assert!(result.unwrap_err().contains("link or reparse point"));
+        assert!(test.pet_exists("pet-a"));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"outside must remain");
+        let _ = std::fs::remove_dir_all(test.pet_dir("pet-a"));
+        let _ = std::fs::remove_dir_all(outside);
+    }
+
+    #[test]
     fn refuses_builtin_and_current_pet() {
         let test = DeletionHarness::current("pet-a");
         assert!(test
@@ -1088,7 +1549,7 @@ mod tests {
 
         let error = test
             .service
-            .delete_rows("pet-a", &["job-a".into()])
+            .delete_rows("pet-a", &["job-a".into()], &[])
             .unwrap_err();
         assert!(error.contains("active pet"));
         assert!(recover_uncommitted(&quarantine, error, &quarantined).contains("active pet"));
@@ -1187,7 +1648,7 @@ mod tests {
         let test = DeletionHarness::two_pets();
         let operation = test.quarantined_operation("committed");
         test.service
-            .delete_rows("pet-a", &["job-a".into()])
+            .delete_rows("pet-a", &["job-a".into()], &[])
             .unwrap();
 
         test.service.cleanup_quarantine().unwrap();
@@ -1218,7 +1679,7 @@ mod tests {
         let test = DeletionHarness::two_pets();
         let operation = test.quarantined_creation_operation("prepared");
         test.service
-            .delete_rows("pet-a", &["job-a".into()])
+            .delete_rows("pet-a", &["job-a".into()], &["session-a".into()])
             .unwrap();
 
         test.service.cleanup_quarantine().unwrap();
@@ -1265,6 +1726,58 @@ mod tests {
         assert!(missing.exists());
         assert!(corrupt.exists());
         assert!(invalid.exists());
+    }
+
+    #[test]
+    fn interrupted_journal_publish_recovers_the_previous_generation() {
+        let test = DeletionHarness::two_pets();
+        let operation = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("journal-interrupted");
+        let journal = DeletionJournal {
+            pet_id: "pet-a".into(),
+            job_ids: vec!["job-a".into()],
+            session_ids: Vec::new(),
+            phase: DeletionPhase::Prepared,
+        };
+        write_journal(&operation, &journal).unwrap();
+        std::fs::rename(
+            operation.join(JOURNAL_FILE),
+            operation.join("journal.previous.json"),
+        )
+        .unwrap();
+
+        assert_eq!(read_journal(&operation).unwrap().pet_id, "pet-a");
+    }
+
+    #[test]
+    fn failed_journal_replacement_keeps_the_old_generation_recoverable() {
+        let test = DeletionHarness::two_pets();
+        let operation = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("journal-write-failure");
+        let prepared = DeletionJournal {
+            pet_id: "pet-a".into(),
+            job_ids: vec!["job-a".into()],
+            session_ids: Vec::new(),
+            phase: DeletionPhase::Prepared,
+        };
+        write_journal(&operation, &prepared).unwrap();
+        std::fs::create_dir(operation.join("journal.previous.json")).unwrap();
+        let committed = DeletionJournal {
+            phase: DeletionPhase::Committed,
+            ..prepared.clone()
+        };
+
+        assert!(write_journal(&operation, &committed).is_err());
+        assert_eq!(
+            read_journal(&operation).unwrap().phase,
+            DeletionPhase::Prepared
+        );
     }
 
     #[test]

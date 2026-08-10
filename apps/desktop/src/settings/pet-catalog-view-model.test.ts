@@ -5,6 +5,9 @@ import { buildPetListRows } from "./pet-catalog-view-model";
 function userEntry(overrides: Partial<PetCatalogEntry> = {}): PetCatalogEntry {
   return {
     petId: "user-pet-1",
+    displayName: "奶糖",
+    creationMethod: "upload",
+    sourceTemplateId: null,
     source: "user",
     species: "dog",
     identityMode: "realPet",
@@ -20,6 +23,9 @@ function userEntry(overrides: Partial<PetCatalogEntry> = {}): PetCatalogEntry {
 function builtinEntry(overrides: Partial<PetCatalogEntry> = {}): PetCatalogEntry {
   return {
     petId: "pet-live2d-v1",
+    displayName: "默认猫 · Live2D",
+    creationMethod: "upload",
+    sourceTemplateId: null,
     source: "builtin",
     species: "cat",
     identityMode: "builtin",
@@ -46,19 +52,29 @@ describe("buildPetListRows", () => {
 
   it.each([
     ["ready", ["switch", "delete"]],
-    ["generating", ["continue", "delete"]],
-    ["generationFailed", ["continue", "delete"]],
-    ["awaitingConfirm", ["continue", "delete"]],
-    ["compileRetryable", ["continue", "delete"]],
-    ["awaitingActivation", ["continue", "delete"]],
+    ["generating", ["delete"]],
+    ["generationFailed", ["delete"]],
+    ["awaitingConfirm", ["delete"]],
+    ["compileRetryable", ["delete"]],
+    ["awaitingActivation", ["delete"]],
     ["corrupt", ["delete"]],
   ] as const)("maps %s to allowed actions", (status: PetLifecycle, actions) => {
     expect(buildPetListRows([userEntry({ status })])[0]!.actions.map((item) => item.kind)).toEqual(actions);
   });
 
-  it("uses the entry issue as a lifecycle detail when the backend provides one", () => {
+  it.each([
+    ["upload", "上传创建"],
+    ["composer", "引导组合"],
+    ["adoption", "直接认领"],
+  ] as const)("uses displayName and the %s creation source", (creationMethod, detail) => {
+    const [row] = buildPetListRows([userEntry({ creationMethod })]);
+
+    expect(row).toMatchObject({ title: "奶糖", detail });
+  });
+
+  it("keeps the creation source visible alongside a backend issue", () => {
     const [row] = buildPetListRows([userEntry({ status: "generationFailed", issue: "API Key 已失效" })]);
 
-    expect(row).toMatchObject({ detail: "API Key 已失效" });
+    expect(row).toMatchObject({ detail: "上传创建 · API Key 已失效" });
   });
 });

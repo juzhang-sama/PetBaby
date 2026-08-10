@@ -789,6 +789,27 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 }
 
 #[cfg_attr(mobile, tauri::mobile_entry_point)]
+fn run_startup_recovery<Cleanup, Recover, Restore>(
+    cleanup_quarantine: Cleanup,
+    recover_finalization: Recover,
+    restore_active: Restore,
+) -> Result<creation::finalization::RecoveryReport, String>
+where
+    Cleanup: FnOnce() -> Result<(), String>,
+    Recover: FnOnce() -> Result<creation::finalization::RecoveryReport, String>,
+    Restore: FnOnce() -> Result<(), String>,
+{
+    let cleanup_warning = cleanup_quarantine().err();
+    let mut recovery = recover_finalization()?;
+    if let Some(error) = cleanup_warning {
+        recovery
+            .warnings
+            .push(format!("quarantine cleanup failed: {error}"));
+    }
+    restore_active()?;
+    Ok(recovery)
+}
+
 pub fn run() {
     tauri::Builder::default()
         .register_uri_scheme_protocol("pet-asset", |ctx, request| {
@@ -834,32 +855,35 @@ pub fn run() {
                 pets_dir.clone(),
                 mutation_gate.clone(),
             ));
-            let finalization = Arc::new(creation::finalization::CreationFinalizationService::new(
-                storage.clone(),
-                data_dir.clone(),
-                data_dir.join("jobs"),
-                mutation_gate.clone(),
-                active.switch_transaction(),
-            ));
-            active.restore()?;
-            let catalog = Arc::new(PetCatalogService::new(
-                storage.clone(),
-                active.clone(),
-                pets_dir,
-            ));
             let deletion = Arc::new(PetDeletionService::new(
                 storage.clone(),
                 active.clone(),
                 data_dir.clone(),
                 mutation_gate.clone(),
             ));
-            if let Err(error) = deletion.cleanup_quarantine() {
-                eprintln!("[desktop-pet] quarantine cleanup failed: {error}");
-            }
-            let recovery = finalization.recover()?;
+            let finalization = Arc::new(
+                creation::finalization::CreationFinalizationService::new(
+                    storage.clone(),
+                    data_dir.clone(),
+                    data_dir.join("jobs"),
+                    mutation_gate.clone(),
+                    active.switch_transaction(),
+                )
+                .with_deletion(deletion.clone()),
+            );
+            let recovery = run_startup_recovery(
+                || deletion.cleanup_quarantine(),
+                || finalization.recover(),
+                || active.restore().map(|_| ()),
+            )?;
             for warning in recovery.warnings {
                 eprintln!("[desktop-pet] creation finalization recovery: {warning}");
             }
+            let catalog = Arc::new(PetCatalogService::new(
+                storage.clone(),
+                active.clone(),
+                pets_dir,
+            ));
             app.manage(active.clone() as SharedActivePetService);
             app.manage(mutation_gate.clone() as SharedPetMutationGate);
             app.manage(finalization as creation::finalization::SharedCreationFinalizationService);
@@ -1079,6 +1103,33 @@ mod tests {
         let _prepare = super::creation_prepare_finalize;
         let _abort = super::creation_abort_finalize;
         let _recover = super::creation_recover_finalization;
+    }
+
+    #[test]
+    fn startup_recovers_quarantine_and_finalization_before_restoring_the_active_pet() {
+        let events = std::sync::Mutex::new(Vec::new());
+
+        let report = super::run_startup_recovery(
+            || {
+                events.lock().unwrap().push("quarantine");
+                Ok(())
+            },
+            || {
+                events.lock().unwrap().push("finalization");
+                Ok(creation::finalization::RecoveryReport::default())
+            },
+            || {
+                events.lock().unwrap().push("active");
+                Ok(())
+            },
+        )
+        .unwrap();
+
+        assert!(report.warnings.is_empty());
+        assert_eq!(
+            *events.lock().unwrap(),
+            vec!["quarantine", "finalization", "active"]
+        );
     }
 
     #[test]

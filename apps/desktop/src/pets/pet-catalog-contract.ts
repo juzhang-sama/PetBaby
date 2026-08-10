@@ -1,3 +1,5 @@
+import type { CreationMethod } from "../creation/contracts";
+
 export type PetLifecycle =
   | "ready"
   | "generating"
@@ -9,6 +11,9 @@ export type PetLifecycle =
 
 export interface PetCatalogEntry {
   petId: string;
+  displayName: string;
+  creationMethod: CreationMethod;
+  sourceTemplateId: string | null;
   source: "builtin" | "user";
   species: "cat" | "dog";
   identityMode: string;

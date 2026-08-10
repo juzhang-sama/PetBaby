@@ -1,7 +1,8 @@
 use crate::creation::domain::{
-    CreationMethod, CreationSessionStatus, CreationSnapshot, PreparedCreation,
+    new_entity_id, CreationMethod, CreationSessionStatus, CreationSnapshot, PreparedCreation,
 };
 use crate::creation::name::normalize_display_name;
+use crate::pets::deletion::SharedPetDeletionService;
 use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
 use crate::runtime_assets::compiler::compile_animated_image;
 use crate::storage::Storage;
@@ -27,6 +28,7 @@ pub struct CreationFinalizationService {
     jobs_root: PathBuf,
     mutation_gate: SharedPetMutationGate,
     switch_transaction: SharedSwitchTransaction,
+    deletion: Option<SharedPetDeletionService>,
     #[cfg(test)]
     after_owner_pin_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -77,9 +79,15 @@ impl CreationFinalizationService {
             jobs_root,
             mutation_gate,
             switch_transaction,
+            deletion: None,
             #[cfg(test)]
             after_owner_pin_hook: Mutex::new(None),
         }
+    }
+
+    pub fn with_deletion(mut self, deletion: SharedPetDeletionService) -> Self {
+        self.deletion = Some(deletion);
+        self
     }
 
     pub fn prepare(&self, session_id: &str, request_id: &str) -> Result<PreparedCreation, String> {
@@ -275,17 +283,13 @@ impl CreationFinalizationService {
     }
 
     pub fn recover(&self) -> Result<RecoveryReport, String> {
-        let _switch_transaction = self
-            .switch_transaction
-            .lock()
-            .map_err(|_| "switch transaction lock poisoned")?;
-        let session_rows: Vec<(String, String)> = {
+        let session_rows: Vec<(String, String, String)> = {
             let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
             let mut statement = storage
                 .db
                 .prepare(
-                    "SELECT cs.session_id, cs.status FROM creation_sessions cs
-                     WHERE status IN ('finalizing','completed')
+                    "SELECT cs.session_id, cs.status, cs.pet_id FROM creation_sessions cs
+                     WHERE status IN ('finalizing','completed','abandoned')
                         OR (status='retryableFailure' AND last_stable_status='candidateReady')
                         OR (status='candidateReady' AND last_stable_status='candidateReady'
                             AND EXISTS (
@@ -298,34 +302,84 @@ impl CreationFinalizationService {
                 )
                 .map_err(|error| error.to_string())?;
             let rows = statement
-                .query_map([], |row| Ok((row.get(0)?, row.get(1)?)))
+                .query_map([], |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)))
                 .map_err(|error| error.to_string())?;
             rows.collect::<Result<Vec<_>, _>>()
                 .map_err(|error| error.to_string())?
         };
         let mut report = RecoveryReport::default();
-        for (session_id, status) in session_rows {
+        for (session_id, status, pet_id) in session_rows {
             if status == "completed" {
-                report.completed_session_ids.push(session_id);
+                match self
+                    .finalization_record(&session_id)
+                    .and_then(|record| self.validate_record(&record).map(|()| record))
+                    .and_then(|record| self.validate_completed_install(&record))
+                {
+                    Ok(()) => report.completed_session_ids.push(session_id),
+                    Err(error) => report.warnings.push(format!(
+                        "creation recovery skipped completed session {session_id}: {error}"
+                    )),
+                }
+                continue;
+            }
+            if status == "abandoned" {
+                let recovered = self
+                    .deletion
+                    .as_ref()
+                    .ok_or_else(|| "creation abandonment recovery is not configured".to_string())
+                    .and_then(|deletion| deletion.abandon_creation(&session_id));
+                match recovered {
+                    Ok(()) => report.cleaned_session_ids.push(session_id),
+                    Err(error) => report.warnings.push(format!(
+                        "creation recovery skipped abandoned session {session_id}: {error}"
+                    )),
+                }
+                continue;
+            }
+            validate_component(&pet_id, "pet id")?;
+            let recovery_request_id = new_entity_id("recover-finalization");
+            let _recovery_operation =
+                self.mutation_gate
+                    .scoped(&recovery_request_id, MutationKind::Switch, &pet_id)?;
+            let _switch_transaction = self
+                .switch_transaction
+                .lock()
+                .map_err(|_| "switch transaction lock poisoned")?;
+            if status == "finalizing" && self.session_has_durable_pet(&session_id)? {
+                let recovered = self.finalization_record(&session_id).and_then(|record| {
+                    self.validate_durably_committed_record(&record)?;
+                    self.validate_completed_install(&record)?;
+                    self.mark_recovered_completed(&record)
+                });
+                match recovered {
+                    Ok(()) => report.completed_session_ids.push(session_id),
+                    Err(error) => report.warnings.push(format!(
+                        "creation recovery skipped committed session {session_id}: {error}"
+                    )),
+                }
                 continue;
             }
             let recovered = (|| {
                 validate_component(&session_id, "session id")?;
                 let record = self.finalization_record(&session_id)?;
                 self.validate_record(&record)?;
-                self.validate_candidate_paths(&record)?;
                 let had_install = self.install_is_owned(&record)?;
+                let had_runtime = record.runtime_pet_id.as_deref() == Some(record.pet_id.as_str());
+                if status == "retryableFailure" && !had_install && !had_runtime {
+                    return Ok::<Option<bool>, String>(None);
+                }
                 let removed_runtime = self.clean_interrupted_database(&record)?;
                 self.remove_owned_install(&record)?;
-                Ok::<bool, String>(had_install || removed_runtime)
+                Ok::<Option<bool>, String>(Some(had_install || removed_runtime))
             })();
             match recovered {
-                Ok(cleaned) => {
+                Ok(Some(cleaned)) => {
                     report.retryable_session_ids.push(session_id.clone());
                     if cleaned {
                         report.cleaned_session_ids.push(session_id);
                     }
                 }
+                Ok(None) => {}
                 Err(error) => report
                     .warnings
                     .push(format!("creation recovery skipped {session_id}: {error}")),
@@ -336,19 +390,24 @@ impl CreationFinalizationService {
 
     fn finalization_record(&self, session_id: &str) -> Result<FinalizationRecord, String> {
         let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let session_facts: Option<(String, String)> = storage
+        let session_facts: Option<(String, String, String, Option<String>)> = storage
             .db
             .query_row(
-                "SELECT status, method FROM creation_sessions WHERE session_id=?1",
+                "SELECT cs.status, cs.method, p.lifecycle, p.completed_at
+                 FROM creation_sessions cs JOIN pets p ON p.pet_id=cs.pet_id
+                 WHERE cs.session_id=?1",
                 [session_id],
-                |row| Ok((row.get(0)?, row.get(1)?)),
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        let (session_status, session_method) =
+        let (session_status, session_method, pet_lifecycle, pet_completed_at) =
             session_facts.ok_or_else(|| format!("creation session not found: {session_id}"))?;
-        let completed = session_status == "completed";
-        if completed {
+        let durable_candidate = session_status == "completed"
+            || (session_status == "finalizing"
+                && pet_lifecycle == "ready"
+                && pet_completed_at.is_some());
+        if durable_candidate {
             let accepted_runtime_count: i64 = storage
                 .db
                 .query_row(
@@ -391,7 +450,7 @@ impl CreationFinalizationService {
                             AND av.job_id IS NULL))
                  ORDER BY av.created_at DESC, av.rowid DESC
                  LIMIT 1",
-                rusqlite::params![session_id, completed, session_method],
+                rusqlite::params![session_id, durable_candidate, session_method],
                 |row| {
                     let method: String = row.get(2)?;
                     let candidate_job_id: Option<String> = row.get(9)?;
@@ -486,6 +545,72 @@ impl CreationFinalizationService {
             .ok_or("creation pet name has not been saved")?;
         if normalize_display_name(name)? != name {
             return Err("creation pet name is not stored in normalized form".into());
+        }
+        Ok(())
+    }
+
+    fn session_has_durable_pet(&self, session_id: &str) -> Result<bool, String> {
+        self.storage
+            .lock()
+            .map_err(|_| "storage lock poisoned")?
+            .db
+            .query_row(
+                "SELECT p.lifecycle='ready' AND p.completed_at IS NOT NULL
+                 FROM creation_sessions cs JOIN pets p ON p.pet_id=cs.pet_id
+                 WHERE cs.session_id=?1 AND cs.status='finalizing'",
+                [session_id],
+                |row| Ok(row.get::<_, i64>(0)? != 0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+            .map(|value| value.unwrap_or(false))
+    }
+
+    fn validate_durably_committed_record(&self, record: &FinalizationRecord) -> Result<(), String> {
+        validate_component(&record.session_id, "session id")?;
+        validate_component(&record.pet_id, "pet id")?;
+        validate_component(&record.candidate_id, "candidate id")?;
+        parse_method(&record.method)?;
+        if record.status != "finalizing"
+            || record.pet_method != record.method
+            || record.lifecycle != "ready"
+            || record.pet_completed_at.is_none()
+            || !record.accepted
+            || record.runtime_pet_id.as_deref() != Some(record.pet_id.as_str())
+        {
+            return Err("committed finalizing creation facts are inconsistent".into());
+        }
+        let name = record
+            .display_name
+            .as_deref()
+            .ok_or("creation pet name has not been saved")?;
+        if normalize_display_name(name)? != name {
+            return Err("creation pet name is not stored in normalized form".into());
+        }
+        Ok(())
+    }
+
+    fn mark_recovered_completed(&self, record: &FinalizationRecord) -> Result<(), String> {
+        let now = crate::creation::profiles::now_iso();
+        let affected = self
+            .storage
+            .lock()
+            .map_err(|_| "storage lock poisoned")?
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='completed', last_stable_status='completed',
+                     current_step='completed', error=NULL,
+                     completed_at=COALESCE(completed_at, ?2), updated_at=?2
+                 WHERE session_id=?1 AND pet_id=?3 AND status='finalizing'
+                   AND EXISTS (SELECT 1 FROM pets p
+                               WHERE p.pet_id=?3 AND p.lifecycle='ready'
+                                 AND p.completed_at IS NOT NULL)",
+                rusqlite::params![record.session_id, now, record.pet_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("creation session changed while recording recovered completion".into());
         }
         Ok(())
     }
@@ -940,7 +1065,10 @@ fn validate_component(value: &str, label: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::creation::profiles;
+    use crate::pets::active::ActivePetService;
+    use crate::pets::deletion::PetDeletionService;
     use crate::pets::mutation::{MutationKind, PetMutationGate};
+    use crate::pets::ActivePetSession;
     use crate::storage::Storage;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -1124,6 +1252,23 @@ mod tests {
             )
         }
 
+        fn service_with_deletion(&self) -> CreationFinalizationService {
+            let active = Arc::new(ActivePetService::new(
+                self.storage.clone(),
+                Arc::new(Mutex::new(ActivePetSession::new())),
+                self.root.join("pets"),
+                self.gate.clone(),
+            ));
+            let deletion = Arc::new(PetDeletionService::new(
+                self.storage.clone(),
+                active,
+                self.root.clone(),
+                self.gate.clone(),
+            ));
+            self.service_for_app_data(self.root.clone())
+                .with_deletion(deletion)
+        }
+
         fn write_owned_install(&self, assets: &Path) {
             compile_animated_image(
                 &self.pet_id,
@@ -1194,6 +1339,31 @@ mod tests {
             .begin("req-other", MutationKind::Switch, "pet-other")
             .is_err());
         test.gate.finish("req-1").unwrap();
+    }
+
+    #[test]
+    fn prepare_gate_conflict_returns_without_retaining_the_switch_transaction() {
+        let test = FinalizationHarness::candidate_ready();
+        test.gate
+            .begin("blocking-delete", MutationKind::Delete, "pet-other")
+            .unwrap();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                result_tx
+                    .send(test.service.prepare(&test.session_id, "req-after-delete"))
+                    .unwrap();
+            });
+            std::thread::sleep(std::time::Duration::from_millis(100));
+            assert!(test.switch_transaction.try_lock().is_ok());
+            let error = result_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .unwrap_err();
+            assert!(error.contains("宠物变更"));
+            test.gate.finish("blocking-delete").unwrap();
+        });
     }
 
     #[test]
@@ -1871,6 +2041,19 @@ mod tests {
 
         assert_eq!(prepared.pet_id, test.pet_id);
         assert!(test.assets().join("manifest.json").exists());
+        let source: (String, i64) = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT source_template_id, source_template_version
+                 FROM pets WHERE pet_id=?1",
+                [&test.pet_id],
+                |row| Ok((row.get(0)?, row.get(1)?)),
+            )
+            .unwrap();
+        assert_eq!(source, ("template-1".into(), 1));
         test.gate.finish("req-adoption").unwrap();
     }
 
@@ -2073,6 +2256,30 @@ mod tests {
     }
 
     #[test]
+    fn recover_waits_for_the_existing_pet_mutation_owner_before_cleanup() {
+        let test = FinalizationHarness::candidate_ready();
+        test.service
+            .prepare(&test.session_id, "req-inflight-switch")
+            .unwrap();
+        let (result_tx, result_rx) = std::sync::mpsc::channel();
+
+        std::thread::scope(|scope| {
+            scope.spawn(|| {
+                result_tx.send(test.service.recover()).unwrap();
+            });
+            assert!(result_rx
+                .recv_timeout(std::time::Duration::from_millis(100))
+                .is_err());
+            test.gate.finish("req-inflight-switch").unwrap();
+            let report = result_rx
+                .recv_timeout(std::time::Duration::from_secs(2))
+                .unwrap()
+                .unwrap();
+            assert_eq!(report.cleaned_session_ids, vec![test.session_id.clone()]);
+        });
+    }
+
+    #[test]
     fn recover_handles_a_crash_after_marking_finalizing_before_install() {
         let test = FinalizationHarness::candidate_ready();
         test.storage
@@ -2144,6 +2351,155 @@ mod tests {
     }
 
     #[test]
+    fn recover_warns_about_a_completed_session_with_missing_assets_without_deleting_database_facts()
+    {
+        let test = FinalizationHarness::candidate_ready();
+        test.complete();
+        std::fs::remove_dir_all(test.assets()).unwrap();
+
+        let report = test.service.recover().unwrap();
+
+        assert!(report.completed_session_ids.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("completed"));
+        assert_eq!(test.status().0, "completed");
+        assert_eq!(test.runtime_variant_count(), 1);
+    }
+
+    #[test]
+    fn recover_warns_about_a_completed_session_with_corrupt_assets_without_deleting_them() {
+        let test = FinalizationHarness::candidate_ready();
+        test.complete();
+        std::fs::write(test.assets().join("manifest.json"), b"{}").unwrap();
+
+        let report = test.service.recover().unwrap();
+
+        assert!(report.completed_session_ids.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert_eq!(test.status().0, "completed");
+        assert_eq!(test.runtime_variant_count(), 1);
+        assert!(test.assets().join("manifest.json").exists());
+    }
+
+    #[test]
+    fn recover_marks_a_durably_committed_finalizing_session_completed_idempotently() {
+        let test = FinalizationHarness::candidate_ready();
+        test.complete();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='finalizing', last_stable_status='candidateReady',
+                     current_step='finalizing', completed_at=NULL
+                 WHERE session_id=?1",
+                [&test.session_id],
+            )
+            .unwrap();
+
+        let first = test.service.recover().unwrap();
+        let second = test.service.recover().unwrap();
+
+        assert_eq!(first.completed_session_ids, vec![test.session_id.clone()]);
+        assert_eq!(second.completed_session_ids, vec![test.session_id.clone()]);
+        assert_eq!(test.status().0, "completed");
+        assert!(test.assets().exists());
+        assert_eq!(test.runtime_variant_count(), 1);
+    }
+
+    #[test]
+    fn recover_abandons_owned_session_pet_and_job_resources_and_is_idempotent() {
+        let test = FinalizationHarness::candidate_ready();
+        let session_dir = test.root.join("creation-sessions").join(&test.session_id);
+        std::fs::create_dir_all(&session_dir).unwrap();
+        std::fs::write(session_dir.join("draft.json"), b"draft").unwrap();
+        std::fs::create_dir_all(test.root.join("pets").join(&test.pet_id)).unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(&format!(
+                "UPDATE creation_sessions
+                 SET status='abandoned', last_stable_status='abandoned', current_step='abandoned'
+                 WHERE session_id='{}';
+                 UPDATE pets SET lifecycle='abandoned' WHERE pet_id='{}';",
+                test.session_id, test.pet_id
+            ))
+            .unwrap();
+        let service = test.service_with_deletion();
+
+        let first = service.recover().unwrap();
+        let second = service.recover().unwrap();
+
+        assert_eq!(first.cleaned_session_ids, vec![test.session_id.clone()]);
+        assert!(second.cleaned_session_ids.is_empty());
+        let storage = test.storage.lock().unwrap();
+        let pet_count: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM pets WHERE pet_id=?1",
+                [&test.pet_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let tombstone_count: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM creation_session_tombstones WHERE session_id=?1",
+                [&test.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(storage);
+        assert_eq!(pet_count, 0);
+        assert_eq!(tombstone_count, 1);
+        assert!(!session_dir.exists());
+        assert!(!test.body_path.parent().unwrap().exists());
+        assert!(!test.root.join("pets").join(&test.pet_id).exists());
+    }
+
+    #[test]
+    fn recover_warns_without_abandoning_a_ready_active_pet() {
+        let test = FinalizationHarness::candidate_ready();
+        test.complete();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(&format!(
+                "UPDATE creation_sessions
+                 SET status='abandoned', last_stable_status='abandoned', current_step='abandoned'
+                 WHERE session_id='{}';
+                 INSERT INTO state (key, value) VALUES ('app:active_pet_id', '{}')
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+                test.session_id, test.pet_id
+            ))
+            .unwrap();
+        let service = test.service_with_deletion();
+
+        let report = service.recover().unwrap();
+
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.cleaned_session_ids.is_empty());
+        assert!(test.assets().exists());
+        assert_eq!(test.runtime_variant_count(), 1);
+        assert_eq!(test.status().0, "abandoned");
+        let pet_count: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM pets WHERE pet_id=?1",
+                [&test.pet_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(pet_count, 1);
+    }
+
+    #[test]
     fn recover_ignores_retryable_sessions_that_were_not_finalizing_candidates() {
         let test = FinalizationHarness::candidate_ready();
         test.storage
@@ -2164,5 +2520,82 @@ mod tests {
         assert!(report.cleaned_session_ids.is_empty());
         assert_eq!(test.status().1, "draft");
         assert_eq!(test.status().2.as_deref(), Some("generation failed"));
+    }
+
+    #[test]
+    fn recover_does_not_compile_or_mutate_a_retryable_candidate() {
+        let test = FinalizationHarness::candidate_ready();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='retryableFailure', last_stable_status='candidateReady',
+                     error='desktop unavailable'
+                 WHERE session_id=?1",
+                [&test.session_id],
+            )
+            .unwrap();
+
+        let report = test.service.recover().unwrap();
+
+        assert!(report.retryable_session_ids.is_empty());
+        assert!(report.cleaned_session_ids.is_empty());
+        assert_eq!(test.status().0, "retryableFailure");
+        assert_eq!(test.status().2.as_deref(), Some("desktop unavailable"));
+        assert!(test.body_path.exists());
+        assert!(!test.assets().exists());
+    }
+
+    #[test]
+    fn recover_removes_an_owned_install_left_after_database_compensation() {
+        let test = FinalizationHarness::candidate_ready();
+        test.service
+            .prepare(&test.session_id, "req-before-db-compensation-crash")
+            .unwrap();
+        test.gate
+            .finish("req-before-db-compensation-crash")
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(&format!(
+                "DELETE FROM variants WHERE variant_id='{}' AND pet_id='{}';
+                 UPDATE creation_sessions
+                 SET status='retryableFailure', last_stable_status='candidateReady',
+                     current_step='review', error='runtime switch failed'
+                 WHERE session_id='{}';",
+                test.variant_id, test.pet_id, test.session_id
+            ))
+            .unwrap();
+        assert!(test.assets().exists());
+
+        let report = test.service.recover().unwrap();
+
+        assert_eq!(report.cleaned_session_ids, vec![test.session_id.clone()]);
+        assert_eq!(test.status().0, "retryableFailure");
+        assert_eq!(test.status().2.as_deref(), Some("runtime switch failed"));
+        assert!(!test.assets().exists());
+        assert!(test.body_path.exists());
+    }
+
+    #[test]
+    fn recover_cleans_finalizing_owned_install_even_when_the_source_candidate_is_missing() {
+        let test = FinalizationHarness::candidate_ready();
+        test.service
+            .prepare(&test.session_id, "req-source-lost")
+            .unwrap();
+        test.gate.finish("req-source-lost").unwrap();
+        std::fs::remove_dir_all(test.body_path.parent().unwrap()).unwrap();
+
+        let report = test.service.recover().unwrap();
+
+        assert_eq!(report.retryable_session_ids, vec![test.session_id.clone()]);
+        assert_eq!(report.cleaned_session_ids, vec![test.session_id.clone()]);
+        assert_eq!(test.status().0, "retryableFailure");
+        assert_eq!(test.runtime_variant_count(), 0);
+        assert!(!test.assets().exists());
     }
 }

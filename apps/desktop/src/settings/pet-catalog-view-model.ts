@@ -23,28 +23,19 @@ const lifecycleCopy: Record<PetLifecycle, string> = {
   corrupt: "本地资料不完整，建议删除后重新创建",
 };
 
-const speciesLabel: Record<PetCatalogEntry["species"], string> = {
-  cat: "猫咪",
-  dog: "狗狗",
+const creationMethodLabel: Record<PetCatalogEntry["creationMethod"], string> = {
+  upload: "上传创建",
+  composer: "引导组合",
+  adoption: "直接认领",
 };
-
-const resumable: ReadonlySet<PetLifecycle> = new Set([
-  "generating",
-  "generationFailed",
-  "awaitingConfirm",
-  "compileRetryable",
-  "awaitingActivation",
-]);
 
 export function buildPetListRows(entries: PetCatalogEntry[]): PetListRow[] {
   return [...entries]
     .sort((left, right) => Number(right.source === "builtin") - Number(left.source === "builtin"))
     .map((entry) => ({
       petId: entry.petId,
-      title: entry.source === "builtin"
-        ? "默认猫 · Live2D"
-        : `${speciesLabel[entry.species]} · ${formatCreatedAt(entry.createdAt)}`,
-      detail: entry.issue ?? lifecycleCopy[entry.status],
+      title: entry.displayName,
+      detail: detailFor(entry),
       badge: entry.isCurrent ? "当前使用" : undefined,
       actions: actionsFor(entry),
     }));
@@ -54,15 +45,13 @@ function actionsFor(entry: PetCatalogEntry): PetListAction[] {
   const actions: PetListAction[] = [];
   if (!entry.isCurrent) {
     if (entry.status === "ready") actions.push({ kind: "switch", label: "设为当前" });
-    if (resumable.has(entry.status)) actions.push({ kind: "continue", label: "继续创建" });
   }
   if (entry.deletable) actions.push({ kind: "delete", label: "删除" });
   return actions;
 }
 
-function formatCreatedAt(createdAt: string | null): string {
-  if (!createdAt) return "创建日期未知";
-  const date = new Date(createdAt);
-  if (Number.isNaN(date.getTime())) return "创建日期未知";
-  return new Intl.DateTimeFormat("zh-CN", { year: "numeric", month: "short", day: "numeric" }).format(date);
+function detailFor(entry: PetCatalogEntry): string {
+  if (entry.source === "builtin") return entry.issue ?? lifecycleCopy[entry.status];
+  const source = creationMethodLabel[entry.creationMethod];
+  return entry.issue ? `${source} · ${entry.issue}` : source;
 }
