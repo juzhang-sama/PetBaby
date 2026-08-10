@@ -19,6 +19,13 @@ export interface PetSwitchOptions {
   creationSessionId?: string;
 }
 
+export type CommitReconciliationStatus = "notCommitted" | "compensated" | "unknown";
+
+export interface CommitReconciliation {
+  status: CommitReconciliationStatus;
+  warning?: string;
+}
+
 export type PetSwitchErrorCode =
   | "target-not-found"
   | "asset-corrupt"

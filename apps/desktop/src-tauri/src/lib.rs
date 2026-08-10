@@ -10,7 +10,7 @@ mod windowing;
 use pets::pet::{IdentityMode, Pet, PetSummary, Species};
 use pets::SharedPetRepository;
 use pets::{
-    active::{RuntimePetDescriptor, SharedActivePetService},
+    active::{CommitReconciliation, RuntimePetDescriptor, SharedActivePetService},
     catalog::{CreationResume, PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
     deletion::{DeleteOutcome, PetDeletionService, SharedPetDeletionService},
     mutation::{PetMutationGate, SharedPetMutationGate},
@@ -437,6 +437,24 @@ fn pet_rollback_switch(
     let _ = creation_session_id;
     state.rollback_commit(
         request_id.as_deref(),
+        &previous_pet_id,
+        &pet_id,
+        accepted_variant_id.as_deref(),
+    )
+}
+
+#[tauri::command]
+fn pet_reconcile_switch_commit(
+    state: tauri::State<'_, SharedActivePetService>,
+    request_id: String,
+    previous_pet_id: String,
+    pet_id: String,
+    accepted_variant_id: Option<String>,
+    creation_session_id: Option<String>,
+) -> Result<CommitReconciliation, String> {
+    let _ = creation_session_id;
+    state.reconcile_commit(
+        &request_id,
         &previous_pet_id,
         &pet_id,
         accepted_variant_id.as_deref(),
@@ -873,6 +891,7 @@ pub fn run() {
             pet_prepare_switch,
             pet_commit_switch,
             pet_rollback_switch,
+            pet_reconcile_switch_commit,
             pet_cancel_switch,
             pet_finish_switch,
             pet_state_load,

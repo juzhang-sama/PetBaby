@@ -43,6 +43,7 @@ interface HarnessOptions {
   rollbackFailures?: number;
   backendRollbackError?: Error;
   fallbackCheckErrorAfterCommit?: Error;
+  reconciliationStatus?: "notCommitted" | "compensated" | "unknown";
   destroyOldRuntimeError?: Error;
 }
 
@@ -80,6 +81,9 @@ function coordinatorHarness(options: HarnessOptions = {}) {
   });
   const cancel = vi.fn(async () => undefined);
   const finish = vi.fn(async () => undefined);
+  const reconcileCommit = vi.fn(async () => ({
+    status: options.reconciliationStatus ?? "notCommitted" as const,
+  }));
   const probe = vi.fn(() => {
     if (options.probeError) throw options.probeError;
   });
@@ -123,6 +127,7 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     rollbackCommit,
     cancel,
     finish,
+    reconcileCommit,
     refreshHitRegion,
   });
   return {
@@ -132,6 +137,7 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     commitStarted,
     coordinator,
     finish,
+    reconcileCommit,
     load,
     loadStarted,
     oldRuntime,
@@ -206,6 +212,50 @@ describe("PetSwitchCoordinator", () => {
     expect(test.oldRuntime.host.update).toHaveBeenCalledWith(42);
     expect(test.cancel).toHaveBeenCalledOnce();
     expect(test.finish).not.toHaveBeenCalled();
+    expect(test.reconcileCommit).toHaveBeenCalledOnce();
+    expect(test.rollbackCommit).not.toHaveBeenCalled();
+  });
+
+  it("finishes after commit rejection reconciliation confirms DB compensation", async () => {
+    const test = coordinatorHarness({
+      commitError: new Error("transport rejected after commit"),
+      reconciliationStatus: "compensated",
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b", "r-commit-landed"))).resolves.toMatchObject({
+      ok: false,
+      code: "persist-failed",
+    });
+
+    expect(test.reconcileCommit).toHaveBeenCalledWith("pet-a", {
+      requestId: "r-commit-landed",
+      petId: "pet-b",
+    });
+    expect(test.finish).toHaveBeenCalledWith("r-commit-landed");
+    expect(test.finish).toHaveBeenCalledOnce();
+    expect(test.cancel).not.toHaveBeenCalled();
+    expect(test.rollbackCommit).not.toHaveBeenCalled();
+    expect(test.slot.activePetId).toBe("pet-a");
+  });
+
+  it("leaves owner to TTL when commit rejection reconciliation is unknown", async () => {
+    const test = coordinatorHarness({
+      commitError: new Error("transport state unknown"),
+      reconciliationStatus: "unknown",
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b", "r-commit-unknown"))).resolves.toMatchObject({
+      ok: false,
+      code: "persist-failed",
+    });
+
+    expect(test.reconcileCommit).toHaveBeenCalledOnce();
+    expect(test.finish).not.toHaveBeenCalled();
+    expect(test.cancel).not.toHaveBeenCalled();
+    expect(test.rollbackCommit).not.toHaveBeenCalled();
+    expect(test.slot.activePetId).toBe("pet-a");
   });
 
   it("starts the carried idle after visual activation and before persistence commits", async () => {

@@ -23,6 +23,22 @@ pub struct RuntimePetDescriptor {
     pub source: RuntimePetSource,
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitReconciliationStatus {
+    NotCommitted,
+    Compensated,
+    Unknown,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitReconciliation {
+    pub status: CommitReconciliationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
 pub type SharedActivePetService = Arc<ActivePetService>;
 
 pub struct ActivePetService {
@@ -30,6 +46,8 @@ pub struct ActivePetService {
     session: SharedActivePetSession,
     pets_dir: PathBuf,
     mutation_gate: SharedPetMutationGate,
+    #[cfg(test)]
+    after_owner_pin_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl ActivePetService {
@@ -44,6 +62,8 @@ impl ActivePetService {
             session,
             pets_dir,
             mutation_gate,
+            #[cfg(test)]
+            after_owner_pin_hook: Mutex::new(None),
         }
     }
 
@@ -105,9 +125,14 @@ impl ActivePetService {
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<(), String> {
-        if let Some(request_id) = request_id {
-            self.mutation_gate.assert_owner(request_id, pet_id)?;
-        }
+        let _owner_pin = request_id
+            .map(|request_id| {
+                self.mutation_gate
+                    .assert_owner(request_id, MutationKind::Switch, pet_id)
+            })
+            .transpose()?;
+        #[cfg(test)]
+        self.run_after_owner_pin_hook();
         self.describe(pet_id)?;
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let tx = storage
@@ -163,10 +188,81 @@ impl ActivePetService {
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<(), String> {
-        if let Some(request_id) = request_id {
-            self.mutation_gate.assert_owner(request_id, pet_id)?;
-        }
+        let _owner_pin = request_id
+            .map(|request_id| {
+                self.mutation_gate
+                    .assert_owner(request_id, MutationKind::Switch, pet_id)
+            })
+            .transpose()?;
+        #[cfg(test)]
+        self.run_after_owner_pin_hook();
         self.describe(previous_pet_id)?;
+        self.rollback_database(previous_pet_id, pet_id, accepted_variant_id)?;
+        self.sync_session(previous_pet_id)
+    }
+
+    pub fn reconcile_commit(
+        &self,
+        request_id: &str,
+        previous_pet_id: &str,
+        pet_id: &str,
+        accepted_variant_id: Option<&str>,
+    ) -> Result<CommitReconciliation, String> {
+        let _owner_pin =
+            self.mutation_gate
+                .assert_owner(request_id, MutationKind::Switch, pet_id)?;
+        #[cfg(test)]
+        self.run_after_owner_pin_hook();
+
+        if previous_pet_id == pet_id {
+            return Ok(CommitReconciliation {
+                status: CommitReconciliationStatus::Unknown,
+                warning: Some("previous and target pet are indistinguishable".into()),
+            });
+        }
+        let current = match self.read_persisted_active() {
+            Ok(current) => current,
+            Err(error) => {
+                return Ok(CommitReconciliation {
+                    status: CommitReconciliationStatus::Unknown,
+                    warning: Some(error),
+                });
+            }
+        };
+        if current.as_deref() == Some(previous_pet_id) {
+            return Ok(CommitReconciliation {
+                status: CommitReconciliationStatus::NotCommitted,
+                warning: None,
+            });
+        }
+        if current.as_deref() != Some(pet_id) {
+            return Ok(CommitReconciliation {
+                status: CommitReconciliationStatus::Unknown,
+                warning: Some("persisted active pet is neither previous nor target".into()),
+            });
+        }
+        if let Err(error) = self
+            .describe(previous_pet_id)
+            .and_then(|_| self.rollback_database(previous_pet_id, pet_id, accepted_variant_id))
+        {
+            return Ok(CommitReconciliation {
+                status: CommitReconciliationStatus::Unknown,
+                warning: Some(error),
+            });
+        }
+
+        Ok(CommitReconciliation {
+            status: CommitReconciliationStatus::Compensated,
+            warning: self.sync_session(previous_pet_id).err(),
+        })
+    }
+
+    fn rollback_database(
+        &self,
+        previous_pet_id: &str,
+        pet_id: &str,
+        accepted_variant_id: Option<&str>,
+    ) -> Result<(), String> {
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let tx = storage
             .db
@@ -221,11 +317,14 @@ impl ActivePetService {
             .map_err(|error| error.to_string())?;
         }
         tx.commit().map_err(|error| error.to_string())?;
-        drop(storage);
+        Ok(())
+    }
+
+    fn sync_session(&self, pet_id: &str) -> Result<(), String> {
         self.session
             .lock()
             .map_err(|_| "session lock poisoned")?
-            .set_active(previous_pet_id.into())
+            .set_active(pet_id.into())
     }
 
     pub fn cancel(&self, request_id: &str) -> Result<(), String> {
@@ -234,6 +333,18 @@ impl ActivePetService {
 
     pub fn finish(&self, request_id: &str) -> Result<(), String> {
         self.mutation_gate.finish(request_id)
+    }
+
+    #[cfg(test)]
+    fn set_after_owner_pin_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.after_owner_pin_hook.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    #[cfg(test)]
+    fn run_after_owner_pin_hook(&self) {
+        if let Some(hook) = self.after_owner_pin_hook.lock().unwrap().clone() {
+            hook();
+        }
     }
 
     fn read_persisted_active(&self) -> Result<Option<String>, String> {
@@ -293,7 +404,7 @@ impl ActivePetService {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use crate::pets::mutation::{MutationKind, PetMutationGate};
+    use crate::pets::mutation::{MutationKind, PetMutationGate, SharedPetMutationGate};
     use crate::pets::{ActivePetSession, SharedActivePetSession};
     use crate::runtime_assets::{
         importer::import_png_source,
@@ -312,6 +423,7 @@ mod tests {
         storage: Arc<Mutex<Storage>>,
         session: SharedActivePetSession,
         service: ActivePetService,
+        gate: SharedPetMutationGate,
     }
 
     impl ActiveHarness {
@@ -322,11 +434,12 @@ mod tests {
             let pets_dir = root.join("pets");
             let storage = Arc::new(Mutex::new(Storage::open(&pets_dir).unwrap()));
             let session = Arc::new(Mutex::new(ActivePetSession::new()));
+            let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
             let service = ActivePetService::new(
                 storage.clone(),
                 session.clone(),
                 pets_dir.clone(),
-                Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60))),
+                gate.clone(),
             );
             Self {
                 root,
@@ -334,6 +447,7 @@ mod tests {
                 storage,
                 session,
                 service,
+                gate,
             }
         }
 
@@ -594,5 +708,258 @@ mod tests {
         assert!(service
             .commit(Some("missing-request"), BUILTIN_PET_ID, None)
             .is_err());
+    }
+
+    #[test]
+    fn commit_pin_blocks_cancel_and_other_mutations_until_commit_returns() {
+        let test = ActiveHarness::new();
+        test.service
+            .prepare(Some("switch-pinned"), BUILTIN_PET_ID)
+            .unwrap();
+        let commit_entered = Arc::new(std::sync::Barrier::new(2));
+        let commit_release = Arc::new(std::sync::Barrier::new(2));
+        test.service.set_after_owner_pin_hook({
+            let entered = commit_entered.clone();
+            let release = commit_release.clone();
+            move || {
+                entered.wait();
+                release.wait();
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let commit = scope.spawn(|| {
+                test.service
+                    .commit(Some("switch-pinned"), BUILTIN_PET_ID, None)
+            });
+            commit_entered.wait();
+
+            assert!(test.service.cancel("switch-pinned").is_err());
+            assert!(test
+                .gate
+                .begin("creation-blocked", MutationKind::Creation, "pet-a")
+                .is_err());
+
+            commit_release.wait();
+            assert!(commit.join().unwrap().is_ok());
+        });
+
+        test.service.finish("switch-pinned").unwrap();
+        assert!(test
+            .gate
+            .begin("creation-after", MutationKind::Creation, "pet-a")
+            .is_ok());
+    }
+
+    #[test]
+    fn rollback_pin_blocks_cancel_until_session_sync_returns() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-rollback-pinned"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(Some("switch-rollback-pinned"), "pet-user", None)
+            .unwrap();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        test.service.set_after_owner_pin_hook({
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                entered.wait();
+                release.wait();
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let rollback = scope.spawn(|| {
+                test.service.rollback_commit(
+                    Some("switch-rollback-pinned"),
+                    BUILTIN_PET_ID,
+                    "pet-user",
+                    None,
+                )
+            });
+            entered.wait();
+            assert!(test.service.cancel("switch-rollback-pinned").is_err());
+            release.wait();
+            assert!(rollback.join().unwrap().is_ok());
+        });
+        test.service.finish("switch-rollback-pinned").unwrap();
+    }
+
+    #[test]
+    fn reconcile_pin_blocks_cancel_until_db_compensation_is_classified() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-reconcile-pinned"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(Some("switch-reconcile-pinned"), "pet-user", None)
+            .unwrap();
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        test.service.set_after_owner_pin_hook({
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                entered.wait();
+                release.wait();
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let reconcile = scope.spawn(|| {
+                test.service.reconcile_commit(
+                    "switch-reconcile-pinned",
+                    BUILTIN_PET_ID,
+                    "pet-user",
+                    None,
+                )
+            });
+            entered.wait();
+            assert!(test.service.cancel("switch-reconcile-pinned").is_err());
+            release.wait();
+            assert_eq!(
+                reconcile.join().unwrap().unwrap().status,
+                CommitReconciliationStatus::Compensated
+            );
+        });
+        test.service.finish("switch-reconcile-pinned").unwrap();
+    }
+
+    #[test]
+    fn reconcile_reports_not_committed_when_persistence_is_still_previous() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-not-committed"), "pet-user")
+            .unwrap();
+
+        let reconciliation = test
+            .service
+            .reconcile_commit(
+                "switch-not-committed",
+                BUILTIN_PET_ID,
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            reconciliation.status,
+            CommitReconciliationStatus::NotCommitted
+        );
+        assert_eq!(reconciliation.warning, None);
+        test.service.cancel("switch-not-committed").unwrap();
+    }
+
+    #[test]
+    fn reconcile_compensates_a_commit_that_succeeded_before_transport_rejected() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-committed"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(Some("switch-committed"), "pet-user", Some("variant-1"))
+            .unwrap();
+
+        let reconciliation = test
+            .service
+            .reconcile_commit(
+                "switch-committed",
+                BUILTIN_PET_ID,
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            reconciliation.status,
+            CommitReconciliationStatus::Compensated
+        );
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        assert!(!test.variant_accepted("variant-1"));
+        test.service.finish("switch-committed").unwrap();
+    }
+
+    #[test]
+    fn reconcile_reports_db_compensated_when_session_sync_is_poisoned() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-poisoned-session"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(
+                Some("switch-poisoned-session"),
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+        let session = test.session.clone();
+        assert!(std::thread::spawn(move || {
+            let _session = session.lock().unwrap();
+            panic!("poison active session");
+        })
+        .join()
+        .is_err());
+
+        let reconciliation = test
+            .service
+            .reconcile_commit(
+                "switch-poisoned-session",
+                BUILTIN_PET_ID,
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+
+        assert_eq!(
+            reconciliation.status,
+            CommitReconciliationStatus::Compensated
+        );
+        assert!(reconciliation.warning.is_some());
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        assert!(!test.variant_accepted("variant-1"));
+        test.service.finish("switch-poisoned-session").unwrap();
+    }
+
+    #[test]
+    fn reconcile_reports_unknown_for_an_unrelated_persisted_owner() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active("pet-unrelated");
+        test.service
+            .prepare(Some("switch-unknown"), "pet-user")
+            .unwrap();
+
+        let reconciliation = test
+            .service
+            .reconcile_commit(
+                "switch-unknown",
+                BUILTIN_PET_ID,
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+
+        assert_eq!(reconciliation.status, CommitReconciliationStatus::Unknown);
+        assert!(reconciliation.warning.is_some());
+        test.service.finish("switch-unknown").unwrap();
+    }
+
+    #[test]
+    fn reconciliation_dto_uses_protocol_status_and_omits_empty_warning() {
+        let value = serde_json::to_value(CommitReconciliation {
+            status: CommitReconciliationStatus::NotCommitted,
+            warning: None,
+        })
+        .unwrap();
+
+        assert_eq!(value["status"], "notCommitted");
+        assert!(value.get("warning").is_none());
     }
 }

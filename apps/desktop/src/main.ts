@@ -174,6 +174,10 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
       previousPetId,
       ...request,
     }),
+    reconcileCommit: (previousPetId, request) => invoke("pet_reconcile_switch_commit", {
+      previousPetId,
+      ...request,
+    }),
     cancel: (requestId) => invoke("pet_cancel_switch", { requestId }),
     finish: (requestId) => invoke("pet_finish_switch", { requestId }),
     refreshHitRegion,

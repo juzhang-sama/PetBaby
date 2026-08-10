@@ -18,6 +18,7 @@ struct MutationOwner {
     started_at: Duration,
     scoped: bool,
     token: u64,
+    pins: usize,
 }
 
 #[derive(Default)]
@@ -36,6 +37,11 @@ pub struct PetMutationGate {
 pub struct PetMutationLease<'a> {
     gate: &'a PetMutationGate,
     request_id: String,
+    token: u64,
+}
+
+pub struct PetMutationOwnerPin<'a> {
+    gate: &'a PetMutationGate,
     token: u64,
 }
 
@@ -77,7 +83,9 @@ impl PetMutationGate {
         let token = loop {
             let now = (self.clock)();
             if state.owner.as_ref().is_some_and(|owner| {
-                !owner.scoped && now.saturating_sub(owner.started_at) > self.timeout
+                !owner.scoped
+                    && owner.pins == 0
+                    && now.saturating_sub(owner.started_at) > self.timeout
             }) {
                 state.owner = None;
             }
@@ -92,10 +100,17 @@ impl PetMutationGate {
                         started_at: now,
                         scoped: true,
                         token,
+                        pins: 0,
                     });
                     break token;
                 }
                 Some(owner) if owner.scoped => {
+                    state = self
+                        .changed
+                        .wait(state)
+                        .map_err(|_| "pet mutation gate lock poisoned")?;
+                }
+                Some(owner) if owner.pins > 0 => {
                     state = self
                         .changed
                         .wait(state)
@@ -120,16 +135,34 @@ impl PetMutationGate {
         })
     }
 
-    pub fn assert_owner(&self, request_id: &str, pet_id: &str) -> Result<(), String> {
-        let state = self
+    pub fn assert_owner(
+        &self,
+        request_id: &str,
+        kind: MutationKind,
+        pet_id: &str,
+    ) -> Result<PetMutationOwnerPin<'_>, String> {
+        let mut state = self
             .state
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
-        match state.owner.as_ref() {
-            Some(owner) if owner.request_id == request_id && owner.pet_id == pet_id => Ok(()),
-            Some(_) => Err("pet mutation request does not own the gate".into()),
-            None => Err("pet mutation request has no active owner".into()),
-        }
+        let owner = state
+            .owner
+            .as_mut()
+            .filter(|owner| {
+                !owner.scoped
+                    && owner.request_id == request_id
+                    && owner.kind == kind
+                    && owner.pet_id == pet_id
+            })
+            .ok_or_else(|| "pet mutation request does not own the expected gate".to_string())?;
+        owner.pins = owner
+            .pins
+            .checked_add(1)
+            .ok_or_else(|| "pet mutation owner pin overflow".to_string())?;
+        Ok(PetMutationOwnerPin {
+            gate: self,
+            token: owner.token,
+        })
     }
 
     pub fn finish(&self, request_id: &str) -> Result<(), String> {
@@ -139,7 +172,7 @@ impl PetMutationGate {
             .map_err(|_| "pet mutation gate lock poisoned")?;
         match state.owner.as_ref() {
             None => Ok(()),
-            Some(owner) if owner.request_id == request_id && !owner.scoped => {
+            Some(owner) if owner.request_id == request_id && !owner.scoped && owner.pins == 0 => {
                 state.owner = None;
                 self.changed.notify_all();
                 Ok(())
@@ -158,7 +191,7 @@ impl PetMutationGate {
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
         if state.owner.as_ref().is_some_and(|owner| {
-            !owner.scoped && now.saturating_sub(owner.started_at) > self.timeout
+            !owner.scoped && owner.pins == 0 && now.saturating_sub(owner.started_at) > self.timeout
         }) {
             state.owner = None;
         }
@@ -181,6 +214,7 @@ impl PetMutationGate {
             started_at: now,
             scoped: false,
             token,
+            pins: 0,
         });
         Ok(token)
     }
@@ -196,11 +230,31 @@ impl PetMutationGate {
             self.changed.notify_all();
         }
     }
+
+    fn unpin(&self, token: u64) {
+        let Ok(mut state) = self.state.lock() else {
+            return;
+        };
+        if let Some(owner) = state
+            .owner
+            .as_mut()
+            .filter(|owner| owner.token == token && !owner.scoped && owner.pins > 0)
+        {
+            owner.pins -= 1;
+            self.changed.notify_all();
+        }
+    }
 }
 
 impl Drop for PetMutationLease<'_> {
     fn drop(&mut self) {
         self.gate.finish_scoped(&self.request_id, self.token);
+    }
+}
+
+impl Drop for PetMutationOwnerPin<'_> {
+    fn drop(&mut self) {
+        self.gate.unpin(self.token);
     }
 }
 
@@ -220,12 +274,19 @@ mod tests {
         (gate, now)
     }
 
+    fn assert_current_owner(gate: &PetMutationGate, request_id: &str, pet_id: &str) {
+        let state = gate.state.lock().unwrap();
+        let owner = state.owner.as_ref().expect("expected mutation owner");
+        assert_eq!(owner.request_id, request_id);
+        assert_eq!(owner.pet_id, pet_id);
+    }
+
     #[test]
     fn one_request_owns_the_pet_mutation_gate_until_finish() {
         let gate = PetMutationGate::new(Duration::from_secs(60));
         gate.begin("req-a", MutationKind::Switch, "pet-a").unwrap();
         assert!(gate.begin("req-b", MutationKind::Delete, "pet-b").is_err());
-        gate.assert_owner("req-a", "pet-a").unwrap();
+        assert_current_owner(&gate, "req-a", "pet-a");
         gate.finish("req-a").unwrap();
         assert!(gate.begin("req-b", MutationKind::Delete, "pet-b").is_ok());
     }
@@ -252,7 +313,7 @@ mod tests {
 
         gate.begin("req-new", MutationKind::Delete, "pet-b")
             .unwrap();
-        gate.assert_owner("req-new", "pet-b").unwrap();
+        assert_current_owner(&gate, "req-new", "pet-b");
     }
 
     #[test]
@@ -266,7 +327,7 @@ mod tests {
         assert!(gate
             .begin("req-new", MutationKind::Switch, "pet-b")
             .is_err());
-        gate.assert_owner("job-a", "pet-a").unwrap();
+        assert_current_owner(&gate, "job-a", "pet-a");
     }
 
     #[test]
@@ -301,7 +362,7 @@ mod tests {
             .unwrap();
 
         assert!(gate.finish("req-old").is_err());
-        gate.assert_owner("req-new", "pet-b").unwrap();
+        assert_current_owner(&gate, "req-new", "pet-b");
     }
 
     #[test]
@@ -318,7 +379,7 @@ mod tests {
 
         drop(old_lease);
 
-        gate.assert_owner("req-new", "pet-b").unwrap();
+        assert_current_owner(&gate, "req-new", "pet-b");
     }
 
     #[test]
@@ -341,6 +402,84 @@ mod tests {
         }));
         assert!(panic.is_err());
         gate.begin("req-after-panic", MutationKind::Switch, "pet-c")
+            .unwrap();
+    }
+
+    #[test]
+    fn owner_pin_blocks_finish_and_ttl_recovery_until_drop() {
+        let (gate, now) = gate_with_clock(Duration::from_secs(60));
+        gate.begin("switch-a", MutationKind::Switch, "pet-a")
+            .unwrap();
+        let pin = gate
+            .assert_owner("switch-a", MutationKind::Switch, "pet-a")
+            .unwrap();
+        now.store(600, Ordering::SeqCst);
+
+        assert!(gate.finish("switch-a").is_err());
+        assert!(gate
+            .begin("delete-a", MutationKind::Delete, "pet-a")
+            .is_err());
+
+        drop(pin);
+        gate.finish("switch-a").unwrap();
+        gate.begin("delete-a", MutationKind::Delete, "pet-a")
+            .unwrap();
+    }
+
+    #[test]
+    fn owner_pin_rejects_kind_target_and_scoped_mismatches() {
+        let gate = PetMutationGate::new(Duration::from_secs(60));
+        gate.begin("switch-a", MutationKind::Switch, "pet-a")
+            .unwrap();
+        assert!(gate
+            .assert_owner("switch-a", MutationKind::Creation, "pet-a")
+            .is_err());
+        assert!(gate
+            .assert_owner("switch-a", MutationKind::Switch, "pet-b")
+            .is_err());
+        gate.finish("switch-a").unwrap();
+
+        let _lease = gate
+            .scoped("local-a", MutationKind::Switch, "pet-a")
+            .unwrap();
+        assert!(gate
+            .assert_owner("local-a", MutationKind::Switch, "pet-a")
+            .is_err());
+    }
+
+    #[test]
+    fn owner_pin_drops_on_panic_without_finishing_the_owner() {
+        let gate = PetMutationGate::new(Duration::from_secs(60));
+        gate.begin("switch-a", MutationKind::Switch, "pet-a")
+            .unwrap();
+
+        let panic = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _pin = gate
+                .assert_owner("switch-a", MutationKind::Switch, "pet-a")
+                .unwrap();
+            panic!("injected pin panic");
+        }));
+
+        assert!(panic.is_err());
+        gate.finish("switch-a").unwrap();
+    }
+
+    #[test]
+    fn old_owner_pin_drop_cannot_modify_a_later_owner() {
+        let gate = PetMutationGate::new(Duration::from_secs(60));
+        gate.begin("switch-old", MutationKind::Switch, "pet-a")
+            .unwrap();
+        let old_pin = gate
+            .assert_owner("switch-old", MutationKind::Switch, "pet-a")
+            .unwrap();
+        gate.state.lock().unwrap().owner = None;
+        gate.begin("switch-new", MutationKind::Switch, "pet-b")
+            .unwrap();
+
+        drop(old_pin);
+
+        let _new_pin = gate
+            .assert_owner("switch-new", MutationKind::Switch, "pet-b")
             .unwrap();
     }
 }

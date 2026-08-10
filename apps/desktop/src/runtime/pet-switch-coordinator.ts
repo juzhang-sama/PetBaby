@@ -1,5 +1,6 @@
 import type { PreparedRuntimeSwap, PetRuntimeSlot, MountedPetRuntime } from "./pet-runtime-slot";
 import type {
+  CommitReconciliation,
   PetSwitchErrorCode,
   PetSwitchRequest,
   PetSwitchResult,
@@ -12,6 +13,7 @@ export interface PetSwitchCoordinatorPorts {
   probe(surface: HTMLCanvasElement): void;
   commit(request: PetSwitchRequest): Promise<void>;
   rollbackCommit(previousPetId: string, request: PetSwitchRequest): Promise<void>;
+  reconcileCommit(previousPetId: string, request: PetSwitchRequest): Promise<CommitReconciliation>;
   cancel(requestId: string): Promise<void>;
   finish(requestId: string): Promise<void>;
   refreshHitRegion(): Promise<void>;
@@ -85,8 +87,21 @@ export class PetSwitchCoordinator {
         this.log(request, "persist-failed", error);
         const rollbackConverged = this.rollbackSafely(request, swap);
         await this.ports.refreshHitRegion().catch(() => undefined);
-        await cancel();
-        return failure(request, "persist-failed", withRollbackState(messageOf(error), rollbackConverged));
+        let reconciliation: CommitReconciliation;
+        try {
+          reconciliation = await this.ports.reconcileCommit(swap.previous.petId, request);
+        } catch (reconciliationError) {
+          this.log(request, "commit-reconciliation-failed", reconciliationError);
+          reconciliation = { status: "unknown", warning: messageOf(reconciliationError) };
+        }
+        if (reconciliation.status === "notCommitted") await cancel();
+        if (reconciliation.status === "compensated") await finish();
+        const warning = reconciliation.warning ? `；对账提示：${reconciliation.warning}` : "";
+        return failure(
+          request,
+          "persist-failed",
+          withRollbackState(`${messageOf(error)}${warning}`, rollbackConverged),
+        );
       }
 
       if (runtime.isPreviewFallback?.()) {

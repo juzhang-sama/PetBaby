@@ -20,6 +20,7 @@ describe("desktop hit-region routing", () => {
     expect(source).toContain('prepare: (requestId, petId) => invoke("pet_prepare_switch", { requestId, petId })');
     expect(source).toContain('commit: (request) => invoke("pet_commit_switch", { ...request })');
     expect(source).toContain('rollbackCommit: (previousPetId, request) => invoke("pet_rollback_switch", {');
+    expect(source).toContain('reconcileCommit: (previousPetId, request) => invoke("pet_reconcile_switch_commit", {');
     expect(source).toContain('cancel: (requestId) => invoke("pet_cancel_switch", { requestId })');
     expect(source).toContain('finish: (requestId) => invoke("pet_finish_switch", { requestId })');
   });

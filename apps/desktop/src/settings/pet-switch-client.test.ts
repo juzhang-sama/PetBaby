@@ -162,4 +162,40 @@ describe("requestPetSwitch", () => {
     expect(test.unlisten).toHaveBeenCalledOnce();
     expect(test.cancel).not.toHaveBeenCalled();
   });
+
+  it("settles timeout immediately when backend cancellation never resolves", async () => {
+    vi.useFakeTimers();
+    const test = clientPorts();
+    test.cancel.mockImplementation(() => new Promise<undefined>(() => undefined));
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-timeout" });
+
+    const pending = requestPetSwitch("pet-b", undefined, test.ports);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      requestId: "request-timeout",
+      code: "pet-window-unavailable",
+    });
+    test.result({ ok: true, requestId: "request-timeout", petId: "pet-b" });
+    expect(test.unlisten).toHaveBeenCalledOnce();
+    expect(test.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("settles an emit failure immediately when backend cancellation never resolves", async () => {
+    const test = clientPorts();
+    test.emit.mockRejectedValue(new Error("pet window unavailable"));
+    test.cancel.mockImplementation(() => new Promise<undefined>(() => undefined));
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-emit-failed" });
+
+    await expect(requestPetSwitch("pet-b", undefined, test.ports)).resolves.toMatchObject({
+      ok: false,
+      requestId: "request-emit-failed",
+      code: "pet-window-unavailable",
+    });
+    expect(test.unlisten).toHaveBeenCalledOnce();
+    expect(test.cancel).toHaveBeenCalledOnce();
+  });
 });

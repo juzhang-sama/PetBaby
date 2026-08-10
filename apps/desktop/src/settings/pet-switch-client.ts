@@ -61,16 +61,14 @@ export async function requestPetSwitch(
     code: "pet-window-unavailable",
     message: error instanceof Error ? error.message : String(error),
   });
-  const failUnavailable = async (error: unknown): Promise<void> => {
+  const failUnavailable = (error: unknown): void => {
     if (settled) return;
     settled = true;
     cleanup();
-    try {
-      await ports.cancel(requestId);
-    } catch {
-      // The backend gate has a TTL fallback when explicit cancellation cannot be delivered.
-    }
     resolveResult(unavailable(error));
+    void ports.cancel(requestId).catch(() => {
+      // The backend gate has a TTL fallback when explicit cancellation cannot be delivered.
+    });
   };
 
   const request: PetSwitchRequest = {
@@ -92,11 +90,11 @@ export async function requestPetSwitch(
       return resultPromise;
     }
     timer = window.setTimeout(() => {
-      void failUnavailable(new Error("桌面宠物窗口没有响应"));
+      failUnavailable(new Error("桌面宠物窗口没有响应"));
     }, 10_000);
     await ports.emit(request);
   } catch (error) {
-    await failUnavailable(error);
+    failUnavailable(error);
   }
   return resultPromise;
 }
