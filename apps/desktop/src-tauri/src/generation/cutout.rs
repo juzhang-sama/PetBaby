@@ -14,7 +14,7 @@ pub struct QualityReport {
     pub interior_holes: bool,
 }
 
-#[expect(dead_code)]
+#[allow(dead_code)] // now called by generation persistence and reserved for later workflows
 impl QualityReport {
     pub fn is_acceptable(&self) -> bool {
         // gate against over-cutout: too much transparency overall, or holes inside

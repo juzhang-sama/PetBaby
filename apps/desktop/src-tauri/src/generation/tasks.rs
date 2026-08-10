@@ -7,6 +7,14 @@ use std::sync::{Arc, Mutex};
 
 pub type SharedGenerationManager = Arc<GenerationManager>;
 
+#[allow(dead_code)] // returned by persistence for subsequent candidate processing
+#[derive(Debug, Clone)]
+pub struct CandidatePaths {
+    pub image_path: PathBuf,
+    pub cutout_path: PathBuf,
+    pub quality: String,
+}
+
 pub struct GenerationManager {
     store: Arc<Mutex<CreationStore>>,
     state_store: Arc<Mutex<crate::pets::state::StateStore>>,
@@ -49,8 +57,12 @@ impl GenerationManager {
         let client = self.client_for()?;
         let task_id = tauri::async_runtime::block_on(client.submit(prompt, Some(ref_png), "auto"))
             .map_err(|error| format!("submit failed: {error}"))?;
-        let store = self.store.lock().map_err(|_| "store lock poisoned")?;
-        store.create_job(&job_id, pet_id, prompt, ref_sha256, Some(&task_id))?;
+        {
+            let store = self.store.lock().map_err(|_| "store lock poisoned")?;
+            store.create_job(&job_id, pet_id, prompt, ref_sha256, Some(&task_id))?;
+        }
+        let state = self.state_store.lock().map_err(|_| "state lock poisoned")?;
+        state.remove(&format!("creation:{pet_id}:compile_error"))?;
         Ok(job_id)
     }
 
@@ -87,34 +99,26 @@ impl GenerationManager {
             if !state.is_final {
                 continue;
             }
-            let store = self.store.lock().map_err(|_| "store lock poisoned")?;
-            if state.state == "success" {
+            let result = if state.state == "success" {
                 let Some(url) = state.result_url.clone() else {
+                    let store = self.store.lock().map_err(|_| "store lock poisoned")?;
                     store.update_job_status(&job.job_id, "failed", None, Some("no result url"))?;
                     finished.push(job.job_id);
                     continue;
                 };
                 match tauri::async_runtime::block_on(client.download(&url)) {
-                    Ok(bytes) => {
-                        self.persist_result(&job.job_id, &bytes);
-                        store.update_job_status(&job.job_id, "success", Some(&url), None)?;
-                    }
-                    Err(error) => {
-                        store.update_job_status(
-                            &job.job_id,
-                            "failed",
-                            None,
-                            Some(&error.to_string()),
-                        )?;
-                    }
+                    Ok(bytes) => self
+                        .persist_result(&job.job_id, &job.pet_id, &bytes)
+                        .map(|_| url),
+                    Err(error) => Err(error.to_string()),
                 }
             } else {
-                store.update_job_status(
-                    &job.job_id,
-                    "failed",
-                    None,
-                    Some(&state.error.unwrap_or_else(|| "generation failed".into())),
-                )?;
+                Err(state.error.unwrap_or_else(|| "generation failed".into()))
+            };
+            let store = self.store.lock().map_err(|_| "store lock poisoned")?;
+            match result {
+                Ok(url) => store.update_job_status(&job.job_id, "success", Some(&url), None)?,
+                Err(error) => store.update_job_status(&job.job_id, "failed", None, Some(&error))?,
             }
             finished.push(job.job_id);
         }
@@ -127,15 +131,39 @@ impl GenerationManager {
         Ok(finished.len())
     }
 
-    fn persist_result(&self, job_id: &str, bytes: &[u8]) -> Option<PathBuf> {
+    fn persist_result(
+        &self,
+        job_id: &str,
+        pet_id: &str,
+        bytes: &[u8],
+    ) -> Result<CandidatePaths, String> {
         let dir = self.jobs_dir.join(job_id);
-        std::fs::create_dir_all(&dir).ok()?;
+        std::fs::create_dir_all(&dir).map_err(|error| error.to_string())?;
         let raw_path = dir.join("raw.png");
-        std::fs::write(&raw_path, bytes).ok()?;
-        let image = image::load_from_memory(bytes).ok()?;
-        let (rgba, _report) = cutout::remove_background(&image);
+        std::fs::write(&raw_path, bytes).map_err(|error| error.to_string())?;
+        let image = image::load_from_memory(bytes).map_err(|error| error.to_string())?;
+        let (rgba, report) = cutout::remove_background(&image);
         let cutout_path = dir.join("cutout.png");
-        rgba.save(&cutout_path).ok()?;
-        Some(cutout_path)
+        rgba.save(&cutout_path).map_err(|error| error.to_string())?;
+        let quality = if report.is_acceptable() {
+            "acceptable"
+        } else {
+            "needs-review"
+        };
+        self.store
+            .lock()
+            .map_err(|_| "store lock poisoned")?
+            .record_candidate(
+                job_id,
+                pet_id,
+                &raw_path.to_string_lossy(),
+                &cutout_path.to_string_lossy(),
+                quality,
+            )?;
+        Ok(CandidatePaths {
+            image_path: raw_path,
+            cutout_path,
+            quality: quality.into(),
+        })
     }
 }

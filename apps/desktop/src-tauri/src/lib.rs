@@ -178,21 +178,50 @@ fn validate_pet_asset_id(pet_id: &str) -> Result<(), String> {
 #[tauri::command]
 fn asset_compile(
     app: tauri::AppHandle,
+    store: tauri::State<'_, creation::SharedCreationStore>,
+    state: tauri::State<'_, pets::state::SharedStateStore>,
     pet_id: String,
     variant_id: String,
     cutout_path: String,
 ) -> Result<runtime_assets::compiler::CompileResult, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let dest = data_dir.join("pets").join(&pet_id).join("assets");
-    runtime_assets::compiler::compile_single_image(
-        &pet_id,
-        &variant_id,
-        std::path::Path::new(&cutout_path),
-        &dest,
-    )
+    let compile_error_key = format!("creation:{pet_id}:compile_error");
+    let compiled = (|| {
+        let data_dir = app
+            .path()
+            .app_data_dir()
+            .map_err(|error| error.to_string())?;
+        let dest = data_dir.join("pets").join(&pet_id).join("assets");
+        runtime_assets::compiler::compile_single_image(
+            &pet_id,
+            &variant_id,
+            std::path::Path::new(&cutout_path),
+            &dest,
+        )
+    })();
+
+    match compiled {
+        Ok(compiled) => {
+            let persisted = (|| {
+                let store = store.lock().map_err(|_| "store lock poisoned")?;
+                store.record_runtime_variant(&variant_id, &pet_id, &compiled.manifest_path)?;
+                let state = state.lock().map_err(|_| "state lock poisoned")?;
+                state.remove(&compile_error_key)
+            })();
+            match persisted {
+                Ok(()) => Ok(compiled),
+                Err(error) => {
+                    let state = state.lock().map_err(|_| "state lock poisoned")?;
+                    state.save(&compile_error_key, &error)?;
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            let state = state.lock().map_err(|_| "state lock poisoned")?;
+            state.save(&compile_error_key, &error)?;
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]

@@ -81,16 +81,6 @@ pub fn compile_single_image(
     let written = std::fs::read(&manifest_path).map_err(|error| error.to_string())?;
     parse_manifest_v1(&String::from_utf8_lossy(&written)).map_err(|error| error.to_string())?;
 
-    // intermediate cutout no longer needed: remove its job directory
-    if let Some(job_dir) = cutout_path.parent() {
-        if job_dir
-            .file_name()
-            .is_some_and(|name| name.to_string_lossy().starts_with("job-"))
-        {
-            let _ = std::fs::remove_dir_all(job_dir);
-        }
-    }
-
     Ok(CompileResult {
         manifest_path: manifest_path.to_string_lossy().to_string(),
         degraded,
@@ -166,6 +156,22 @@ mod tests {
         let dest = root.join("assets");
         let result = compile_single_image("pet-1", "variant-1", &root.join("nope.png"), &dest);
         assert!(result.is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compile_keeps_candidate_for_switch_retry() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("desktop-pet-compile-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let cutout = root.join("job-1").join("cutout.png");
+        std::fs::create_dir_all(cutout.parent().unwrap()).unwrap();
+        write_rgba_png(&cutout);
+        let dest = root.join("assets");
+
+        compile_single_image("pet-1", "job-1", &cutout, &dest).unwrap();
+        assert!(cutout.exists());
         let _ = std::fs::remove_dir_all(root);
     }
 }

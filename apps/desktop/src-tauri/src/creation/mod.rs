@@ -57,6 +57,115 @@ impl CreationStore {
         Ok(())
     }
 
+    pub fn record_candidate(
+        &self,
+        job_id: &str,
+        pet_id: &str,
+        image_path: &str,
+        cutout_path: &str,
+        quality: &str,
+    ) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.execute(
+            "INSERT INTO appearance_variants
+             (variant_id, pet_id, job_id, image_path, cutout_path, quality, accepted, created_at)
+             VALUES (?1, ?2, ?1, ?3, ?4, ?5, 0, ?6)
+             ON CONFLICT(variant_id) DO UPDATE SET image_path=excluded.image_path,
+             cutout_path=excluded.cutout_path, quality=excluded.quality",
+            rusqlite::params![
+                job_id,
+                pet_id,
+                image_path,
+                cutout_path,
+                quality,
+                profiles::now_iso()
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    pub fn record_runtime_variant(
+        &self,
+        variant_id: &str,
+        pet_id: &str,
+        manifest_path: &str,
+    ) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.execute(
+            "INSERT INTO variants (variant_id, pet_id, style_id, manifest_path, created_at)
+             VALUES (?1, ?2, 'signature-cartoon-v1', ?3, ?4)
+             ON CONFLICT(variant_id) DO UPDATE SET manifest_path=excluded.manifest_path",
+            rusqlite::params![variant_id, pet_id, manifest_path, profiles::now_iso()],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[allow(dead_code)] // exposed for creation workflows that share the storage connection
+    pub fn set_compile_error(&self, pet_id: &str, error: &str) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value = excluded.value",
+            rusqlite::params![format!("creation:{pet_id}:compile_error"), error],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[allow(dead_code)] // exposed for creation workflows that share the storage connection
+    pub fn clear_compile_error(&self, pet_id: &str) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.execute(
+            "DELETE FROM state WHERE key = ?1",
+            rusqlite::params![format!("creation:{pet_id}:compile_error")],
+        )
+        .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    #[allow(dead_code)] // consumed by the candidate-directory projection workflow
+    pub fn candidates(&self, pet_id: &str) -> Result<Vec<AppearanceVariant>, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        let mut statement = db
+            .prepare(
+                "SELECT variant_id, pet_id, job_id, image_path, cutout_path, quality, accepted, created_at
+                 FROM appearance_variants WHERE pet_id = ?1 ORDER BY created_at",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(rusqlite::params![pet_id], |row| {
+                Ok(AppearanceVariant {
+                    variant_id: row.get(0)?,
+                    pet_id: row.get(1)?,
+                    job_id: row.get(2)?,
+                    image_path: row.get(3)?,
+                    cutout_path: row.get(4)?,
+                    quality: row.get(5)?,
+                    accepted: row.get::<_, i64>(6)? != 0,
+                    created_at: row.get(7)?,
+                })
+            })
+            .map_err(|error| error.to_string())?;
+        let mut variants = Vec::new();
+        for row in rows {
+            variants.push(row.map_err(|error| error.to_string())?);
+        }
+        Ok(variants)
+    }
+
+    #[cfg(test)]
+    pub fn runtime_variant_count(&self, pet_id: &str) -> Result<i64, String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.query_row(
+            "SELECT COUNT(*) FROM variants WHERE pet_id = ?1",
+            rusqlite::params![pet_id],
+            |row| row.get(0),
+        )
+        .map_err(|error| error.to_string())
+    }
+
     pub fn running_jobs(&self) -> Result<Vec<JobRecord>, String> {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
@@ -136,6 +245,7 @@ pub struct JobRecord {
 mod tests {
     use super::*;
     use crate::creation::profiles::now_iso;
+    use rusqlite::OptionalExtension;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
 
@@ -245,4 +355,82 @@ mod tests {
             .expect("job creation must succeed across connections");
         let _ = std::fs::remove_dir_all(root);
     }
+
+    #[test]
+    fn successful_job_persists_one_candidate() {
+        let (store, root, pet_id) = temp_store();
+        store
+            .create_job("job-1", &pet_id, "p", "h", Some("task-1"))
+            .unwrap();
+        store
+            .record_candidate("job-1", &pet_id, "raw.png", "cutout.png", "acceptable")
+            .unwrap();
+        let variants = store.candidates(&pet_id).unwrap();
+        assert_eq!(variants.len(), 1);
+        assert_eq!(variants[0].variant_id, "job-1");
+        assert!(!variants[0].accepted);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn runtime_variant_upsert_is_idempotent() {
+        let (store, root, pet_id) = temp_store();
+        store
+            .record_runtime_variant("job-1", &pet_id, "manifest.json")
+            .unwrap();
+        store
+            .record_runtime_variant("job-1", &pet_id, "manifest.json")
+            .unwrap();
+        assert_eq!(store.runtime_variant_count(&pet_id).unwrap(), 1);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn compile_error_can_be_set_and_cleared() {
+        let (store, root, pet_id) = temp_store();
+        store.set_compile_error(&pet_id, "compile failed").unwrap();
+        let key = format!("creation:{pet_id}:compile_error");
+        let saved: String = {
+            let storage = store.storage.lock().unwrap();
+            storage
+                .db
+                .query_row(
+                    "SELECT value FROM state WHERE key = ?1",
+                    rusqlite::params![&key],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        };
+        assert_eq!(saved, "compile failed");
+
+        store.clear_compile_error(&pet_id).unwrap();
+        let missing: Option<String> = {
+            let storage = store.storage.lock().unwrap();
+            storage
+                .db
+                .query_row(
+                    "SELECT value FROM state WHERE key = ?1",
+                    rusqlite::params![&key],
+                    |row| row.get(0),
+                )
+                .optional()
+                .unwrap()
+        };
+        assert_eq!(missing, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+#[allow(dead_code)] // returned by the candidate-directory projection workflow
+#[derive(Debug, Clone, serde::Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct AppearanceVariant {
+    pub variant_id: String,
+    pub pet_id: String,
+    pub job_id: Option<String>,
+    pub image_path: String,
+    pub cutout_path: Option<String>,
+    pub quality: String,
+    pub accepted: bool,
+    pub created_at: String,
 }
