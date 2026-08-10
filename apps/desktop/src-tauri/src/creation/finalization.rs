@@ -90,6 +90,12 @@ impl CreationFinalizationService {
             {
                 return Err("completed creation is missing its accepted runtime variant".into());
             }
+            let expected_manifest = self.assets_dir(&record.pet_id).join("manifest.json");
+            if record.manifest_path.as_deref().map(Path::new) != Some(expected_manifest.as_path())
+                || !self.install_is_owned(&record)?
+            {
+                return Err("completed creation runtime manifest is not authoritative".into());
+            }
             return Ok(prepared(&record, request_id, true));
         }
         let retryable =
@@ -280,37 +286,35 @@ impl CreationFinalizationService {
 
     fn finalization_record(&self, session_id: &str) -> Result<FinalizationRecord, String> {
         let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let session_status: Option<String> = storage
+        let session_facts: Option<(String, String)> = storage
             .db
             .query_row(
-                "SELECT status FROM creation_sessions WHERE session_id=?1",
+                "SELECT status, method FROM creation_sessions WHERE session_id=?1",
                 [session_id],
-                |row| row.get(0),
+                |row| Ok((row.get(0)?, row.get(1)?)),
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        let session_status =
-            session_status.ok_or_else(|| format!("creation session not found: {session_id}"))?;
+        let (session_status, session_method) =
+            session_facts.ok_or_else(|| format!("creation session not found: {session_id}"))?;
         let completed = session_status == "completed";
-        let candidate_count: i64 = storage
-            .db
-            .query_row(
-                "SELECT COUNT(*) FROM appearance_variants av
-                 JOIN creation_sessions cs ON cs.session_id=av.session_id
-                 LEFT JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
-                 WHERE av.session_id=?1 AND av.pet_id=cs.pet_id
-                   AND ((?2=1 AND av.accepted=1 AND rv.variant_id IS NOT NULL)
-                        OR (?2=0 AND av.accepted=0))",
-                rusqlite::params![session_id, completed],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if candidate_count != 1 {
-            return Err(if completed {
-                "completed creation must have exactly one accepted runtime candidate".into()
-            } else {
-                "creation session must have exactly one authoritative current candidate".into()
-            });
+        if completed {
+            let accepted_runtime_count: i64 = storage
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM appearance_variants av
+                     JOIN creation_sessions cs ON cs.session_id=av.session_id
+                     JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
+                     WHERE av.session_id=?1 AND av.pet_id=cs.pet_id AND av.accepted=1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if accepted_runtime_count != 1 {
+                return Err(
+                    "completed creation must have exactly one accepted runtime candidate".into(),
+                );
+            }
         }
         storage
             .db
@@ -327,10 +331,17 @@ impl CreationFinalizationService {
                  JOIN appearance_variants av ON av.session_id=cs.session_id AND av.pet_id=cs.pet_id
                  LEFT JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
                  LEFT JOIN generation_jobs gj ON gj.job_id=av.job_id
-                 WHERE cs.session_id=?1
+                 WHERE cs.session_id=?1 AND av.pet_id=cs.pet_id
                    AND ((?2=1 AND av.accepted=1 AND rv.variant_id IS NOT NULL)
-                        OR (?2=0 AND av.accepted=0))",
-                rusqlite::params![session_id, completed],
+                        OR (?2=0 AND ?3='upload' AND av.accepted=0
+                            AND av.job_id IS NOT NULL
+                            AND gj.session_id=cs.session_id AND gj.pet_id=cs.pet_id
+                            AND gj.status='success')
+                        OR (?2=0 AND ?3 IN ('composer','adoption') AND av.accepted=0
+                            AND av.job_id IS NULL))
+                 ORDER BY av.created_at DESC, av.rowid DESC
+                 LIMIT 1",
+                rusqlite::params![session_id, completed, session_method],
                 |row| {
                     let method: String = row.get(2)?;
                     let candidate_job_id: Option<String> = row.get(9)?;
@@ -381,26 +392,6 @@ impl CreationFinalizationService {
         if record.pet_method != record.method {
             return Err("creation session method does not match its pet".into());
         }
-        match record.method.as_str() {
-            "upload" => {
-                if record.job_id.is_none()
-                    || record.job_pet_id.as_deref() != Some(record.pet_id.as_str())
-                    || record.job_session_id.as_deref() != Some(record.session_id.as_str())
-                    || record.job_status.as_deref() != Some("success")
-                {
-                    return Err(
-                        "upload candidate requires its session's successful generation job".into(),
-                    );
-                }
-            }
-            "composer" | "adoption" if record.job_id.is_some() => {
-                return Err(
-                    "composer and adoption candidates cannot reference a generation job".into(),
-                );
-            }
-            "composer" | "adoption" => {}
-            _ => return Err(format!("unknown creation method: {}", record.method)),
-        }
         if record.status == "completed" {
             if record.lifecycle != "ready"
                 || record.pet_completed_at.is_none()
@@ -416,6 +407,29 @@ impl CreationFinalizationService {
         {
             return Err("unfinished creation must own an inactive draft pet".into());
         }
+        if record.status != "completed" {
+            match record.method.as_str() {
+                "upload" => {
+                    if record.job_id.is_none()
+                        || record.job_pet_id.as_deref() != Some(record.pet_id.as_str())
+                        || record.job_session_id.as_deref() != Some(record.session_id.as_str())
+                        || record.job_status.as_deref() != Some("success")
+                    {
+                        return Err(
+                            "upload candidate requires its session's successful generation job"
+                                .into(),
+                        );
+                    }
+                }
+                "composer" | "adoption" if record.job_id.is_some() => {
+                    return Err(
+                        "composer and adoption candidates cannot reference a generation job".into(),
+                    );
+                }
+                "composer" | "adoption" => {}
+                _ => return Err(format!("unknown creation method: {}", record.method)),
+            }
+        }
         let name = record
             .display_name
             .as_deref()
@@ -427,24 +441,42 @@ impl CreationFinalizationService {
     }
 
     fn validate_candidate_paths(&self, record: &FinalizationRecord) -> Result<(), String> {
-        let (root, expected_dir, expected_body_name) = if let Some(job_id) = &record.job_id {
-            (
-                self.jobs_root.clone(),
-                self.jobs_root.join(job_id),
-                "cutout.png",
-            )
-        } else {
-            let root = self.app_data_dir.join("creation-sessions");
-            (
-                root.clone(),
-                root.join(&record.session_id).join("candidate"),
-                "body.png",
-            )
-        };
+        let (root, session_dir, expected_dir, expected_body_name) =
+            if let Some(job_id) = &record.job_id {
+                (
+                    self.jobs_root.clone(),
+                    None,
+                    self.jobs_root.join(job_id),
+                    "cutout.png",
+                )
+            } else {
+                let root = self.app_data_dir.join("creation-sessions");
+                let session_dir = root.join(&record.session_id);
+                (
+                    root.clone(),
+                    Some(session_dir.clone()),
+                    session_dir.join("candidate"),
+                    "body.png",
+                )
+            };
         let root_metadata = std::fs::symlink_metadata(&root)
             .map_err(|error| format!("configured candidate root is missing: {error}"))?;
         if crate::platform::is_link_or_reparse_point(&root_metadata) || !root_metadata.is_dir() {
             return Err("configured candidate root cannot be a link or reparse point".into());
+        }
+        if let Some(session_dir) = &session_dir {
+            let metadata = std::fs::symlink_metadata(session_dir)
+                .map_err(|error| format!("creation session directory is missing: {error}"))?;
+            if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
+                return Err("creation session directory cannot be a link or reparse point".into());
+            }
+        }
+        let expected_metadata = std::fs::symlink_metadata(&expected_dir)
+            .map_err(|error| format!("candidate directory is missing: {error}"))?;
+        if crate::platform::is_link_or_reparse_point(&expected_metadata)
+            || !expected_metadata.is_dir()
+        {
+            return Err("candidate directory cannot be a link or reparse point".into());
         }
         let canonical_root = root.canonicalize().map_err(|error| error.to_string())?;
         let canonical_expected = expected_dir
@@ -933,8 +965,14 @@ mod tests {
 
         fn complete(&self) {
             let manifest = self.assets().join("manifest.json");
-            std::fs::create_dir_all(manifest.parent().unwrap()).unwrap();
-            std::fs::write(&manifest, "completed").unwrap();
+            compile_animated_image(
+                &self.pet_id,
+                &self.variant_id,
+                &self.body_path,
+                &self.body_path.parent().unwrap().join("motion-profile.json"),
+                &self.assets(),
+            )
+            .unwrap();
             self.storage
                 .lock()
                 .unwrap()
@@ -1060,6 +1098,125 @@ mod tests {
         assert_eq!(snapshot.status, CreationSessionStatus::Completed);
         assert!(test.assets().exists());
         test.assert_gate_is_free("req-after-completed-history");
+    }
+
+    #[test]
+    fn completed_migration_is_idempotent_without_generation_job_or_source_candidate_files() {
+        let test = FinalizationHarness::candidate_ready();
+        test.complete();
+        let raw = test.body_path.parent().unwrap().join("raw.png");
+        let profile = test.body_path.parent().unwrap().join("motion-profile.json");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants SET job_id=NULL WHERE variant_id=?1",
+                [&test.variant_id],
+            )
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "DELETE FROM generation_jobs WHERE session_id=?1",
+                [&test.session_id],
+            )
+            .unwrap();
+        std::fs::remove_file(raw).unwrap();
+        std::fs::remove_file(&test.body_path).unwrap();
+        std::fs::remove_file(profile).unwrap();
+
+        let prepared = test
+            .service
+            .prepare(&test.session_id, "req-completed-migrated")
+            .unwrap();
+        let snapshot = test
+            .service
+            .abort(&test.session_id, "late timeout")
+            .unwrap();
+
+        assert!(prepared.already_completed);
+        assert_eq!(prepared.variant_id, test.variant_id);
+        assert_eq!(snapshot.status, CreationSessionStatus::Completed);
+        assert!(test.assets().exists());
+        assert_eq!(test.runtime_variant_count(), 1);
+        test.assert_gate_is_free("req-after-completed-migrated");
+    }
+
+    #[test]
+    fn candidate_ready_migration_selects_the_latest_successful_upload_candidate() {
+        let test = FinalizationHarness::candidate_ready();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants SET created_at='middle' WHERE variant_id=?1",
+                [&test.variant_id],
+            )
+            .unwrap();
+        for (suffix, status, created_at) in [
+            ("older-success", "success", "earlier"),
+            ("newer-failed", "failed", "later"),
+        ] {
+            let job_id = format!("job-{suffix}");
+            let variant_id = format!("candidate-{suffix}");
+            let job_dir = test.root.join("jobs").join(&job_id);
+            std::fs::create_dir_all(&job_dir).unwrap();
+            let raw = job_dir.join("raw.png");
+            let body = job_dir.join("cutout.png");
+            let profile = job_dir.join("motion-profile.json");
+            std::fs::copy(&test.body_path, &raw).unwrap();
+            std::fs::copy(&test.body_path, &body).unwrap();
+            std::fs::copy(
+                test.body_path.parent().unwrap().join("motion-profile.json"),
+                &profile,
+            )
+            .unwrap();
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute(
+                    "INSERT INTO generation_jobs
+                     (job_id, pet_id, session_id, prompt, ref_sha256, status, created_at)
+                     VALUES (?1, ?2, ?3, 'migration', 'hash', ?4, ?5)",
+                    rusqlite::params![job_id, test.pet_id, test.session_id, status, created_at],
+                )
+                .unwrap();
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute(
+                    "INSERT INTO appearance_variants
+                     (variant_id, pet_id, job_id, session_id, image_path, cutout_path,
+                      motion_profile_path, quality, accepted, created_at)
+                     VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, 'acceptable', 0, ?8)",
+                    rusqlite::params![
+                        variant_id,
+                        test.pet_id,
+                        job_id,
+                        test.session_id,
+                        raw.to_string_lossy(),
+                        body.to_string_lossy(),
+                        profile.to_string_lossy(),
+                        created_at
+                    ],
+                )
+                .unwrap();
+        }
+
+        let prepared = test
+            .service
+            .prepare(&test.session_id, "req-migrated-latest-success")
+            .unwrap();
+
+        assert_eq!(prepared.variant_id, test.variant_id);
+        assert_eq!(test.status().0, "finalizing");
+        test.gate.finish("req-migrated-latest-success").unwrap();
     }
 
     #[test]
@@ -1441,6 +1598,63 @@ mod tests {
             .is_err());
         assert_eq!(test.status().0, "candidateReady");
         test.assert_gate_is_free("req-after-other-session-path");
+    }
+
+    #[test]
+    fn no_job_candidate_rejects_an_intermediate_session_directory_alias() {
+        let test = FinalizationHarness::candidate_ready();
+        let sessions_root = test.root.join("creation-sessions");
+        let other_session = sessions_root.join("session-alias-target");
+        let other_candidate = other_session.join("candidate");
+        std::fs::create_dir_all(&other_candidate).unwrap();
+        let real_body = other_candidate.join("body.png");
+        let real_profile = other_candidate.join("motion-profile.json");
+        std::fs::copy(&test.body_path, &real_body).unwrap();
+        std::fs::copy(
+            test.body_path.parent().unwrap().join("motion-profile.json"),
+            &real_profile,
+        )
+        .unwrap();
+        let session_alias = sessions_root.join(&test.session_id);
+        crate::platform::create_directory_link(&other_session, &session_alias);
+        let aliased_body = session_alias.join("candidate/body.png");
+        let aliased_profile = session_alias.join("candidate/motion-profile.json");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants
+                 SET job_id=NULL, image_path=?2, cutout_path=?2, motion_profile_path=?3
+                 WHERE variant_id=?1",
+                rusqlite::params![
+                    test.variant_id,
+                    aliased_body.to_string_lossy(),
+                    aliased_profile.to_string_lossy()
+                ],
+            )
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(&format!(
+                "UPDATE creation_sessions SET method='adoption' WHERE session_id='{}';
+                 UPDATE pets SET creation_method='adoption', identity_mode='adopted',
+                    source_template_id='template-session-alias', source_template_version=1
+                 WHERE pet_id='{}';",
+                test.session_id, test.pet_id
+            ))
+            .unwrap();
+
+        assert!(test
+            .service
+            .prepare(&test.session_id, "req-session-alias")
+            .unwrap_err()
+            .contains("link or reparse point"));
+        assert_eq!(test.status().0, "candidateReady");
+        assert!(real_body.exists());
+        test.assert_gate_is_free("req-after-session-alias");
     }
 
     #[test]
