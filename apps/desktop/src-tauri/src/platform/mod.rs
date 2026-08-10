@@ -72,6 +72,24 @@ pub(crate) fn durable_replace_file(
     }
 }
 
+pub(crate) fn sync_existing_directory_entry(path: &std::path::Path) -> Result<(), String> {
+    #[cfg(unix)]
+    {
+        sync_directory(
+            path.parent()
+                .ok_or_else(|| "existing directory has no parent".to_string())?,
+        )
+    }
+    #[cfg(not(unix))]
+    {
+        // A production Windows publish is only reported successful after MoveFileExW with
+        // MOVEFILE_WRITE_THROUGH returns success. If the prior call returned an error, seeing
+        // the directory after restart means the filesystem recovered a durable directory entry.
+        let _ = path;
+        Ok(())
+    }
+}
+
 #[cfg(unix)]
 fn sync_directory(path: &std::path::Path) -> Result<(), String> {
     std::fs::File::open(path)

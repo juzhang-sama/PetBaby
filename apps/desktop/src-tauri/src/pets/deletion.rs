@@ -79,6 +79,10 @@ enum JournalPublishStep {
 trait JournalPublishOps: Send + Sync {
     fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String>;
 
+    fn sync_existing_directory_entry(&self, root: &Path) -> Result<(), String> {
+        crate::platform::sync_existing_directory_entry(root)
+    }
+
     fn checkpoint(&self, _step: JournalPublishStep) -> Result<(), String> {
         Ok(())
     }
@@ -870,7 +874,11 @@ fn ensure_owned_root_durable(
 ) -> Result<(), String> {
     validate_regular_directory(parent, "deletion parent")?;
     match std::fs::symlink_metadata(root) {
-        Ok(_) => return validate_existing_owned_root(parent, root),
+        Ok(_) => {
+            validate_existing_owned_root(parent, root)?;
+            ops.sync_existing_directory_entry(root)?;
+            return validate_existing_owned_root(parent, root);
+        }
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
         Err(error) => return Err(error.to_string()),
     }
@@ -1258,6 +1266,46 @@ mod tests {
     struct FailBeforeDurableRenameOps {
         fail_call: u32,
         calls: Arc<AtomicU32>,
+    }
+
+    struct FailExistingRootSyncOps {
+        fail_call: u32,
+        calls: Arc<AtomicU32>,
+    }
+
+    impl JournalPublishOps for FailExistingRootSyncOps {
+        fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String> {
+            crate::platform::durable_replace_file(source, target)
+        }
+
+        fn sync_existing_directory_entry(&self, root: &Path) -> Result<(), String> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_call {
+                Err(format!("existing root sync failed at {call}"))
+            } else {
+                crate::platform::sync_existing_directory_entry(root)
+            }
+        }
+    }
+
+    #[derive(Default)]
+    struct RecordingDirectoryOps {
+        existing_syncs: Mutex<Vec<PathBuf>>,
+        publishes: Mutex<Vec<PathBuf>>,
+    }
+
+    impl JournalPublishOps for RecordingDirectoryOps {
+        fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String> {
+            crate::platform::durable_replace_file(source, target)?;
+            self.publishes.lock().unwrap().push(target.into());
+            Ok(())
+        }
+
+        fn sync_existing_directory_entry(&self, root: &Path) -> Result<(), String> {
+            crate::platform::sync_existing_directory_entry(root)?;
+            self.existing_syncs.lock().unwrap().push(root.into());
+            Ok(())
+        }
     }
 
     impl JournalPublishOps for FailBeforeDurableRenameOps {
@@ -2142,6 +2190,60 @@ mod tests {
             assert!(!operations[0].join(JOURNAL_FILE).exists());
             assert!(!operations[0].join(PREVIOUS_JOURNAL_FILE).exists());
         }
+    }
+
+    #[test]
+    fn retry_requires_each_leftover_published_root_barrier_before_progressing() {
+        for failed_layer in 1..=3 {
+            let test = DeletionHarness::two_pets();
+            test.bind_pet_a_job_to_creation_session();
+            let operation = test
+                .root
+                .join("trash")
+                .join("pet-delete")
+                .join(format!("retry-operation-{failed_layer}"));
+            let first_calls = Arc::new(AtomicU32::new(0));
+            let first = FailAfterDurableRenameOps {
+                fail_call: failed_layer,
+                calls: first_calls,
+            };
+            assert!(prepare_quarantine_root(&test.root, &operation, &first).is_err());
+
+            let retry_calls = Arc::new(AtomicU32::new(0));
+            let retry = FailExistingRootSyncOps {
+                fail_call: failed_layer,
+                calls: retry_calls.clone(),
+            };
+            assert!(prepare_quarantine_root(&test.root, &operation, &retry).is_err());
+            assert_eq!(retry_calls.load(Ordering::SeqCst), failed_layer);
+            assert!(!operation.join(JOURNAL_FILE).exists());
+            assert!(test.pet_exists("pet-a"));
+            assert!(test.pet_dir("pet-a").exists());
+            assert!(test.job_dir("job-a").exists());
+            assert!(test.session_dir("session-a").exists());
+
+            prepare_quarantine_root(&test.root, &operation, &PlatformJournalPublishOps).unwrap();
+            test.service.delete("pet-a").unwrap();
+            assert!(!test.pet_exists("pet-a"));
+        }
+    }
+
+    #[test]
+    fn existing_root_barriers_run_in_order_before_publishing_the_missing_operation() {
+        let test = DeletionHarness::two_pets();
+        let trash = test.root.join("trash");
+        let delete_root = trash.join("pet-delete");
+        let operation = delete_root.join("existing-root-order");
+        std::fs::create_dir_all(&delete_root).unwrap();
+        let ops = RecordingDirectoryOps::default();
+
+        prepare_quarantine_root(&test.root, &operation, &ops).unwrap();
+
+        assert_eq!(
+            *ops.existing_syncs.lock().unwrap(),
+            vec![trash, delete_root]
+        );
+        assert_eq!(*ops.publishes.lock().unwrap(), vec![operation]);
     }
 
     #[test]
