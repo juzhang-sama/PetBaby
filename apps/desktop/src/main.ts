@@ -2,26 +2,28 @@ import "./styles.css";
 import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
 import { getCurrentWindow, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
+import { emitTo, listen } from "@tauri-apps/api/event";
 import { EffectOverlay } from "./runtime/effect-overlay";
 import { applyHitRegion, loadPreferences, probeFullscreen, savePreferences } from "./runtime/bridge";
 import { clampRectToWorkArea } from "./runtime/geometry";
 import { alphaToRegionSpans } from "./runtime/hit-mask";
 import { PetStage } from "./runtime/pet-stage";
 import {
-  createPetRendererRuntime,
-  createStaticPngRuntime,
-  type PetRendererRuntime,
   type RendererDiagnostic,
 } from "./runtime/pet-renderer-bootstrap";
 import { WindowMotionController } from "./runtime/window-motion-controller";
 import { isLive2DProbeMode, mountLive2DProbe } from "./runtime-live2d/probe";
 import { isLive2DPreviewMode, mountLive2DPreview } from "./runtime-live2d/preview";
-import { loadLive2DAsset } from "./runtime-assets/live2d-asset-loader";
+import { PetRuntimeSlot } from "./runtime/pet-runtime-slot";
+import { PetSwitchCoordinator } from "./runtime/pet-switch-coordinator";
 import {
-  createBuiltinPetTransport,
-  resolveBuiltinPetUrl,
-  selectStartupPetSource,
-} from "./runtime/startup-pet";
+  PET_SWITCH_REQUEST,
+  PET_SWITCH_RESULT,
+  type PetSwitchRequest,
+  type RuntimePetDescriptor,
+} from "./runtime/pet-switch-protocol";
+import { assertVisibleFrame } from "./runtime/render-surface-probe";
+import { loadRuntimePet } from "./runtime/runtime-pet-loader";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
@@ -55,9 +57,9 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   appRoot.replaceChildren(rendererRoot);
   const effects = new EffectOverlay(appRoot);
 
-  let runtime: PetRendererRuntime;
+  let slot: PetRuntimeSlot;
   const refreshHitRegion = async (): Promise<void> => {
-    const surface = runtime.getSurface();
+    const surface = slot.getSurface();
     const width = Math.max(1, rendererRoot.clientWidth || appRoot.clientWidth);
     const height = Math.max(1, rendererRoot.clientHeight || appRoot.clientHeight);
     const scratch = document.createElement("canvas");
@@ -80,59 +82,10 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
     console.error("Pet renderer diagnostic", diagnostic);
   };
 
-  const activePetId = await invoke<string | null>("pet_get_active");
-  const startupPet = selectStartupPetSource(activePetId);
-  let activeManifestVersion = 0;
-  if (startupPet.kind === "installed") {
-    try {
-      const manifestJson = await invoke<unknown>("asset_manifest", { petId: startupPet.petId });
-      activeManifestVersion = manifestVersionOf(manifestJson);
-      runtime = await createPetRendererRuntime(startupPet.petId, manifestJson, {
-        root: rendererRoot,
-        diagnose,
-        onSurfaceChanged: refreshHitRegion,
-      });
-    } catch (error) {
-      diagnose({
-        petId: startupPet.petId,
-        manifestVersion: activeManifestVersion,
-        stage: "manifest-load",
-        message: errorMessage(error),
-      });
-      runtime = await createStaticPngRuntime(
-        `pet-asset://localhost/${startupPet.petId}/assets/body.png`,
-        { root: rendererRoot, diagnose },
-      );
-    }
-  } else {
-    const transport = createBuiltinPetTransport({ manifestUrl: startupPet.manifestUrl });
-    try {
-      const manifestJson = await transport.readManifest(startupPet.petId);
-      activeManifestVersion = manifestVersionOf(manifestJson);
-      runtime = await createPetRendererRuntime(startupPet.petId, manifestJson, {
-        root: rendererRoot,
-        diagnose,
-        onSurfaceChanged: refreshHitRegion,
-        assetUrl: (_petId, relativePath) => resolveBuiltinPetUrl(
-          startupPet.manifestUrl,
-          relativePath,
-          window.location.origin,
-        ),
-        loadLive2DAsset: (petId, manifest) => loadLive2DAsset(petId, manifest, transport),
-      });
-    } catch (error) {
-      diagnose({
-        petId: startupPet.petId,
-        manifestVersion: activeManifestVersion,
-        stage: "manifest-load",
-        message: errorMessage(error),
-      });
-      runtime = await createStaticPngRuntime(startupPet.previewUrl, {
-        root: rendererRoot,
-        diagnose,
-      });
-    }
-  }
+  const activePetId = await invoke<string>("pet_get_active");
+  const initialDescriptor = await invoke<RuntimePetDescriptor>("pet_prepare_switch", { petId: activePetId });
+  const initialRuntime = await loadRuntimePet(initialDescriptor, document.createElement("div"));
+  slot = new PetRuntimeSlot(rendererRoot, initialRuntime);
 
   const windowMotion = new WindowMotionController({
     getPosition: async () => {
@@ -153,18 +106,30 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   });
 
   const stage = new PetStage({
-    renderer: runtime.host,
+    renderer: slot,
     windowMotion,
     effects,
     refreshHitRegion,
     diagnose: (stageName, error) => diagnose({
-      petId: startupPet.petId,
-      manifestVersion: activeManifestVersion,
+      petId: slot.activePetId,
+      manifestVersion: 0,
       stage: stageName === "window-motion" ? "window-motion" : "hit-region",
       message: errorMessage(error),
     }),
   });
   await stage.mount(rendererRoot);
+
+  const coordinator = new PetSwitchCoordinator(slot, {
+    prepare: (petId) => invoke("pet_prepare_switch", { petId }),
+    load: (descriptor, stagingRoot) => loadRuntimePet(descriptor, stagingRoot),
+    probe: assertVisibleFrame,
+    commit: (petId, acceptedVariantId) => invoke("pet_commit_switch", { petId, acceptedVariantId }),
+    refreshHitRegion,
+  });
+  await listen<PetSwitchRequest>(PET_SWITCH_REQUEST, async ({ payload }) => {
+    const result = await coordinator.switch(payload);
+    await emitTo("settings", PET_SWITCH_RESULT, result);
+  });
 
   let hiddenForFullscreen = false;
   window.setInterval(async () => {
@@ -181,8 +146,8 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
       }
     } catch (error) {
       diagnose({
-        petId: startupPet.petId,
-        manifestVersion: activeManifestVersion,
+        petId: slot.activePetId,
+        manifestVersion: 0,
         stage: "fullscreen",
         message: errorMessage(error),
       });
@@ -244,12 +209,4 @@ async function restoreWindowPlacement(
 
 function errorMessage(error: unknown): string {
   return error instanceof Error ? error.message : String(error);
-}
-
-function manifestVersionOf(value: unknown): number {
-  if (typeof value === "object" && value !== null && "schemaVersion" in value) {
-    const version = (value as { schemaVersion?: unknown }).schemaVersion;
-    return typeof version === "number" ? version : 0;
-  }
-  return 0;
 }

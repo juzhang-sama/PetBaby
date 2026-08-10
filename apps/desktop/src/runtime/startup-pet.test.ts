@@ -19,6 +19,13 @@ describe("startup pet source", () => {
       petId: "pet-user-1",
     });
   });
+
+  it("treats the persisted built-in id as a built-in source", () => {
+    expect(selectStartupPetSource("pet-live2d-v1")).toMatchObject({
+      kind: "builtin",
+      petId: "pet-live2d-v1",
+    });
+  });
 });
 
 describe("built-in pet transport", () => {

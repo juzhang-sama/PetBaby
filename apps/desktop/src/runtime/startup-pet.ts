@@ -17,7 +17,9 @@ interface BuiltinPetTransportOptions {
 }
 
 export function selectStartupPetSource(activePetId: string | null): StartupPetSource {
-  if (activePetId) return { kind: "installed", petId: activePetId };
+  if (activePetId && activePetId !== BUILTIN_LIVE2D_PET.petId) {
+    return { kind: "installed", petId: activePetId };
+  }
   return { kind: "builtin", ...BUILTIN_LIVE2D_PET };
 }
 
