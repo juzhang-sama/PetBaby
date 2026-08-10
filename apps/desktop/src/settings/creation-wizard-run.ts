@@ -14,6 +14,14 @@ export interface WizardRefreshToken {
   revision: number;
 }
 
+export interface WizardCandidatePreviewToken {
+  visit: number;
+  petId: string;
+  jobId: string;
+  revision: number;
+  previewRevision: number;
+}
+
 export function refreshFailureDisposition(input: {
   currentVisitSamePet: boolean;
   revisionMatches: boolean;
@@ -34,6 +42,7 @@ export class CreationWizardRun {
   private visit = 0;
   private active = false;
   private submittingVisit: number | null = null;
+  private candidatePreviewRevision = 0;
   private readonly petRevisions = new Map<string, number>();
   private readonly compilingPets = new Set<string>();
   private readonly activatingPets = new Set<string>();
@@ -78,6 +87,37 @@ export class CreationWizardRun {
     const revision = (this.petRevisions.get(petId) ?? 0) + 1;
     this.petRevisions.set(petId, revision);
     return revision;
+  }
+
+  beginCandidatePreview(
+    visit: number,
+    petId: string,
+    jobId: string,
+  ): WizardCandidatePreviewToken | null {
+    if (!this.isCurrent(visit)) return null;
+    return {
+      visit,
+      petId,
+      jobId,
+      revision: this.petRevisions.get(petId) ?? 0,
+      previewRevision: this.candidatePreviewRevision,
+    };
+  }
+
+  invalidateCandidatePreviews(): void {
+    this.candidatePreviewRevision += 1;
+  }
+
+  shouldApplyCandidatePreview(
+    token: WizardCandidatePreviewToken,
+    currentPetId: string | null,
+    currentJobId: string | null,
+  ): boolean {
+    return this.isCurrent(token.visit)
+      && token.petId === currentPetId
+      && token.jobId === currentJobId
+      && token.revision === (this.petRevisions.get(token.petId) ?? 0)
+      && token.previewRevision === this.candidatePreviewRevision;
   }
 
   beginOperation(visit: number, kind: WizardOperation, petId: string): WizardOperationToken | null {

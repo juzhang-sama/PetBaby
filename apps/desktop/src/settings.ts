@@ -1,6 +1,8 @@
 import { invoke } from "@tauri-apps/api/core";
 import { CreationFlow, type CreationStep } from "./creation/creation-flow";
 import type { CreationResume, PetCatalogEntry } from "./pets/pet-catalog-contract";
+import type { MotionProfileV1 } from "./runtime/animated-image-manifest";
+import { CandidatePreviewController } from "./settings/candidate-dynamic-preview";
 import { deleteCurrentCatalogPet } from "./settings/pet-catalog-delete-flow";
 import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-view-model";
 import { requestPetSwitch } from "./settings/pet-switch-client";
@@ -191,6 +193,12 @@ let pollTimer: number | undefined;
 let generationRefreshVisit: number | null = null;
 let wizardVisit = 0;
 const wizardRun = new CreationWizardRun();
+const candidatePreview = new CandidatePreviewController();
+
+function clearCandidatePreview(): void {
+  wizardRun.invalidateCandidatePreviews();
+  candidatePreview.clear();
+}
 
 function persistCreationPet(petId: string): void {
   window.sessionStorage.setItem(creationResumeStorageKey, petId);
@@ -234,6 +242,7 @@ function persistCreationPetForVisit(petId: string, visit: number, expectedFlow: 
 }
 
 function showStep(step: CreationStep): void {
+  if (step !== "review") clearCandidatePreview();
   stepUpload.style.display = step === "upload" ? "" : "none";
   stepGenerating.style.display = step === "generating" ? "" : "none";
   stepReview.style.display = step === "review" ? "" : "none";
@@ -266,6 +275,7 @@ saveKeyBtn.addEventListener("click", async () => {
 
 function startWizard(): void {
   stopPolling();
+  clearCandidatePreview();
   wizardVisit = wizardRun.enter();
   void loadApiKey();
   flow = new CreationFlow();
@@ -286,6 +296,7 @@ function enterCreationResume(petId: string): void {
 }
 
 async function restoreWizardView(): Promise<void> {
+  clearCandidatePreview();
   wizardVisit = wizardRun.enter();
   const visit = wizardVisit;
   const petId = window.sessionStorage.getItem(creationResumeStorageKey);
@@ -460,27 +471,50 @@ function renderJob(job: JobInfo | undefined, snapshot: CreationResume): void {
 async function renderCandidate(jobId: string | null, visit: number, expectedFlow: CreationFlow): Promise<void> {
   if (!isCurrentWizard(visit, expectedFlow)) return;
   syncWizardOperationControls(expectedFlow.petId);
+  clearCandidatePreview();
   candidateGrid.replaceChildren();
   reviewActions.style.display = "";
-  if (!jobId) {
+  if (!jobId || !expectedFlow.petId) {
     wizardStatus.textContent = "候选记录不完整。请重新选择照片后重试。";
     return;
   }
+  const previewToken = wizardRun.beginCandidatePreview(visit, expectedFlow.petId, jobId);
+  if (!previewToken) return;
   try {
+    const [imageUrl, profile] = await Promise.all([
+      invoke<string>("gen_cutout_b64", { jobId }),
+      invoke<MotionProfileV1>("gen_motion_profile", { jobId }),
+    ]);
+    if (
+      !isCurrentWizard(visit, expectedFlow)
+      || !wizardRun.shouldApplyCandidatePreview(previewToken, expectedFlow.petId, expectedFlow.jobId)
+    ) return;
     const card = document.createElement("div");
     card.className = "candidate selected";
-    const image = document.createElement("img");
-    image.src = await invoke<string>("gen_cutout_b64", { jobId });
-    if (!isCurrentWizard(visit, expectedFlow)) return;
-    image.alt = "生成的宠物候选";
+    const previewRoot = document.createElement("div");
+    previewRoot.className = "candidate-preview";
+    previewRoot.setAttribute("role", "img");
+    previewRoot.setAttribute("aria-label", "生成的宠物候选");
     const label = document.createElement("div");
     label.className = "candidate-id";
     label.textContent = jobId;
-    card.append(image, label);
+    card.append(previewRoot, label);
     candidateGrid.append(card);
+    await candidatePreview.show(previewRoot, imageUrl, profile);
+    if (
+      !isCurrentWizard(visit, expectedFlow)
+      || !wizardRun.shouldApplyCandidatePreview(previewToken, expectedFlow.petId, expectedFlow.jobId)
+    ) return;
     wizardStatus.textContent = "";
   } catch (error) {
-    if (isCurrentWizard(visit, expectedFlow)) wizardStatus.textContent = `候选图片暂不可用：${String(error)}`;
+    if (
+      isCurrentWizard(visit, expectedFlow)
+      && wizardRun.shouldApplyCandidatePreview(previewToken, expectedFlow.petId, expectedFlow.jobId)
+    ) {
+      clearCandidatePreview();
+      candidateGrid.replaceChildren();
+      wizardStatus.textContent = `候选图片暂不可用：${String(error)}`;
+    }
   }
 }
 
@@ -604,6 +638,7 @@ reviewAbandon.addEventListener("click", async () => {
   const visit = wizardVisit;
   const reviewFlow = flow;
   if (!isCurrentWizard(visit, reviewFlow)) return;
+  clearCandidatePreview();
   reviewAbandon.disabled = true;
   reviewAccept.disabled = true;
   reviewRetry.disabled = true;
@@ -633,6 +668,7 @@ btnCancel.addEventListener("click", () => switchView("list"));
 function switchView(view: "list" | "create"): void {
   if (view === "list") {
     stopPolling();
+    clearCandidatePreview();
     wizardRun.leave();
     wizardVisit = 0;
   }

@@ -111,4 +111,39 @@ describe("CreationWizardRun", () => {
     const status = expected === "restore" ? "awaitingConfirm" : "corrupt";
     expect(resumeDisposition(status, canApply)).toBe(expected);
   });
+
+  it("rejects an old candidate profile after a newer visit and generation revision", () => {
+    const run = new CreationWizardRun();
+    const oldVisit = run.enter();
+    expect(run.beginGeneration(oldVisit, "pet-1")).toBe(1);
+    const oldPreview = run.beginCandidatePreview(oldVisit, "pet-1", "job-1");
+
+    const newVisit = run.enter();
+    expect(run.beginGeneration(newVisit, "pet-1")).toBe(2);
+    const newPreview = run.beginCandidatePreview(newVisit, "pet-1", "job-2");
+
+    expect(run.shouldApplyCandidatePreview(oldPreview!, "pet-1", "job-2")).toBe(false);
+    expect(run.shouldApplyCandidatePreview(newPreview!, "pet-1", "job-2")).toBe(true);
+  });
+
+  it("rejects a candidate profile invalidated by regeneration in the same visit", () => {
+    const run = new CreationWizardRun();
+    const visit = run.enter();
+    expect(run.beginGeneration(visit, "pet-1")).toBe(1);
+    const preview = run.beginCandidatePreview(visit, "pet-1", "job-1");
+
+    expect(run.beginGeneration(visit, "pet-1")).toBe(2);
+
+    expect(run.shouldApplyCandidatePreview(preview!, "pet-1", "job-1")).toBe(false);
+  });
+
+  it("rejects a pending candidate profile after review cleanup in the same visit", () => {
+    const run = new CreationWizardRun();
+    const visit = run.enter();
+    const preview = run.beginCandidatePreview(visit, "pet-1", "job-1");
+
+    run.invalidateCandidatePreviews();
+
+    expect(run.shouldApplyCandidatePreview(preview!, "pet-1", "job-1")).toBe(false);
+  });
 });

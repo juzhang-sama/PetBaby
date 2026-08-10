@@ -114,6 +114,24 @@ describe("CreationFlow", () => {
     expect(flow.step).toBe("complete");
   });
 
+  it("compiles and activates the accepted candidate with its original pet and variant ids", async () => {
+    const store = new FakeStore();
+    const flow = new CreationFlow(store);
+    flow.restore({
+      petId: "pet-original",
+      status: "awaitingConfirm",
+      jobId: "job-original",
+      variantId: "variant-original",
+      error: null,
+    });
+
+    await flow.compileCandidate();
+    await flow.activateCandidate();
+
+    expect(store.compiled).toEqual([{ petId: "pet-original", variantId: "variant-original" }]);
+    expect(store.switched).toEqual([{ petId: "pet-original", variantId: "variant-original" }]);
+  });
+
   it("does not finish when desktop switching fails", async () => {
     const store = new FakeStore({ switchResult: {
       ok: false, requestId: "request-1", petId: "pet-1", code: "blank-frame", message: "first frame empty",
