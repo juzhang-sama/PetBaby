@@ -57,6 +57,14 @@ fn validate_asset_manifest(path: &Path) -> Result<(), AssetReadError> {
     Ok(())
 }
 
+pub fn validate_asset_directory(assets_dir: &Path) -> Result<(), String> {
+    match validate_asset_manifest(&assets_dir.join("manifest.json")) {
+        Ok(()) => Ok(()),
+        Err(AssetReadError::Missing) => Err("asset manifest is missing".into()),
+        Err(AssetReadError::Corrupt) => Err("asset directory is corrupt".into()),
+    }
+}
+
 pub fn inspect_pet_asset(pets_dir: &Path, pet_id: &str) -> AssetHealth {
     let manifest_path = pets_dir.join(pet_id).join("assets").join("manifest.json");
     let status = match validate_asset_manifest(&manifest_path) {

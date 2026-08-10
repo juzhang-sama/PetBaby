@@ -2,6 +2,7 @@ use crate::creation::profiles::now_iso;
 use crate::creation::CreationStore;
 use crate::generation::cutout;
 use crate::generation::lk888::Lk888Client;
+use crate::runtime_assets::motion_profile;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex};
 
@@ -12,6 +13,7 @@ pub type SharedGenerationManager = Arc<GenerationManager>;
 pub struct CandidatePaths {
     pub image_path: PathBuf,
     pub cutout_path: PathBuf,
+    pub motion_profile_path: PathBuf,
     pub quality: String,
 }
 
@@ -144,6 +146,9 @@ impl GenerationManager {
         let (rgba, report) = cutout::remove_background(&image);
         let cutout_path = dir.join("cutout.png");
         rgba.save(&cutout_path).map_err(|error| error.to_string())?;
+        let profile = motion_profile::generate_motion_profile(&rgba)?;
+        let motion_profile_path = dir.join("motion-profile.json");
+        motion_profile::write_motion_profile_atomic(&motion_profile_path, &profile)?;
         let quality = if report.is_acceptable() {
             "acceptable"
         } else {
@@ -162,6 +167,7 @@ impl GenerationManager {
         Ok(CandidatePaths {
             image_path: raw_path,
             cutout_path,
+            motion_profile_path,
             quality: quality.into(),
         })
     }
@@ -198,6 +204,46 @@ mod tests {
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
 
+    struct ManagerHarness {
+        root: std::path::PathBuf,
+        manager: GenerationManager,
+        pet_id: String,
+        png: Vec<u8>,
+    }
+
+    impl Drop for ManagerHarness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn manager_harness() -> ManagerHarness {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-motion-task-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        let pet = PetRepository::new(storage.clone())
+            .create(Species::Cat, IdentityMode::RealPet)
+            .unwrap();
+        let store = Arc::new(Mutex::new(CreationStore::new(storage.clone())));
+        store
+            .lock()
+            .unwrap()
+            .create_job("job-1", &pet.pet_id, "p", "h", Some("task-1"))
+            .unwrap();
+        let state = Arc::new(Mutex::new(StateStore::new(storage)));
+        let manager = GenerationManager::new(store, state, Arc::from(root.join("jobs").as_path()));
+        ManagerHarness {
+            root,
+            manager,
+            pet_id: pet.pet_id,
+            png: png_bytes(),
+        }
+    }
+
     fn png_bytes() -> Vec<u8> {
         let mut bytes = Cursor::new(Vec::new());
         DynamicImage::ImageRgba8(RgbaImage::from_pixel(
@@ -208,6 +254,44 @@ mod tests {
         .write_to(&mut bytes, ImageFormat::Png)
         .unwrap();
         bytes.into_inner()
+    }
+
+    #[test]
+    fn persisted_candidate_contains_a_valid_motion_profile() {
+        let test = manager_harness();
+        let result = test
+            .manager
+            .persist_result("job-1", &test.pet_id, &test.png)
+            .unwrap();
+        assert!(result.motion_profile_path.ends_with("motion-profile.json"));
+        let json = std::fs::read_to_string(result.motion_profile_path).unwrap();
+        assert_eq!(
+            crate::runtime_assets::motion_profile::parse_motion_profile(&json)
+                .unwrap()
+                .engine_profile,
+            "life-v1"
+        );
+    }
+
+    #[test]
+    fn motion_profile_failure_does_not_record_candidate_or_success() {
+        let test = manager_harness();
+        std::fs::create_dir_all(test.root.join("jobs/job-1/motion-profile.json")).unwrap();
+
+        assert!(test
+            .manager
+            .complete_download(
+                "job-1",
+                &test.pet_id,
+                "https://example.invalid/out.png",
+                &test.png,
+            )
+            .is_err());
+
+        let store = test.manager.store.lock().unwrap();
+        let job = store.job_list(&test.pet_id).unwrap().remove(0);
+        assert_eq!(job.status, "failed");
+        assert!(store.candidate_for_compile(&test.pet_id, "job-1").is_err());
     }
 
     #[test]

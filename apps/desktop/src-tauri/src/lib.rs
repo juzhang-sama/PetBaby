@@ -263,11 +263,17 @@ fn asset_compile_stored_candidate(
         if supplied_cutout_path != canonical_cutout_path {
             return Err("cutout path does not match the stored candidate".into());
         }
+        let canonical_cutout_path = std::path::Path::new(&canonical_cutout_path);
+        let motion_profile_path = canonical_cutout_path
+            .parent()
+            .ok_or_else(|| "candidate cutout path has no parent directory".to_string())?
+            .join("motion-profile.json");
         let dest = data_dir.join("pets").join(&pet_id).join("assets");
-        runtime_assets::compiler::compile_single_image(
+        runtime_assets::compiler::compile_animated_image(
             pet_id,
             variant_id,
-            std::path::Path::new(&canonical_cutout_path),
+            canonical_cutout_path,
+            &motion_profile_path,
             &dest,
         )
     })();
@@ -474,13 +480,31 @@ fn gen_resume(
     manager.resume()
 }
 
+fn generation_job_file(
+    data_dir: &std::path::Path,
+    job_id: &str,
+    file_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    if job_id.is_empty()
+        || !job_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("invalid jobId".into());
+    }
+    if !matches!(file_name, "cutout.png" | "motion-profile.json") {
+        return Err("invalid generation file name".into());
+    }
+    Ok(data_dir.join("jobs").join(job_id).join(file_name))
+}
+
 #[tauri::command]
 fn gen_cutout_path(app: tauri::AppHandle, job_id: String) -> Result<String, String> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let cutout = data_dir.join("jobs").join(&job_id).join("cutout.png");
+    let cutout = generation_job_file(&data_dir, &job_id, "cutout.png")?;
     if cutout.exists() {
         Ok(cutout.to_string_lossy().to_string())
     } else {
@@ -495,12 +519,26 @@ fn gen_cutout_b64(app: tauri::AppHandle, job_id: String) -> Result<String, Strin
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let cutout = data_dir.join("jobs").join(&job_id).join("cutout.png");
+    let cutout = generation_job_file(&data_dir, &job_id, "cutout.png")?;
     let bytes = std::fs::read(&cutout).map_err(|error| error.to_string())?;
     Ok(format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+#[tauri::command]
+fn gen_motion_profile(
+    app: tauri::AppHandle,
+    job_id: String,
+) -> Result<runtime_assets::motion_profile::MotionProfileV1, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let profile = generation_job_file(&data_dir, &job_id, "motion-profile.json")?;
+    let json = std::fs::read_to_string(profile).map_err(|error| error.to_string())?;
+    runtime_assets::motion_profile::parse_motion_profile(&json)
 }
 
 #[tauri::command]
@@ -727,6 +765,7 @@ pub fn run() {
             gen_resume,
             gen_cutout_path,
             gen_cutout_b64,
+            gen_motion_profile,
             debug_windows
         ])
         .run(tauri::generate_context!())
@@ -928,5 +967,57 @@ mod tests {
         )
         .is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_missing_motion_profile_without_recording_runtime() {
+        let (store, state, storage, root, pet_id, _other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        let profile = std::path::Path::new(&canonical_cutout)
+            .parent()
+            .unwrap()
+            .join("motion-profile.json");
+        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        let rgba = image::RgbaImage::from_pixel(64, 64, image::Rgba([80, 90, 100, 255]));
+        rgba.save(&canonical_cutout).unwrap();
+        let value = runtime_assets::motion_profile::generate_motion_profile(&rgba).unwrap();
+        runtime_assets::motion_profile::write_motion_profile_atomic(&profile, &value).unwrap();
+        std::fs::remove_file(profile).unwrap();
+
+        assert!(asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &pet_id,
+            "job-1",
+            &canonical_cutout,
+        )
+        .is_err());
+        let runtime_count: i64 = storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM variants WHERE pet_id = ?1",
+                rusqlite::params![pet_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runtime_count, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generation_candidate_files_reject_path_like_job_ids() {
+        let root = std::path::Path::new("C:/app-data");
+        for job_id in ["../outside", "a/b", r"a\b", "", "."] {
+            assert!(generation_job_file(root, job_id, "cutout.png").is_err());
+            assert!(generation_job_file(root, job_id, "motion-profile.json").is_err());
+        }
+        let cutout = generation_job_file(root, "job-1_ok", "cutout.png").unwrap();
+        let profile = generation_job_file(root, "job-1_ok", "motion-profile.json").unwrap();
+        assert_eq!(cutout.parent(), profile.parent());
+        assert!(cutout.ends_with("jobs/job-1_ok/cutout.png"));
+        assert!(generation_job_file(root, "job-1_ok", "../secret").is_err());
     }
 }
