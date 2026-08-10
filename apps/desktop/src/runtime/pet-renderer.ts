@@ -57,6 +57,7 @@ export interface PetRenderer {
   hitTest(point: { x: number; y: number }): PetHitArea | null;
   setVisibility(visible: boolean): void;
   update(deltaMs: number): void;
+  getHitSurface?(): HTMLCanvasElement | null;
   destroy(): void;
 }
 
