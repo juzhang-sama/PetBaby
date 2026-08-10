@@ -70,7 +70,10 @@ impl CreationStore {
             .execute(
                 "INSERT INTO appearance_variants
              (variant_id, pet_id, job_id, image_path, cutout_path, quality, accepted, created_at)
-             VALUES (?1, ?2, ?1, ?3, ?4, ?5, 0, ?6)
+             SELECT ?1, ?2, ?1, ?3, ?4, ?5, 0, ?6
+             WHERE EXISTS (
+                 SELECT 1 FROM generation_jobs WHERE job_id = ?1 AND pet_id = ?2
+             )
              ON CONFLICT(variant_id) DO UPDATE SET image_path=excluded.image_path,
              cutout_path=excluded.cutout_path, quality=excluded.quality
              WHERE appearance_variants.pet_id = excluded.pet_id
@@ -493,6 +496,33 @@ mod tests {
             .is_err());
         let variants = store.candidates(&pet_id).unwrap();
         assert_eq!(variants[0].image_path, "original.png");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn candidate_insert_rejects_a_job_owned_by_another_pet() {
+        let (store, root, pet_id) = temp_store();
+        let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        let repo = crate::pets::repository::PetRepository::new(storage);
+        let other_pet = repo
+            .create(
+                crate::pets::pet::Species::Dog,
+                crate::pets::pet::IdentityMode::Adopted,
+            )
+            .unwrap();
+        store.create_job("job-a", &pet_id, "p", "h", None).unwrap();
+
+        assert!(store
+            .record_candidate(
+                "job-a",
+                &other_pet.pet_id,
+                "other.png",
+                "other-cutout.png",
+                "acceptable"
+            )
+            .is_err());
+        assert!(store.candidates(&pet_id).unwrap().is_empty());
+        assert!(store.candidates(&other_pet.pet_id).unwrap().is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
