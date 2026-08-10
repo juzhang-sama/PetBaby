@@ -150,6 +150,7 @@ export async function loadRuntimePet(
       stage: "manifest-load",
       message: error instanceof Error ? error.message : String(error),
     });
+    if (manifestVersionOf(manifest) === 3) throw error;
     if (!options.allowPreviewFallback) throw error;
     return {
       petId: descriptor.petId,

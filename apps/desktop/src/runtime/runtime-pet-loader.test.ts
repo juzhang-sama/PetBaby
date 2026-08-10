@@ -134,6 +134,22 @@ describe("loadRuntimePet", () => {
     expect(ports.installedAssetUrl).toHaveBeenCalledWith("pet-user-1", "body.png");
   });
 
+  it("rejects an installed v3 runtime failure instead of falling back to a static preview", async () => {
+    const ports = loaderPorts();
+    const root = {} as HTMLElement;
+    ports.readInstalledManifest.mockResolvedValue({ schemaVersion: 3 });
+    ports.createRuntime.mockRejectedValue(new Error("animated-image renderer runtime is not available"));
+
+    await expect(loadRuntimePet(
+      { petId: "pet-user-1", source: "installed" },
+      root,
+      ports,
+      { allowPreviewFallback: true },
+    )).rejects.toThrow("animated-image renderer runtime is not available");
+
+    expect(ports.createPreviewRuntime).not.toHaveBeenCalled();
+  });
+
   it("forwards diagnostics and active-surface callbacks to the renderer runtime", async () => {
     const ports = loaderPorts();
     const root = {} as HTMLElement;
