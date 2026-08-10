@@ -25,6 +25,8 @@ pub struct GenerationManager {
     after_stage_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
     #[cfg(test)]
     before_candidate_commit_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    fail_next_stage_promote_rename: std::sync::atomic::AtomicBool,
 }
 
 impl GenerationManager {
@@ -41,6 +43,8 @@ impl GenerationManager {
             after_stage_hook: Mutex::new(None),
             #[cfg(test)]
             before_candidate_commit_hook: Mutex::new(None),
+            #[cfg(test)]
+            fail_next_stage_promote_rename: std::sync::atomic::AtomicBool::new(false),
         }
     }
 
@@ -52,6 +56,12 @@ impl GenerationManager {
     #[cfg(test)]
     fn set_before_candidate_commit_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
         *self.before_candidate_commit_hook.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    #[cfg(test)]
+    fn fail_next_stage_promote_rename(&self) {
+        self.fail_next_stage_promote_rename
+            .store(true, std::sync::atomic::Ordering::SeqCst);
     }
 
     #[cfg(test)]
@@ -257,9 +267,16 @@ impl GenerationManager {
                 return Err(self.failure_with_settlement(&job, &error));
             }
         };
-        let persisted = match staged.promote(&self.canonical_jobs_root()?, job_id) {
+        let persisted = match self.promote_staged_candidate(
+            &mut staged,
+            &self.canonical_jobs_root()?,
+            job_id,
+        ) {
             Ok(paths) => paths,
-            Err(error) => return Err(self.failure_with_settlement(&job, &error)),
+            Err(error) => {
+                let rollback = staged.rollback();
+                return Err(self.failure_with_rollback_and_settlement(&job, &error, rollback));
+            }
         };
 
         #[cfg(test)]
@@ -292,10 +309,31 @@ impl GenerationManager {
             }
         };
         if let Err(error) = persisted_result {
-            return Err(self.failure_with_settlement(&job, &error));
+            let rollback = staged.rollback();
+            return Err(self.failure_with_rollback_and_settlement(&job, &error, rollback));
         }
-        staged.keep();
+        staged.commit();
         Ok(())
+    }
+
+    fn promote_staged_candidate(
+        &self,
+        staged: &mut StagedCandidate,
+        jobs_root: &Path,
+        job_id: &str,
+    ) -> Result<CandidatePaths, String> {
+        #[cfg(test)]
+        if self
+            .fail_next_stage_promote_rename
+            .swap(false, std::sync::atomic::Ordering::SeqCst)
+        {
+            return staged.promote_with(jobs_root, job_id, |_, _| {
+                Err("injected staging promotion rename failure".into())
+            });
+        }
+        staged.promote_with(jobs_root, job_id, |from, to| {
+            std::fs::rename(from, to).map_err(|error| error.to_string())
+        })
     }
 
     fn revalidate_job_for_completion(&self, observed: &JobRecord) -> Result<JobRecord, String> {
@@ -319,6 +357,19 @@ impl GenerationManager {
             Ok(()) => error.into(),
             Err(settlement) => format!("{error}; failure settlement failed: {settlement}"),
         }
+    }
+
+    fn failure_with_rollback_and_settlement(
+        &self,
+        job: &JobRecord,
+        error: &str,
+        rollback: Result<(), String>,
+    ) -> String {
+        let mut combined = error.to_string();
+        if let Err(rollback) = rollback {
+            combined.push_str(&format!("; output rollback failed: {rollback}"));
+        }
+        self.failure_with_settlement(job, &combined)
     }
 
     fn settle_failure(&self, job: &JobRecord, error: &str) -> Result<(), String> {
@@ -372,7 +423,11 @@ impl GenerationManager {
 struct StagedCandidate {
     dir: PathBuf,
     quality: String,
-    keep_on_drop: bool,
+    target_dir: Option<PathBuf>,
+    backup_dir: Option<PathBuf>,
+    promoted: bool,
+    rolled_back: bool,
+    committed: bool,
 }
 
 impl StagedCandidate {
@@ -380,12 +435,22 @@ impl StagedCandidate {
         Self {
             dir,
             quality: String::new(),
-            keep_on_drop: false,
+            target_dir: None,
+            backup_dir: None,
+            promoted: false,
+            rolled_back: false,
+            committed: false,
         }
     }
 
-    fn promote(&mut self, jobs_root: &Path, job_id: &str) -> Result<CandidatePaths, String> {
+    fn promote_with(
+        &mut self,
+        jobs_root: &Path,
+        job_id: &str,
+        promote_rename: impl FnOnce(&Path, &Path) -> Result<(), String>,
+    ) -> Result<CandidatePaths, String> {
         let final_dir = jobs_root.join(job_id);
+        self.target_dir = Some(final_dir.clone());
         if let Ok(metadata) = std::fs::symlink_metadata(&final_dir) {
             if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_dir() {
                 return Err(
@@ -398,10 +463,25 @@ impl StagedCandidate {
             if canonical_final != final_dir {
                 return Err("final job directory escapes the configured jobs root".into());
             }
-            std::fs::remove_dir_all(&final_dir).map_err(|error| error.to_string())?;
+            let backup_dir = jobs_root.join(format!(
+                ".{job_id}-backup-{}",
+                new_entity_id("candidate-backup")
+            ));
+            if std::fs::symlink_metadata(&backup_dir).is_ok() {
+                return Err("candidate backup path unexpectedly exists".into());
+            }
+            std::fs::rename(&final_dir, &backup_dir).map_err(|error| error.to_string())?;
+            self.backup_dir = Some(backup_dir);
         }
-        std::fs::rename(&self.dir, &final_dir).map_err(|error| error.to_string())?;
+        if let Err(error) = promote_rename(&self.dir, &final_dir) {
+            let restore = self.restore_backup();
+            return Err(match restore {
+                Ok(()) => error,
+                Err(restore) => format!("{error}; backup restore failed: {restore}"),
+            });
+        }
         self.dir = final_dir.clone();
+        self.promoted = true;
         Ok(CandidatePaths {
             image_path: final_dir.join("raw.png"),
             cutout_path: final_dir.join("cutout.png"),
@@ -410,15 +490,69 @@ impl StagedCandidate {
         })
     }
 
-    fn keep(&mut self) {
-        self.keep_on_drop = true;
+    fn rollback(&mut self) -> Result<(), String> {
+        if self.committed || self.rolled_back {
+            return Ok(());
+        }
+        let mut errors = Vec::new();
+        if self.promoted {
+            if let Err(error) = std::fs::remove_dir_all(&self.dir) {
+                errors.push(format!("could not remove promoted output: {error}"));
+            } else {
+                self.promoted = false;
+            }
+        } else if self.dir.exists() {
+            if let Err(error) = std::fs::remove_dir_all(&self.dir) {
+                errors.push(format!("could not remove staging output: {error}"));
+            }
+        }
+        if let Err(error) = self.restore_backup() {
+            errors.push(error);
+        }
+        if errors.is_empty() {
+            self.rolled_back = true;
+            Ok(())
+        } else {
+            Err(errors.join("; "))
+        }
+    }
+
+    fn restore_backup(&mut self) -> Result<(), String> {
+        let Some(backup_dir) = self.backup_dir.as_ref() else {
+            return Ok(());
+        };
+        let final_dir = self
+            .target_dir
+            .as_ref()
+            .ok_or_else(|| "candidate backup has no target directory".to_string())?;
+        if std::fs::symlink_metadata(final_dir).is_ok() {
+            return Err("cannot restore candidate backup over an existing final directory".into());
+        }
+        std::fs::rename(backup_dir, final_dir)
+            .map_err(|error| format!("could not restore candidate backup: {error}"))?;
+        self.backup_dir = None;
+        Ok(())
+    }
+
+    fn commit(&mut self) {
+        self.committed = true;
+        if let Some(backup_dir) = self.backup_dir.as_ref() {
+            let removable = std::fs::symlink_metadata(backup_dir)
+                .map(|metadata| {
+                    metadata.is_dir() && !crate::platform::is_link_or_reparse_point(&metadata)
+                })
+                .unwrap_or(false);
+            if removable && std::fs::remove_dir_all(backup_dir).is_ok() {
+                self.backup_dir = None;
+            }
+        }
     }
 }
 
 impl Drop for StagedCandidate {
     fn drop(&mut self) {
-        if !self.keep_on_drop {
-            let _ = std::fs::remove_dir_all(&self.dir);
+        if !self.committed {
+            let _ = self.rollback();
         }
     }
 }
@@ -569,6 +703,44 @@ mod tests {
         PetDeletionService::new(test.storage.clone(), active, test.root.clone())
     }
 
+    fn install_existing_final(test: &ManagerHarness) {
+        let final_dir = test.root.join("jobs/job-1");
+        std::fs::create_dir_all(&final_dir).unwrap();
+        std::fs::write(final_dir.join("raw.png"), b"old raw").unwrap();
+        std::fs::write(final_dir.join("cutout.png"), b"old cutout").unwrap();
+        std::fs::write(final_dir.join("motion-profile.json"), b"old profile").unwrap();
+        std::fs::write(final_dir.join("sentinel"), b"keep old final").unwrap();
+    }
+
+    fn assert_existing_final_restored(test: &ManagerHarness) {
+        let final_dir = test.root.join("jobs/job-1");
+        assert_eq!(
+            std::fs::read(final_dir.join("raw.png")).unwrap(),
+            b"old raw"
+        );
+        assert_eq!(
+            std::fs::read(final_dir.join("cutout.png")).unwrap(),
+            b"old cutout"
+        );
+        assert_eq!(
+            std::fs::read(final_dir.join("motion-profile.json")).unwrap(),
+            b"old profile"
+        );
+        assert_eq!(
+            std::fs::read(final_dir.join("sentinel")).unwrap(),
+            b"keep old final"
+        );
+    }
+
+    fn assert_no_job_siblings(test: &ManagerHarness) {
+        let names: Vec<_> = std::fs::read_dir(test.root.join("jobs"))
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| name != "job-1")
+            .collect();
+        assert!(names.is_empty(), "unexpected job siblings: {names:?}");
+    }
+
     #[test]
     fn persisted_candidate_contains_a_valid_motion_profile() {
         let test = manager_harness();
@@ -710,6 +882,88 @@ mod tests {
             jobs[0].result_url.as_deref(),
             Some("https://example.invalid/out.png")
         );
+    }
+
+    #[test]
+    fn stage_promote_rename_failure_restores_the_existing_final_directory() {
+        let test = manager_harness();
+        install_existing_final(&test);
+        test.manager.fail_next_stage_promote_rename();
+
+        assert!(test
+            .manager
+            .complete_download("job-1", "https://example.invalid/out.png", &test.png)
+            .is_err());
+
+        assert_existing_final_restored(&test);
+        assert_no_job_siblings(&test);
+    }
+
+    #[test]
+    fn candidate_transaction_failure_restores_the_existing_final_directory() {
+        let test = manager_harness();
+        install_existing_final(&test);
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO appearance_variants
+                 (variant_id, pet_id, job_id, session_id, image_path, cutout_path,
+                  motion_profile_path, quality, accepted, created_at)
+                 VALUES ('candidate-existing', ?1, 'job-1', ?2, 'existing.png',
+                         'existing-cutout.png', 'existing-profile.json', 'acceptable', 0, ?3)",
+                rusqlite::params![test.pet_id, test.session_id, now_iso()],
+            )
+            .unwrap();
+
+        assert!(test
+            .manager
+            .complete_download("job-1", "https://example.invalid/out.png", &test.png)
+            .is_err());
+
+        assert_existing_final_restored(&test);
+        assert_no_job_siblings(&test);
+    }
+
+    #[test]
+    fn double_settlement_failure_restores_the_existing_final_directory() {
+        let test = manager_harness();
+        install_existing_final(&test);
+        test.manager.set_before_candidate_commit_hook({
+            let storage = test.storage.clone();
+            move || {
+                storage
+                    .lock()
+                    .unwrap()
+                    .db
+                    .execute("DELETE FROM generation_jobs WHERE job_id='job-1'", [])
+                    .unwrap();
+            }
+        });
+
+        assert!(test
+            .manager
+            .complete_download("job-1", "https://example.invalid/out.png", &test.png)
+            .is_err());
+
+        assert_existing_final_restored(&test);
+        assert_no_job_siblings(&test);
+    }
+
+    #[test]
+    fn successful_candidate_commit_replaces_final_and_removes_the_backup() {
+        let test = manager_harness();
+        install_existing_final(&test);
+
+        test.manager
+            .complete_download("job-1", "https://example.invalid/out.png", &test.png)
+            .unwrap();
+
+        let final_dir = test.root.join("jobs/job-1");
+        assert_eq!(std::fs::read(final_dir.join("raw.png")).unwrap(), test.png);
+        assert!(!final_dir.join("sentinel").exists());
+        assert_no_job_siblings(&test);
     }
 
     #[test]
