@@ -428,6 +428,31 @@ mod tests {
                 std::fs::write(directory.join("owned.txt"), b"owned").unwrap();
             }
         }
+
+        fn insert_other_session(&self) {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute_batch(
+                    "INSERT INTO pets
+                     (pet_id, schema_version, species, identity_mode, creation_method, lifecycle,
+                      created_at, updated_at)
+                     VALUES ('pet-other', 1, 'cat', 'adopted', 'adoption', 'ready', '0', '0');
+                     INSERT INTO creation_sessions
+                     (session_id, pet_id, method, status, last_stable_status, current_step,
+                      schema_version, created_at, updated_at, completed_at)
+                     VALUES ('session-other', 'pet-other', 'adoption', 'completed', 'completed',
+                             'completed', 1, '0', '0', '0');",
+                )
+                .unwrap();
+            std::fs::create_dir_all(self.root.join("creation-sessions/session-other")).unwrap();
+            std::fs::write(
+                self.root.join("creation-sessions/session-other/keep.txt"),
+                b"keep",
+            )
+            .unwrap();
+        }
     }
 
     impl Drop for ServiceHarness {
@@ -635,6 +660,98 @@ mod tests {
         assert!(test.root.join("jobs/job-owned").exists());
         assert_eq!(test.count("pets"), 1);
         assert_eq!(test.count("creation_sessions"), 1);
+        assert_eq!(test.count("creation_session_tombstones"), 0);
+    }
+
+    #[test]
+    fn abandon_rejects_a_null_job_session_before_isolating_resources() {
+        let test = ServiceHarness::new();
+        let draft = test.service.start(CreationMethod::Upload).unwrap();
+        test.create_resources(&draft.session_id, &draft.pet_id, "job-owned");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE generation_jobs SET session_id=NULL WHERE job_id='job-owned'",
+                [],
+            )
+            .unwrap();
+
+        let error = test.service.abandon(&draft.session_id).unwrap_err();
+
+        assert!(error.contains("job-owned"));
+        assert!(test
+            .root
+            .join("creation-sessions")
+            .join(&draft.session_id)
+            .exists());
+        assert!(test.root.join("pets").join(&draft.pet_id).exists());
+        assert!(test.root.join("jobs/job-owned").exists());
+        assert_eq!(test.count("pets"), 1);
+        assert_eq!(test.count("creation_session_tombstones"), 0);
+    }
+
+    #[test]
+    fn abandon_rejects_a_job_owned_by_another_session_without_isolating_it() {
+        let test = ServiceHarness::new();
+        let draft = test.service.start(CreationMethod::Composer).unwrap();
+        test.create_resources(&draft.session_id, &draft.pet_id, "job-owned");
+        test.insert_other_session();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE generation_jobs SET session_id='session-other' WHERE job_id='job-owned'",
+                [],
+            )
+            .unwrap();
+
+        let error = test.service.abandon(&draft.session_id).unwrap_err();
+
+        assert!(error.contains("job-owned"));
+        assert!(test
+            .root
+            .join("creation-sessions")
+            .join(&draft.session_id)
+            .exists());
+        assert!(test.root.join("pets").join(&draft.pet_id).exists());
+        assert!(test.root.join("jobs/job-owned").exists());
+        assert!(test
+            .root
+            .join("creation-sessions/session-other/keep.txt")
+            .exists());
+        assert_eq!(test.count("creation_session_tombstones"), 0);
+    }
+
+    #[test]
+    fn abandon_rejects_a_job_with_the_target_session_but_another_pet() {
+        let test = ServiceHarness::new();
+        let draft = test.service.start(CreationMethod::Upload).unwrap();
+        test.insert_other_session();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO generation_jobs
+                 (job_id, pet_id, session_id, prompt, ref_sha256, status, created_at)
+                 VALUES ('job-cross-owned', 'pet-other', ?1, 'prompt', 'hash', 'pending', '0')",
+                [&draft.session_id],
+            )
+            .unwrap();
+        std::fs::create_dir_all(test.root.join("jobs/job-cross-owned")).unwrap();
+        std::fs::write(test.root.join("jobs/job-cross-owned/keep.txt"), b"keep").unwrap();
+
+        let error = test.service.abandon(&draft.session_id).unwrap_err();
+
+        assert!(error.contains("job-cross-owned"));
+        assert!(test.root.join("jobs/job-cross-owned/keep.txt").exists());
+        assert!(test
+            .root
+            .join("creation-sessions/session-other/keep.txt")
+            .exists());
         assert_eq!(test.count("creation_session_tombstones"), 0);
     }
 

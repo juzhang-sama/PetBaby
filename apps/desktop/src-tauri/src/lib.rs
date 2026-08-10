@@ -920,6 +920,23 @@ mod tests {
     }
 
     #[test]
+    fn creation_appearance_variant_keeps_its_legacy_public_path() {
+        let variant = creation::AppearanceVariant {
+            variant_id: "variant-legacy".into(),
+            pet_id: "pet-legacy".into(),
+            job_id: Some("job-legacy".into()),
+            image_path: "image.png".into(),
+            cutout_path: Some("cutout.png".into()),
+            quality: "acceptable".into(),
+            accepted: false,
+            created_at: "0".into(),
+        };
+
+        assert_eq!(variant.variant_id, "variant-legacy");
+        assert_eq!(variant.job_id.as_deref(), Some("job-legacy"));
+    }
+
+    #[test]
     fn pet_asset_png_response_is_decodable_media_with_its_original_bytes() {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
         let root = std::env::temp_dir().join(format!(

@@ -1,6 +1,6 @@
 use crate::pets::active::{SharedActivePetService, BUILTIN_PET_ID};
 use crate::storage::Storage;
-use rusqlite::OptionalExtension;
+use rusqlite::{Connection, OptionalExtension};
 use std::io::Write;
 use std::path::{Path, PathBuf};
 use std::sync::{Arc, Mutex, OnceLock};
@@ -326,18 +326,7 @@ impl PetDeletionService {
             .map_err(|error| error.to_string())?;
         let (pet_id, method, status) =
             session.ok_or_else(|| format!("creation session not found: {session_id}"))?;
-        let job_ids = {
-            let mut statement = storage
-                .db
-                .prepare("SELECT job_id FROM generation_jobs WHERE pet_id=?1 ORDER BY job_id")
-                .map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map([&pet_id], |row| row.get::<_, String>(0))
-                .map_err(|error| error.to_string())?
-                .map(|row| row.map_err(|error| error.to_string()))
-                .collect::<Result<Vec<_>, _>>()?;
-            rows
-        };
+        let job_ids = creation_job_ids(&storage.db, session_id, &pet_id)?;
         Ok(Some((pet_id, method, status, job_ids)))
     }
 
@@ -381,17 +370,7 @@ impl PetDeletionService {
         if current_status == "completed" {
             return Err("a completed creation session cannot be abandoned".into());
         }
-        let current_job_ids = {
-            let mut statement = tx
-                .prepare("SELECT job_id FROM generation_jobs WHERE pet_id=?1 ORDER BY job_id")
-                .map_err(|error| error.to_string())?;
-            let rows = statement
-                .query_map([pet_id], |row| row.get::<_, String>(0))
-                .map_err(|error| error.to_string())?
-                .map(|row| row.map_err(|error| error.to_string()))
-                .collect::<Result<Vec<_>, _>>()?;
-            rows
-        };
+        let current_job_ids = creation_job_ids(&tx, session_id, pet_id)?;
         let mut expected_job_ids = expected_job_ids.to_vec();
         expected_job_ids.sort();
         if current_job_ids != expected_job_ids {
@@ -563,6 +542,40 @@ impl PetDeletionService {
 
 fn deletion_operation_lock() -> &'static Mutex<()> {
     DELETION_OPERATION_LOCK.get_or_init(|| Mutex::new(()))
+}
+
+fn creation_job_ids(
+    db: &Connection,
+    session_id: &str,
+    pet_id: &str,
+) -> Result<Vec<String>, String> {
+    let mut statement = db
+        .prepare(
+            "SELECT job_id, pet_id, session_id FROM generation_jobs
+             WHERE pet_id=?1 OR session_id=?2 ORDER BY job_id",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map(rusqlite::params![pet_id, session_id], |row| {
+            Ok((
+                row.get::<_, String>(0)?,
+                row.get::<_, String>(1)?,
+                row.get::<_, Option<String>>(2)?,
+            ))
+        })
+        .map_err(|error| error.to_string())?;
+    let mut job_ids = Vec::new();
+    for row in rows {
+        let (job_id, actual_pet_id, actual_session_id) = row.map_err(|error| error.to_string())?;
+        validate_component(&job_id, "job id")?;
+        if actual_pet_id != pet_id || actual_session_id.as_deref() != Some(session_id) {
+            return Err(format!(
+                "generation job {job_id} is not owned by creation session {session_id} and pet {pet_id}"
+            ));
+        }
+        job_ids.push(job_id);
+    }
+    Ok(job_ids)
 }
 
 fn validate_component(value: &str, label: &str) -> Result<(), String> {
@@ -905,6 +918,64 @@ mod tests {
             self.root.join("jobs").join(job_id)
         }
 
+        fn session_dir(&self, session_id: &str) -> PathBuf {
+            self.root.join("creation-sessions").join(session_id)
+        }
+
+        fn bind_pet_a_job_to_creation_session(&self) {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute_batch(
+                    "INSERT INTO creation_sessions
+                     (session_id, pet_id, method, status, last_stable_status, current_step,
+                      schema_version, created_at, updated_at)
+                     VALUES ('session-a', 'pet-a', 'upload', 'draft', 'draft', 'upload',
+                             1, '0', '0');
+                     UPDATE generation_jobs SET session_id='session-a' WHERE job_id='job-a';",
+                )
+                .unwrap();
+            std::fs::create_dir_all(self.session_dir("session-a")).unwrap();
+            std::fs::write(self.session_dir("session-a").join("draft.txt"), b"session").unwrap();
+        }
+
+        fn isolate_creation_resources(&self, operation: &Path) -> Vec<QuarantinedPath> {
+            vec![
+                quarantine_path(
+                    &self.session_dir("session-a"),
+                    operation,
+                    "session-session-a",
+                )
+                .unwrap()
+                .unwrap(),
+                quarantine_path(&self.pet_dir("pet-a"), operation, "pet")
+                    .unwrap()
+                    .unwrap(),
+                quarantine_path(&self.job_dir("job-a"), operation, "job-job-a")
+                    .unwrap()
+                    .unwrap(),
+            ]
+        }
+
+        fn quarantined_creation_operation(&self, phase: &str) -> PathBuf {
+            self.bind_pet_a_job_to_creation_session();
+            let operation = self
+                .root
+                .join("trash")
+                .join("pet-delete")
+                .join("creation-recovery-test");
+            self.isolate_creation_resources(&operation);
+            std::fs::write(
+                operation.join("journal.json"),
+                format!(
+                    r#"{{"petId":"pet-a","jobIds":["job-a"],"sessionIds":["session-a"],"phase":"{phase}"}}"#
+                ),
+            )
+            .unwrap();
+            operation
+        }
+
         fn quarantined_operation(&self, phase: &str) -> PathBuf {
             let operation = self
                 .root
@@ -1005,6 +1076,77 @@ mod tests {
     }
 
     #[test]
+    fn creation_abandon_final_recheck_restores_isolated_paths_after_owner_changes() {
+        let test = DeletionHarness::two_pets();
+        test.bind_pet_a_job_to_creation_session();
+        let quarantine = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("creation-owner-race");
+        let quarantined = test.isolate_creation_resources(&quarantine);
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE generation_jobs SET session_id=NULL WHERE job_id='job-a'",
+                [],
+            )
+            .unwrap();
+
+        let error = test
+            .service
+            .abandon_creation_rows("session-a", "pet-a", "upload", &["job-a".into()])
+            .unwrap_err();
+
+        assert!(error.contains("job-a"));
+        recover_uncommitted(&quarantine, error, &quarantined);
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
+        assert!(test.pet_dir("pet-a").exists());
+        assert!(test.job_dir("job-a").exists());
+        assert!(test.pet_exists("pet-a"));
+    }
+
+    #[test]
+    fn creation_abandon_final_recheck_restores_isolated_paths_after_job_is_added() {
+        let test = DeletionHarness::two_pets();
+        test.bind_pet_a_job_to_creation_session();
+        let quarantine = test
+            .root
+            .join("trash")
+            .join("pet-delete")
+            .join("creation-added-job-race");
+        let quarantined = test.isolate_creation_resources(&quarantine);
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO generation_jobs
+                 (job_id, pet_id, session_id, prompt, ref_sha256, status, created_at)
+                 VALUES ('job-late', 'pet-a', 'session-a', 'prompt', 'hash', 'pending', '1')",
+                [],
+            )
+            .unwrap();
+        std::fs::create_dir_all(test.job_dir("job-late")).unwrap();
+        std::fs::write(test.job_dir("job-late").join("late.txt"), b"late").unwrap();
+
+        let error = test
+            .service
+            .abandon_creation_rows("session-a", "pet-a", "upload", &["job-a".into()])
+            .unwrap_err();
+
+        assert!(error.contains("jobs changed"));
+        recover_uncommitted(&quarantine, error, &quarantined);
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
+        assert!(test.pet_dir("pet-a").exists());
+        assert!(test.job_dir("job-a").exists());
+        assert!(test.job_dir("job-late").join("late.txt").exists());
+        assert!(test.pet_exists("pet-a"));
+    }
+
+    #[test]
     fn startup_cleanup_restores_uncommitted_quarantine_and_preserves_database_rows() {
         let test = DeletionHarness::two_pets();
         let operation = test.quarantined_operation("quarantined");
@@ -1031,6 +1173,38 @@ mod tests {
         assert!(!test.pet_exists("pet-a"));
         assert!(!test.pet_dir("pet-a").exists());
         assert!(!test.job_dir("job-a").exists());
+        assert!(!operation.exists());
+    }
+
+    #[test]
+    fn startup_cleanup_restores_prepared_creation_session_quarantine() {
+        let test = DeletionHarness::two_pets();
+        let operation = test.quarantined_creation_operation("prepared");
+
+        test.service.cleanup_quarantine().unwrap();
+
+        assert!(test.pet_exists("pet-a"));
+        assert!(test.job_exists("job-a"));
+        assert!(test.pet_dir("pet-a").exists());
+        assert!(test.job_dir("job-a").exists());
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
+        assert!(!operation.exists());
+    }
+
+    #[test]
+    fn startup_cleanup_discards_prepared_creation_quarantine_after_database_commit() {
+        let test = DeletionHarness::two_pets();
+        let operation = test.quarantined_creation_operation("prepared");
+        test.service
+            .delete_rows("pet-a", &["job-a".into()])
+            .unwrap();
+
+        test.service.cleanup_quarantine().unwrap();
+
+        assert!(!test.pet_exists("pet-a"));
+        assert!(!test.pet_dir("pet-a").exists());
+        assert!(!test.job_dir("job-a").exists());
+        assert!(!test.session_dir("session-a").exists());
         assert!(!operation.exists());
     }
 

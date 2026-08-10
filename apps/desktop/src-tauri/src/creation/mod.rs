@@ -5,4 +5,4 @@ pub mod service;
 pub mod store;
 
 pub use service::{CreationService, SharedCreationService};
-pub use store::{CreationStore, JobRecord, SharedCreationStore};
+pub use store::{AppearanceVariant, CreationStore, JobRecord, SharedCreationStore};
