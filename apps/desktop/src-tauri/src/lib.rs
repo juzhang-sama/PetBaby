@@ -10,7 +10,9 @@ mod windowing;
 use pets::pet::{IdentityMode, Pet, PetSummary, Species};
 use pets::SharedPetRepository;
 use pets::{
-    active::{CommitReconciliation, RuntimePetDescriptor, SharedActivePetService},
+    active::{
+        CommitCompensation, CommitReconciliation, RuntimePetDescriptor, SharedActivePetService,
+    },
     catalog::{CreationResume, PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
     deletion::{DeleteOutcome, PetDeletionService, SharedPetDeletionService},
     mutation::{PetMutationGate, SharedPetMutationGate},
@@ -403,40 +405,44 @@ fn creation_abandon(
 #[tauri::command]
 fn pet_prepare_switch(
     state: tauri::State<'_, SharedActivePetService>,
-    request_id: Option<String>,
+    request_id: String,
     pet_id: String,
 ) -> Result<RuntimePetDescriptor, String> {
-    state.prepare(request_id.as_deref(), &pet_id)
+    state.prepare(Some(&request_id), &pet_id)
+}
+
+#[tauri::command]
+fn pet_prepare_startup(
+    state: tauri::State<'_, SharedActivePetService>,
+    pet_id: String,
+) -> Result<RuntimePetDescriptor, String> {
+    state.prepare_startup(&pet_id)
 }
 
 #[tauri::command]
 fn pet_commit_switch(
     state: tauri::State<'_, SharedActivePetService>,
-    request_id: Option<String>,
+    request_id: String,
     pet_id: String,
     accepted_variant_id: Option<String>,
     creation_session_id: Option<String>,
 ) -> Result<(), String> {
     let _ = creation_session_id;
-    state.commit(
-        request_id.as_deref(),
-        &pet_id,
-        accepted_variant_id.as_deref(),
-    )
+    state.commit_switch(&request_id, &pet_id, accepted_variant_id.as_deref())
 }
 
 #[tauri::command]
 fn pet_rollback_switch(
     state: tauri::State<'_, SharedActivePetService>,
-    request_id: Option<String>,
+    request_id: String,
     previous_pet_id: String,
     pet_id: String,
     accepted_variant_id: Option<String>,
     creation_session_id: Option<String>,
-) -> Result<(), String> {
+) -> Result<CommitCompensation, String> {
     let _ = creation_session_id;
-    state.rollback_commit(
-        request_id.as_deref(),
+    state.rollback_switch(
+        &request_id,
         &previous_pet_id,
         &pet_id,
         accepted_variant_id.as_deref(),
@@ -889,6 +895,7 @@ pub fn run() {
             pet_catalog_list,
             pet_creation_resume,
             pet_prepare_switch,
+            pet_prepare_startup,
             pet_commit_switch,
             pet_rollback_switch,
             pet_reconcile_switch_commit,
@@ -928,6 +935,25 @@ mod tests {
     use std::sync::atomic::{AtomicU32, Ordering};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    #[test]
+    fn public_switch_write_commands_require_request_ids() {
+        let source = include_str!("lib.rs");
+        for command in [
+            "pet_prepare_switch",
+            "pet_commit_switch",
+            "pet_rollback_switch",
+        ] {
+            let start = source.find(&format!("fn {command}(")).unwrap();
+            let signature_end = source[start..].find(") ->").unwrap() + start;
+            let signature = &source[start..signature_end];
+            assert!(
+                signature.contains("request_id: String"),
+                "{command} must require requestId"
+            );
+            assert!(!signature.contains("request_id: Option<String>"));
+        }
+    }
 
     fn asset_compile_fixture() -> (
         creation::SharedCreationStore,

@@ -26,6 +26,11 @@ export interface CommitReconciliation {
   warning?: string;
 }
 
+export interface CommitCompensation {
+  status: "compensated" | "unknown";
+  warning?: string;
+}
+
 export type PetSwitchErrorCode =
   | "target-not-found"
   | "asset-corrupt"
@@ -36,7 +41,7 @@ export type PetSwitchErrorCode =
   | "pet-window-unavailable";
 
 export type PetSwitchResult =
-  | { ok: true; requestId: string; petId: string }
+  | { ok: true; requestId: string; petId: string; warning?: string }
   | {
     ok: false;
     requestId: string;

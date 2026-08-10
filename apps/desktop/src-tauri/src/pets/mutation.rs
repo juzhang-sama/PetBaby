@@ -45,6 +45,12 @@ pub struct PetMutationOwnerPin<'a> {
     token: u64,
 }
 
+impl PetMutationOwnerPin<'_> {
+    pub fn token(&self) -> u64 {
+        self.token
+    }
+}
+
 impl PetMutationGate {
     pub fn new(timeout: Duration) -> Self {
         let epoch = Instant::now();
@@ -85,7 +91,7 @@ impl PetMutationGate {
             if state.owner.as_ref().is_some_and(|owner| {
                 !owner.scoped
                     && owner.pins == 0
-                    && now.saturating_sub(owner.started_at) > self.timeout
+                    && now.saturating_sub(owner.started_at) >= self.timeout
             }) {
                 state.owner = None;
             }
@@ -165,17 +171,18 @@ impl PetMutationGate {
         })
     }
 
-    pub fn finish(&self, request_id: &str) -> Result<(), String> {
+    pub fn finish(&self, request_id: &str) -> Result<Option<u64>, String> {
         let mut state = self
             .state
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
         match state.owner.as_ref() {
-            None => Ok(()),
+            None => Ok(None),
             Some(owner) if owner.request_id == request_id && !owner.scoped && owner.pins == 0 => {
+                let token = owner.token;
                 state.owner = None;
                 self.changed.notify_all();
-                Ok(())
+                Ok(Some(token))
             }
             Some(_) => Err("pet mutation request does not own the gate".into()),
         }
@@ -191,7 +198,7 @@ impl PetMutationGate {
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
         if state.owner.as_ref().is_some_and(|owner| {
-            !owner.scoped && owner.pins == 0 && now.saturating_sub(owner.started_at) > self.timeout
+            !owner.scoped && owner.pins == 0 && now.saturating_sub(owner.started_at) >= self.timeout
         }) {
             state.owner = None;
         }
@@ -310,6 +317,19 @@ mod tests {
         gate.begin("req-old", MutationKind::Switch, "pet-a")
             .unwrap();
         now.store(61, Ordering::SeqCst);
+
+        gate.begin("req-new", MutationKind::Delete, "pet-b")
+            .unwrap();
+        assert_current_owner(&gate, "req-new", "pet-b");
+    }
+
+    #[test]
+    fn cross_window_owner_is_recoverable_at_the_exact_timeout_boundary() {
+        let (gate, now) = gate_with_clock(Duration::from_secs(60));
+        gate.begin("req-old", MutationKind::Switch, "pet-a")
+            .unwrap();
+
+        now.store(60, Ordering::SeqCst);
 
         gate.begin("req-new", MutationKind::Delete, "pet-b")
             .unwrap();

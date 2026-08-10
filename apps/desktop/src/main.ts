@@ -97,7 +97,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   let initialRuntime: MountedPetRuntime | undefined;
   const startup = await loadStartupRuntime(activePetId, {
     prepare: async (petId) => {
-      const descriptor = await invoke<RuntimePetDescriptor>("pet_prepare_switch", { petId });
+      const descriptor = await invoke<RuntimePetDescriptor>("pet_prepare_startup", { petId });
       tracePetRuntime(`descriptor-prepared: ${descriptor.source}`);
       return descriptor;
     },
@@ -113,7 +113,17 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
         },
       },
     ),
-    commit: (petId) => invoke("pet_commit_switch", { petId }),
+    commit: async (petId) => {
+      const requestId = crypto.randomUUID();
+      await invoke("pet_prepare_switch", { requestId, petId });
+      try {
+        await invoke("pet_commit_switch", { requestId, petId });
+        await invoke("pet_finish_switch", { requestId });
+      } catch (error) {
+        await invoke("pet_cancel_switch", { requestId }).catch(() => undefined);
+        throw error;
+      }
+    },
     onRecovery: (petId, error) => {
       tracePetRuntime(`recovering-to-builtin: ${petId}: ${errorMessage(error)}`);
     },

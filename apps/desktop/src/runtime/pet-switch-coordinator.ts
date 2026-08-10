@@ -1,5 +1,6 @@
 import type { PreparedRuntimeSwap, PetRuntimeSlot, MountedPetRuntime } from "./pet-runtime-slot";
 import type {
+  CommitCompensation,
   CommitReconciliation,
   PetSwitchErrorCode,
   PetSwitchRequest,
@@ -12,7 +13,7 @@ export interface PetSwitchCoordinatorPorts {
   load(descriptor: RuntimePetDescriptor, stagingRoot: HTMLElement): Promise<MountedPetRuntime>;
   probe(surface: HTMLCanvasElement): void;
   commit(request: PetSwitchRequest): Promise<void>;
-  rollbackCommit(previousPetId: string, request: PetSwitchRequest): Promise<void>;
+  rollbackCommit(previousPetId: string, request: PetSwitchRequest): Promise<CommitCompensation>;
   reconcileCommit(previousPetId: string, request: PetSwitchRequest): Promise<CommitReconciliation>;
   cancel(requestId: string): Promise<void>;
   finish(requestId: string): Promise<void>;
@@ -36,7 +37,7 @@ export class PetSwitchCoordinator {
     this.busy = true;
     let swap: PreparedRuntimeSwap | undefined;
     let committed = false;
-    let cleanup: "open" | "cancelled" | "finished" = "open";
+    let cleanup: "open" | "cancelled" | "released" | "releaseUnknown" = "open";
     const cancel = async (): Promise<void> => {
       if (cleanup !== "open") return;
       cleanup = "cancelled";
@@ -46,13 +47,16 @@ export class PetSwitchCoordinator {
         this.log(request, "cancel-failed", error);
       }
     };
-    const finish = async (): Promise<void> => {
-      if (cleanup !== "open") return;
-      cleanup = "finished";
+    const finish = async (): Promise<string> => {
+      if (cleanup !== "open") return "";
       try {
         await this.ports.finish(request.requestId);
+        cleanup = "released";
+        return "";
       } catch (error) {
+        cleanup = "releaseUnknown";
         this.log(request, "finish-failed", error);
+        return `；变更门释放未确认：${messageOf(error)}`;
       }
     };
 
@@ -95,12 +99,12 @@ export class PetSwitchCoordinator {
           reconciliation = { status: "unknown", warning: messageOf(reconciliationError) };
         }
         if (reconciliation.status === "notCommitted") await cancel();
-        if (reconciliation.status === "compensated") await finish();
+        const finalization = reconciliation.status === "compensated" ? await finish() : "";
         const warning = reconciliation.warning ? `；对账提示：${reconciliation.warning}` : "";
         return failure(
           request,
           "persist-failed",
-          withRollbackState(`${messageOf(error)}${warning}`, rollbackConverged),
+          withRollbackState(`${messageOf(error)}${warning}${finalization}`, rollbackConverged),
         );
       }
 
@@ -108,11 +112,11 @@ export class PetSwitchCoordinator {
         const compensation = await this.compensateCommit(request, swap.previous.petId);
         const rollbackConverged = this.rollbackSafely(request, swap);
         await this.ports.refreshHitRegion().catch(() => undefined);
-        if (compensation.converged) await finish();
+        const finalization = compensation.converged ? await finish() : "";
         return failure(
           request,
           "load-failed",
-          withRollbackState(`候选运行时已降级为预览帧${compensation.message}`, rollbackConverged),
+          withRollbackState(`候选运行时已降级为预览帧${compensation.message}${finalization}`, rollbackConverged),
         );
       }
 
@@ -121,9 +125,11 @@ export class PetSwitchCoordinator {
       } catch (error) {
         this.log(request, "cleanup", error);
       }
-      await finish();
+      const finalization = await finish();
       this.log(request, "complete");
-      return { ok: true, requestId: request.requestId, petId: request.petId };
+      return finalization
+        ? { ok: true, requestId: request.requestId, petId: request.petId, warning: finalization.slice(1) }
+        : { ok: true, requestId: request.requestId, petId: request.petId };
     } catch (error) {
       this.log(request, "failed", error);
       const rollbackConverged = swap ? this.rollbackSafely(request, swap) : true;
@@ -132,7 +138,7 @@ export class PetSwitchCoordinator {
       if (committed && swap) {
         const compensation = await this.compensateCommit(request, swap.previous.petId);
         compensationMessage = compensation.message;
-        if (compensation.converged) await finish();
+        if (compensation.converged) compensationMessage += await finish();
       } else {
         await cancel();
       }
@@ -158,8 +164,16 @@ export class PetSwitchCoordinator {
   ): Promise<{ converged: boolean; message: string }> {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
-        await this.ports.rollbackCommit(previousPetId, request);
-        return { converged: true, message: "" };
+        const compensation = await this.ports.rollbackCommit(previousPetId, request);
+        if (compensation.status === "compensated") {
+          const warning = compensation.warning ? `；补偿提示：${compensation.warning}` : "";
+          return { converged: true, message: warning };
+        }
+        this.log(request, `persist-compensation-${attempt}`, compensation.warning ?? "database state unknown");
+        if (attempt === 2) {
+          const warning = compensation.warning ? `：${compensation.warning}` : "";
+          return { converged: false, message: `；持久化补偿状态未知${warning}` };
+        }
       } catch (error) {
         this.log(request, `persist-compensation-${attempt}`, error);
         if (attempt === 2) {

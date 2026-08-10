@@ -39,6 +39,27 @@ pub struct CommitReconciliation {
     pub warning: Option<String>,
 }
 
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub enum CommitCompensationStatus {
+    Compensated,
+    Unknown,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct CommitCompensation {
+    pub status: CommitCompensationStatus,
+    #[serde(skip_serializing_if = "Option::is_none")]
+    pub warning: Option<String>,
+}
+
+#[derive(Clone)]
+struct CachedReconciliation {
+    owner_token: u64,
+    result: CommitReconciliation,
+}
+
 pub type SharedActivePetService = Arc<ActivePetService>;
 
 pub struct ActivePetService {
@@ -46,6 +67,7 @@ pub struct ActivePetService {
     session: SharedActivePetSession,
     pets_dir: PathBuf,
     mutation_gate: SharedPetMutationGate,
+    reconciliation_cache: Mutex<Option<CachedReconciliation>>,
     #[cfg(test)]
     after_owner_pin_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
@@ -62,6 +84,7 @@ impl ActivePetService {
             session,
             pets_dir,
             mutation_gate,
+            reconciliation_cache: Mutex::new(None),
             #[cfg(test)]
             after_owner_pin_hook: Mutex::new(None),
         }
@@ -103,6 +126,47 @@ impl ActivePetService {
                 .begin(request_id, MutationKind::Switch, pet_id)?;
         }
         self.describe(pet_id)
+    }
+
+    pub fn prepare_startup(&self, pet_id: &str) -> Result<RuntimePetDescriptor, String> {
+        self.describe(pet_id)
+    }
+
+    pub fn commit_switch(
+        &self,
+        request_id: &str,
+        pet_id: &str,
+        accepted_variant_id: Option<&str>,
+    ) -> Result<(), String> {
+        self.commit(Some(request_id), pet_id, accepted_variant_id)
+    }
+
+    pub fn rollback_switch(
+        &self,
+        request_id: &str,
+        previous_pet_id: &str,
+        pet_id: &str,
+        accepted_variant_id: Option<&str>,
+    ) -> Result<CommitCompensation, String> {
+        let _owner_pin =
+            self.mutation_gate
+                .assert_owner(request_id, MutationKind::Switch, pet_id)?;
+        #[cfg(test)]
+        self.run_after_owner_pin_hook();
+
+        if let Err(error) = self
+            .describe(previous_pet_id)
+            .and_then(|_| self.rollback_database(previous_pet_id, pet_id, accepted_variant_id))
+        {
+            return Ok(CommitCompensation {
+                status: CommitCompensationStatus::Unknown,
+                warning: Some(error),
+            });
+        }
+        Ok(CommitCompensation {
+            status: CommitCompensationStatus::Compensated,
+            warning: self.sync_session(previous_pet_id).err(),
+        })
     }
 
     fn describe(&self, pet_id: &str) -> Result<RuntimePetDescriptor, String> {
@@ -208,11 +272,16 @@ impl ActivePetService {
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<CommitReconciliation, String> {
-        let _owner_pin =
+        let owner_pin =
             self.mutation_gate
                 .assert_owner(request_id, MutationKind::Switch, pet_id)?;
         #[cfg(test)]
         self.run_after_owner_pin_hook();
+
+        let owner_token = owner_pin.token();
+        if let Some(result) = self.cached_reconciliation(owner_token)? {
+            return Ok(result);
+        }
 
         if previous_pet_id == pet_id {
             return Ok(CommitReconciliation {
@@ -230,10 +299,13 @@ impl ActivePetService {
             }
         };
         if current.as_deref() == Some(previous_pet_id) {
-            return Ok(CommitReconciliation {
-                status: CommitReconciliationStatus::NotCommitted,
-                warning: None,
-            });
+            return self.cache_reconciliation(
+                owner_token,
+                CommitReconciliation {
+                    status: CommitReconciliationStatus::NotCommitted,
+                    warning: None,
+                },
+            );
         }
         if current.as_deref() != Some(pet_id) {
             return Ok(CommitReconciliation {
@@ -251,10 +323,41 @@ impl ActivePetService {
             });
         }
 
-        Ok(CommitReconciliation {
-            status: CommitReconciliationStatus::Compensated,
-            warning: self.sync_session(previous_pet_id).err(),
-        })
+        self.cache_reconciliation(
+            owner_token,
+            CommitReconciliation {
+                status: CommitReconciliationStatus::Compensated,
+                warning: self.sync_session(previous_pet_id).err(),
+            },
+        )
+    }
+
+    fn cached_reconciliation(
+        &self,
+        owner_token: u64,
+    ) -> Result<Option<CommitReconciliation>, String> {
+        Ok(self
+            .reconciliation_cache
+            .lock()
+            .map_err(|_| "reconciliation cache lock poisoned")?
+            .as_ref()
+            .filter(|cached| cached.owner_token == owner_token)
+            .map(|cached| cached.result.clone()))
+    }
+
+    fn cache_reconciliation(
+        &self,
+        owner_token: u64,
+        result: CommitReconciliation,
+    ) -> Result<CommitReconciliation, String> {
+        *self
+            .reconciliation_cache
+            .lock()
+            .map_err(|_| "reconciliation cache lock poisoned")? = Some(CachedReconciliation {
+            owner_token,
+            result: result.clone(),
+        });
+        Ok(result)
     }
 
     fn rollback_database(
@@ -328,11 +431,26 @@ impl ActivePetService {
     }
 
     pub fn cancel(&self, request_id: &str) -> Result<(), String> {
-        self.mutation_gate.finish(request_id)
+        self.release(request_id)
     }
 
     pub fn finish(&self, request_id: &str) -> Result<(), String> {
-        self.mutation_gate.finish(request_id)
+        self.release(request_id)
+    }
+
+    fn release(&self, request_id: &str) -> Result<(), String> {
+        let released_token = self.mutation_gate.finish(request_id)?;
+        if let Some(released_token) = released_token {
+            if let Ok(mut cache) = self.reconciliation_cache.lock() {
+                if cache
+                    .as_ref()
+                    .is_some_and(|cached| cached.owner_token == released_token)
+                {
+                    *cache = None;
+                }
+            }
+        }
+        Ok(())
     }
 
     #[cfg(test)]
@@ -711,6 +829,30 @@ mod tests {
     }
 
     #[test]
+    fn startup_prepare_is_read_only_and_switch_writes_still_require_an_owner() {
+        let test = ActiveHarness::new();
+
+        assert_eq!(
+            test.service.prepare_startup(BUILTIN_PET_ID).unwrap().pet_id,
+            BUILTIN_PET_ID
+        );
+        assert!(test
+            .gate
+            .begin("delete-after-startup", MutationKind::Delete, "pet-a")
+            .is_ok());
+        test.gate.finish("delete-after-startup").unwrap();
+
+        assert!(test
+            .service
+            .commit_switch("missing-request", BUILTIN_PET_ID, None)
+            .is_err());
+        assert!(test
+            .service
+            .rollback_switch("missing-request", BUILTIN_PET_ID, "pet-user", None)
+            .is_err());
+    }
+
+    #[test]
     fn commit_pin_blocks_cancel_and_other_mutations_until_commit_returns() {
         let test = ActiveHarness::new();
         test.service
@@ -787,6 +929,58 @@ mod tests {
             assert!(rollback.join().unwrap().is_ok());
         });
         test.service.finish("switch-rollback-pinned").unwrap();
+    }
+
+    #[test]
+    fn rollback_switch_reports_db_compensated_with_a_session_warning() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-rollback-warning"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(Some("switch-rollback-warning"), "pet-user", None)
+            .unwrap();
+        let session = test.session.clone();
+        assert!(std::thread::spawn(move || {
+            let _session = session.lock().unwrap();
+            panic!("poison active session");
+        })
+        .join()
+        .is_err());
+
+        let result = test
+            .service
+            .rollback_switch("switch-rollback-warning", BUILTIN_PET_ID, "pet-user", None)
+            .unwrap();
+
+        assert_eq!(result.status, CommitCompensationStatus::Compensated);
+        assert!(result.warning.is_some());
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        test.service.finish("switch-rollback-warning").unwrap();
+    }
+
+    #[test]
+    fn rollback_switch_reports_unknown_when_db_compensation_cannot_be_confirmed() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active("pet-unrelated");
+        test.service
+            .prepare(Some("switch-rollback-unknown"), "pet-user")
+            .unwrap();
+
+        let first = test
+            .service
+            .rollback_switch("switch-rollback-unknown", BUILTIN_PET_ID, "pet-user", None)
+            .unwrap();
+        let retry = test
+            .service
+            .rollback_switch("switch-rollback-unknown", BUILTIN_PET_ID, "pet-user", None)
+            .unwrap();
+
+        assert_eq!(first.status, CommitCompensationStatus::Unknown);
+        assert!(first.warning.is_some());
+        assert_eq!(retry.status, CommitCompensationStatus::Unknown);
+        test.service.finish("switch-rollback-unknown").unwrap();
     }
 
     #[test]
@@ -884,6 +1078,92 @@ mod tests {
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
         assert!(!test.variant_accepted("variant-1"));
         test.service.finish("switch-committed").unwrap();
+    }
+
+    #[test]
+    fn reconcile_retries_return_the_same_compensated_result_until_finish() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-retry"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(Some("switch-retry"), "pet-user", Some("variant-1"))
+            .unwrap();
+
+        let first = test
+            .service
+            .reconcile_commit(
+                "switch-retry",
+                BUILTIN_PET_ID,
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+        let retry = test
+            .service
+            .reconcile_commit(
+                "switch-retry",
+                BUILTIN_PET_ID,
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+
+        assert_eq!(first.status, CommitReconciliationStatus::Compensated);
+        assert_eq!(retry, first);
+        test.service.finish("switch-retry").unwrap();
+
+        test.service
+            .prepare(Some("switch-retry"), "pet-user")
+            .unwrap();
+        let next_generation = test
+            .service
+            .reconcile_commit(
+                "switch-retry",
+                BUILTIN_PET_ID,
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+        assert_eq!(
+            next_generation.status,
+            CommitReconciliationStatus::NotCommitted
+        );
+        test.service.cancel("switch-retry").unwrap();
+    }
+
+    #[test]
+    fn reconcile_retries_keep_not_committed_even_if_persistence_changes_later() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-stable-not-committed"), "pet-user")
+            .unwrap();
+
+        let first = test
+            .service
+            .reconcile_commit(
+                "switch-stable-not-committed",
+                BUILTIN_PET_ID,
+                "pet-user",
+                None,
+            )
+            .unwrap();
+        test.save_active("pet-user");
+        let retry = test
+            .service
+            .reconcile_commit(
+                "switch-stable-not-committed",
+                BUILTIN_PET_ID,
+                "pet-user",
+                None,
+            )
+            .unwrap();
+
+        assert_eq!(first.status, CommitReconciliationStatus::NotCommitted);
+        assert_eq!(retry, first);
+        test.service.cancel("switch-stable-not-committed").unwrap();
     }
 
     #[test]

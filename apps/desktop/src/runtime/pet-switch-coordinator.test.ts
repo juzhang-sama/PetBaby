@@ -42,6 +42,9 @@ interface HarnessOptions {
   holdCommit?: boolean;
   rollbackFailures?: number;
   backendRollbackError?: Error;
+  rollbackStatus?: "compensated" | "unknown";
+  rollbackWarning?: string;
+  finishError?: Error;
   fallbackCheckErrorAfterCommit?: Error;
   reconciliationStatus?: "notCommitted" | "compensated" | "unknown";
   destroyOldRuntimeError?: Error;
@@ -78,9 +81,15 @@ function coordinatorHarness(options: HarnessOptions = {}) {
   const refreshHitRegion = vi.fn(async () => undefined);
   const rollbackCommit = vi.fn(async () => {
     if (options.backendRollbackError) throw options.backendRollbackError;
+    return {
+      status: options.rollbackStatus ?? "compensated" as const,
+      warning: options.rollbackWarning,
+    };
   });
   const cancel = vi.fn(async () => undefined);
-  const finish = vi.fn(async () => undefined);
+  const finish = vi.fn(async () => {
+    if (options.finishError) throw options.finishError;
+  });
   const reconcileCommit = vi.fn(async () => ({
     status: options.reconciliationStatus ?? "notCommitted" as const,
   }));
@@ -392,6 +401,20 @@ describe("PetSwitchCoordinator", () => {
     expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
   });
 
+  it("reports a visible warning without rolling back when finish rejects after commit", async () => {
+    const test = coordinatorHarness({ finishError: new Error("mutation owner busy") });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b", "r-finish-busy"))).resolves.toMatchObject({
+      ok: true,
+      petId: "pet-b",
+      warning: expect.stringContaining("mutation owner busy"),
+    });
+    expect(test.slot.activePetId).toBe("pet-b");
+    expect(test.cancel).not.toHaveBeenCalled();
+    expect(test.rollbackCommit).not.toHaveBeenCalled();
+  });
+
   it("leaves the lease to TTL when committed persistence compensation cannot converge", async () => {
     const test = coordinatorHarness({
       holdCommit: true,
@@ -407,6 +430,56 @@ describe("PetSwitchCoordinator", () => {
 
     expect(test.rollbackCommit).toHaveBeenCalledTimes(2);
     expect(test.finish).not.toHaveBeenCalled();
+    expect(test.cancel).not.toHaveBeenCalled();
+  });
+
+  it("finishes a DB-compensated rollback and exposes its session warning", async () => {
+    const test = coordinatorHarness({
+      holdCommit: true,
+      rollbackStatus: "compensated",
+      rollbackWarning: "session lock poisoned",
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    const switching = test.coordinator.switch(request("pet-b", "r-compensated-warning"));
+    await test.commitStarted;
+    test.triggerCandidatePreviewFallback();
+    test.releaseCommit();
+
+    await expect(switching).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("session lock poisoned"),
+    });
+    expect(test.finish).toHaveBeenCalledOnce();
+    expect(test.cancel).not.toHaveBeenCalled();
+  });
+
+  it("leaves the owner to TTL after two explicit unknown rollback results", async () => {
+    const test = coordinatorHarness({ holdCommit: true, rollbackStatus: "unknown" });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    const switching = test.coordinator.switch(request("pet-b", "r-rollback-unknown"));
+    await test.commitStarted;
+    test.triggerCandidatePreviewFallback();
+    test.releaseCommit();
+    await expect(switching).resolves.toMatchObject({ ok: false });
+
+    expect(test.rollbackCommit).toHaveBeenCalledTimes(2);
+    expect(test.finish).not.toHaveBeenCalled();
+    expect(test.cancel).not.toHaveBeenCalled();
+  });
+
+  it("adds finalization failure to a compensated error instead of cancelling", async () => {
+    const test = coordinatorHarness({
+      fallbackCheckErrorAfterCommit: new Error("fallback state unavailable"),
+      finishError: new Error("finish transport failed"),
+    });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    await expect(test.coordinator.switch(request("pet-b", "r-compensated-finish"))).resolves.toMatchObject({
+      ok: false,
+      message: expect.stringContaining("finish transport failed"),
+    });
     expect(test.cancel).not.toHaveBeenCalled();
   });
 
