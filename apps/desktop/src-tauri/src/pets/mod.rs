@@ -1,4 +1,5 @@
 pub mod active;
+pub mod catalog;
 pub mod pet;
 pub mod repository;
 pub mod state;

@@ -7,9 +7,12 @@ mod runtime_assets;
 mod storage;
 mod windowing;
 
-use pets::active::{RuntimePetDescriptor, SharedActivePetService};
 use pets::pet::{IdentityMode, Pet, PetSummary, Species};
 use pets::SharedPetRepository;
+use pets::{
+    active::{RuntimePetDescriptor, SharedActivePetService},
+    catalog::{CreationResume, PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
+};
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -299,6 +302,21 @@ fn pet_set_active(
     pet_id: String,
 ) -> Result<(), String> {
     state.commit(&pet_id, None)
+}
+
+#[tauri::command]
+fn pet_catalog_list(
+    state: tauri::State<'_, SharedPetCatalogService>,
+) -> Result<Vec<PetCatalogEntry>, String> {
+    state.list()
+}
+
+#[tauri::command]
+fn pet_creation_resume(
+    state: tauri::State<'_, SharedPetCatalogService>,
+    pet_id: String,
+) -> Result<CreationResume, String> {
+    state.creation_resume(&pet_id)
 }
 
 #[tauri::command]
@@ -593,7 +611,13 @@ pub fn run() {
                 data_dir.join("pets"),
             ));
             active.restore()?;
+            let catalog = Arc::new(PetCatalogService::new(
+                storage.clone(),
+                active.clone(),
+                data_dir.join("pets"),
+            ));
             app.manage(active as SharedActivePetService);
+            app.manage(catalog as SharedPetCatalogService);
             app.manage(Arc::new(Mutex::new(pets::repository::PetRepository::new(
                 storage.clone(),
             ))) as SharedPetRepository);
@@ -655,6 +679,8 @@ pub fn run() {
             pet_delete,
             pet_get_active,
             pet_set_active,
+            pet_catalog_list,
+            pet_creation_resume,
             pet_prepare_switch,
             pet_commit_switch,
             pet_state_load,
@@ -748,6 +774,12 @@ mod tests {
     #[test]
     fn legacy_pet_set_active_command_remains_available() {
         let _command = super::pet_set_active;
+    }
+
+    #[test]
+    fn pet_catalog_commands_are_available() {
+        let _list = super::pet_catalog_list;
+        let _resume = super::pet_creation_resume;
     }
 
     #[test]
