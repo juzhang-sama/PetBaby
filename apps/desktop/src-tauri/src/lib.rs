@@ -12,6 +12,7 @@ use pets::SharedPetRepository;
 use pets::{
     active::{RuntimePetDescriptor, SharedActivePetService},
     catalog::{CreationResume, PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
+    deletion::{DeleteOutcome, PetDeletionService, SharedPetDeletionService},
 };
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
 use std::sync::{Arc, Mutex};
@@ -286,9 +287,11 @@ fn pet_get(
 }
 
 #[tauri::command]
-fn pet_delete(state: tauri::State<'_, SharedPetRepository>, pet_id: String) -> Result<(), String> {
-    let repo = state.lock().map_err(|_| "pets lock poisoned")?;
-    repo.delete(&pet_id)
+fn pet_delete_full(
+    state: tauri::State<'_, SharedPetDeletionService>,
+    pet_id: String,
+) -> Result<DeleteOutcome, String> {
+    state.delete(&pet_id)
 }
 
 #[tauri::command]
@@ -487,30 +490,6 @@ fn debug_windows(app: tauri::AppHandle) -> Vec<String> {
         .collect()
 }
 
-#[tauri::command]
-fn gen_cleanup_pet(app: tauri::AppHandle, pet_id: String) -> Result<(), String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    // remove the pet record and its job artifacts; jobs rows cascade on pet delete
-    let storage = app.state::<pets::SharedPetRepository>();
-    let repo = storage.lock().map_err(|_| "pets lock poisoned")?;
-    repo.delete(&pet_id)?;
-    drop(repo);
-
-    let jobs_root = data_dir.join("jobs");
-    if let Ok(entries) = std::fs::read_dir(&jobs_root) {
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with("job-") {
-                // best effort: job dirs are small
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-    Ok(())
-}
-
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
     use tauri::{
         menu::{Menu, MenuItem},
@@ -626,8 +605,17 @@ pub fn run() {
                 active.clone(),
                 data_dir.join("pets"),
             ));
+            let deletion = Arc::new(PetDeletionService::new(
+                storage.clone(),
+                active.clone(),
+                data_dir.clone(),
+            ));
+            if let Err(error) = deletion.cleanup_quarantine() {
+                eprintln!("[desktop-pet] quarantine cleanup failed: {error}");
+            }
             app.manage(active as SharedActivePetService);
             app.manage(catalog as SharedPetCatalogService);
+            app.manage(deletion as SharedPetDeletionService);
             app.manage(Arc::new(Mutex::new(pets::repository::PetRepository::new(
                 storage.clone(),
             ))) as SharedPetRepository);
@@ -686,7 +674,7 @@ pub fn run() {
             pet_list,
             pet_create,
             pet_get,
-            pet_delete,
+            pet_delete_full,
             pet_get_active,
             pet_set_active,
             pet_catalog_list,
@@ -706,7 +694,6 @@ pub fn run() {
             gen_resume,
             gen_cutout_path,
             gen_cutout_b64,
-            gen_cleanup_pet,
             debug_windows
         ])
         .run(tauri::generate_context!())

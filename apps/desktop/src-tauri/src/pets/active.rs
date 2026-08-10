@@ -90,6 +90,20 @@ impl ActivePetService {
             .db
             .transaction()
             .map_err(|error| error.to_string())?;
+        if pet_id != BUILTIN_PET_ID {
+            let target_exists = tx
+                .query_row(
+                    "SELECT 1 FROM pets WHERE pet_id = ?1",
+                    rusqlite::params![pet_id],
+                    |_| Ok(()),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?
+                .is_some();
+            if !target_exists {
+                return Err("installed pet is unavailable".into());
+            }
+        }
         if let Some(variant_id) = accepted_variant_id {
             let affected = tx
                 .execute(
