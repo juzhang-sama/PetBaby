@@ -62,6 +62,19 @@ fn move_destination_to_unique_backup(dest_dir: &Path) -> Result<PathBuf, String>
 }
 
 pub fn install_staged_assets(staging_dir: &Path, dest_dir: &Path) -> Result<(), String> {
+    install_staged_assets_with_cleanup(staging_dir, dest_dir, |backup| {
+        std::fs::remove_dir_all(backup).map_err(|error| error.to_string())
+    })
+}
+
+fn install_staged_assets_with_cleanup<F>(
+    staging_dir: &Path,
+    dest_dir: &Path,
+    cleanup_backup: F,
+) -> Result<(), String>
+where
+    F: FnOnce(&Path) -> Result<(), String>,
+{
     let parent = dest_dir
         .parent()
         .ok_or("asset destination must have a parent directory")?;
@@ -84,8 +97,25 @@ pub fn install_staged_assets(staging_dir: &Path, dest_dir: &Path) -> Result<(), 
         }
         return Err(format!("install staged assets: {error}"));
     }
+
+    // The staging -> destination rename is the commit point. From here on,
+    // callers must observe success because the new assets are authoritative.
     if let Some(backup) = backup {
-        std::fs::remove_dir_all(backup).map_err(|error| error.to_string())?;
+        if let Err(error) = cleanup_backup(&backup) {
+            let warning = format!(
+                "asset backup cleanup pending at {}: {error}",
+                backup.display()
+            );
+            let marker = backup.join(".cleanup-pending");
+            if let Err(marker_error) = std::fs::write(&marker, warning.as_bytes()) {
+                eprintln!(
+                    "warning: {warning}; failed to write {}: {marker_error}",
+                    marker.display()
+                );
+            } else {
+                eprintln!("warning: {warning}");
+            }
+        }
     }
     Ok(())
 }
@@ -141,6 +171,18 @@ mod tests {
         .unwrap();
     }
 
+    fn backup_directories(root: &Path) -> Vec<std::path::PathBuf> {
+        std::fs::read_dir(root)
+            .unwrap()
+            .filter_map(Result::ok)
+            .map(|entry| entry.path())
+            .filter(|path| {
+                path.file_name()
+                    .is_some_and(|name| name.to_string_lossy().ends_with(".backup"))
+            })
+            .collect()
+    }
+
     #[test]
     fn atomically_replaces_existing_assets_with_complete_staging() {
         let n = COUNTER.fetch_add(1, Ordering::SeqCst);
@@ -159,6 +201,7 @@ mod tests {
         assert!(dest.join("manifest.json").exists());
         assert!(!dest.join("old.txt").exists());
         assert!(!staging.exists());
+        assert!(backup_directories(&root).is_empty());
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -253,6 +296,42 @@ mod tests {
             "old"
         );
         crate::runtime_assets::loader::validate_asset_directory(&dest).unwrap();
+        assert!(backup_directories(&root).is_empty());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn cleanup_failure_after_commit_returns_success_and_leaves_a_retryable_marker() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-installer-cleanup-{}-{n}",
+            std::process::id()
+        ));
+        let dest = root.join("assets");
+        let staging = root.join("assets.staging");
+        std::fs::create_dir_all(&dest).unwrap();
+        std::fs::write(dest.join("old.txt"), "old").unwrap();
+        write_valid_assets(&staging);
+
+        let result = install_staged_assets_with_cleanup(&staging, &dest, |_| {
+            Err("simulated backup cleanup failure".into())
+        });
+
+        assert!(
+            result.is_ok(),
+            "committed install must return Ok, got {result:?}"
+        );
+        assert!(dest.join("manifest.json").exists());
+        assert!(!dest.join("old.txt").exists());
+        let pending = backup_directories(&root);
+        assert_eq!(pending.len(), 1);
+        assert!(pending[0].join(".cleanup-pending").exists());
+
+        let next_staging = root.join("assets.next.staging");
+        write_valid_assets(&next_staging);
+        install_staged_assets(&next_staging, &dest).unwrap();
+        assert!(dest.join("manifest.json").exists());
+        assert_eq!(backup_directories(&root), pending);
         let _ = std::fs::remove_dir_all(root);
     }
 }
