@@ -116,6 +116,43 @@ describe("AnimatedImageRenderer", () => {
     expect(test.hitContext.drawImage).toHaveBeenCalledTimes(hitDrawsAfterLoad * 2);
   });
 
+  it("consumes a subpixel hit-envelope plan at large viewport scale", async () => {
+    const test = rendererHarness();
+    const viewport = { width: 3840, height: 2160, dpr: 3 };
+    test.renderer.resize(viewport);
+    await test.renderer.load({
+      kind: "animated-image",
+      imageUrl: "pet.png",
+      motionProfile: validMotionProfile(),
+    });
+    const bounds = { x: 840, y: 0, width: 2160, height: 2160 };
+    const pivot = { x: 1920, y: 1555.2 };
+    const rMax = Math.max(
+      Math.hypot(bounds.x - pivot.x, bounds.y - pivot.y),
+      Math.hypot(bounds.x + bounds.width - pivot.x, bounds.y - pivot.y),
+      Math.hypot(bounds.x - pivot.x, bounds.y + bounds.height - pivot.y),
+      Math.hypot(bounds.x + bounds.width - pivot.x, bounds.y + bounds.height - pivot.y),
+    );
+    const transforms = test.hitContext.rotate.mock.calls.map((call, index) => ({
+      swayXRatio: (test.hitContext.translate.mock.calls[index * 2]![0] - pivot.x) / viewport.width,
+      swayRadians: call[0],
+    }));
+    const physicalSteps = transforms.slice(1).map((transform, index) => {
+      const previous = transforms[index]!;
+      return viewport.dpr * (
+        viewport.width * Math.abs(transform.swayXRatio - previous.swayXRatio)
+        + rMax * Math.abs(transform.swayRadians - previous.swayRadians)
+      );
+    });
+
+    expect(transforms.length).toBeGreaterThan(33);
+    expect(Math.max(...physicalSteps)).toBeLessThanOrEqual(1 + 1e-9);
+    const hitDrawsAfterLoad = test.hitContext.drawImage.mock.calls.length;
+    test.renderer.playMotion("idle");
+    test.renderer.update(100);
+    expect(test.hitContext.drawImage).toHaveBeenCalledTimes(hitDrawsAfterLoad);
+  });
+
   it("uses anonymous browser image loading through the shared loader", async () => {
     const test = rendererHarness();
     await test.renderer.load({

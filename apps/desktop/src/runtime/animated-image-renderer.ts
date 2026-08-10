@@ -231,7 +231,12 @@ export class AnimatedImageRenderer implements PetRenderer {
     if (!this.image || !this.profile || !this.viewport || !this.bounds || this.destroyed) return;
     const pivotX = this.bounds.x + this.profile.swayPivot.x * this.bounds.width;
     const pivotY = this.bounds.y + this.profile.swayPivot.y * this.bounds.height;
-    const poses = planHitEnvelopeTransforms();
+    const poses = planHitEnvelopeTransforms({
+      viewportWidth: this.viewport.width,
+      dpr: this.viewport.dpr,
+      bounds: this.bounds,
+      pivot: { x: pivotX, y: pivotY },
+    });
     this.hitContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
     for (const pose of poses) {
       this.hitContext.save();

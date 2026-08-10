@@ -20,6 +20,13 @@ export interface HitEnvelopeTransform {
   swayRadians: number;
 }
 
+export interface HitEnvelopeGeometry {
+  viewportWidth: number;
+  dpr: number;
+  bounds: { x: number; y: number; width: number; height: number };
+  pivot: { x: number; y: number };
+}
+
 export interface BreathSlice {
   sourceX: number;
   sourceY: number;
@@ -45,15 +52,32 @@ export function computeMotionFrame(elapsedMs: number): MotionFrame {
   };
 }
 
-export function planHitEnvelopeTransforms(): HitEnvelopeTransform[] {
-  const intervalCount = 32;
-  return Array.from({ length: intervalCount + 1 }, (_, index) => {
+export function planHitEnvelopeTransforms(
+  geometry: HitEnvelopeGeometry,
+): HitEnvelopeTransform[] {
+  const { bounds, pivot } = geometry;
+  const rMax = Math.max(
+    Math.hypot(bounds.x - pivot.x, bounds.y - pivot.y),
+    Math.hypot(bounds.x + bounds.width - pivot.x, bounds.y - pivot.y),
+    Math.hypot(bounds.x - pivot.x, bounds.y + bounds.height - pivot.y),
+    Math.hypot(bounds.x + bounds.width - pivot.x, bounds.y + bounds.height - pivot.y),
+  );
+  const physicalHalfTravel = geometry.dpr * (
+    geometry.viewportWidth * LIFE_V1.swayXRatio
+    + rMax * LIFE_V1.swayRadians
+  );
+  const intervalCount = Math.max(32, Math.ceil(2 * physicalHalfTravel));
+  const transforms = Array.from({ length: intervalCount + 1 }, (_, index) => {
     const scalar = -1 + 2 * index / intervalCount;
     return {
       swayXRatio: scalar * LIFE_V1.swayXRatio,
       swayRadians: scalar * LIFE_V1.swayRadians,
     };
   });
+  if (intervalCount % 2 !== 0) {
+    transforms.splice((intervalCount + 1) / 2, 0, { swayXRatio: 0, swayRadians: 0 });
+  }
+  return transforms;
 }
 
 export function breathWeight(normalizedY: number): number {

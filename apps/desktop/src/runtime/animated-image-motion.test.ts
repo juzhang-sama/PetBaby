@@ -9,6 +9,13 @@ import {
 } from "./animated-image-motion";
 
 describe("animated image motion", () => {
+  const defaultHitGeometry = {
+    viewportWidth: 420,
+    dpr: 2,
+    bounds: { x: 0, y: 50, width: 420, height: 420 },
+    pivot: { x: 210, y: 352.4 },
+  };
+
   it("uses the approved life-v1 periods and amplitudes", () => {
     expect(LIFE_V1).toEqual({
       breathPeriodMs: 2800,
@@ -37,7 +44,7 @@ describe("animated image motion", () => {
   });
 
   it("plans a dense uniform envelope along the correlated sway trajectory", () => {
-    const transforms = planHitEnvelopeTransforms();
+    const transforms = planHitEnvelopeTransforms(defaultHitGeometry);
     const normalized = transforms.map((transform) =>
       transform.swayXRatio / LIFE_V1.swayXRatio,
     );
@@ -55,7 +62,7 @@ describe("animated image motion", () => {
   });
 
   it("includes representative real display phases in the hit envelope plan", () => {
-    const transforms = planHitEnvelopeTransforms();
+    const transforms = planHitEnvelopeTransforms(defaultHitGeometry);
     for (const elapsedMs of [0, 5200 / 12, 1300, 5200 * 7 / 12, 3900]) {
       const frame = computeMotionFrame(elapsedMs);
       expect(transforms.some((transform) =>
@@ -63,6 +70,36 @@ describe("animated image motion", () => {
         && Math.abs(transform.swayRadians - frame.swayRadians) < 1e-12
       )).toBe(true);
     }
+  });
+
+  it("keeps adjacent envelope samples within one physical pixel on a large viewport", () => {
+    const geometry = {
+      viewportWidth: 3840,
+      dpr: 3,
+      bounds: { x: 840, y: 0, width: 2160, height: 2160 },
+      pivot: { x: 1920, y: 1555.2 },
+    };
+    const transforms = planHitEnvelopeTransforms(geometry);
+    const corners = [
+      [geometry.bounds.x, geometry.bounds.y],
+      [geometry.bounds.x + geometry.bounds.width, geometry.bounds.y],
+      [geometry.bounds.x, geometry.bounds.y + geometry.bounds.height],
+      [geometry.bounds.x + geometry.bounds.width, geometry.bounds.y + geometry.bounds.height],
+    ];
+    const rMax = Math.max(...corners.map(([x, y]) =>
+      Math.hypot(x! - geometry.pivot.x, y! - geometry.pivot.y),
+    ));
+    const physicalSteps = transforms.slice(1).map((transform, index) => {
+      const previous = transforms[index]!;
+      return geometry.dpr * (
+        geometry.viewportWidth * Math.abs(transform.swayXRatio - previous.swayXRatio)
+        + rMax * Math.abs(transform.swayRadians - previous.swayRadians)
+      );
+    });
+
+    expect(transforms.length).toBeGreaterThanOrEqual(33);
+    expect(Number.isInteger(transforms.length)).toBe(true);
+    expect(Math.max(...physicalSteps)).toBeLessThanOrEqual(1 + 1e-12);
   });
 
   it("zeros both breath-zone seams and peaks in the middle", () => {
