@@ -35,6 +35,7 @@ function fakeRuntime(petId: string): MountedPetRuntime {
 interface HarnessOptions {
   loadError?: Error;
   commitError?: Error;
+  candidateMotionError?: Error;
   holdLoad?: boolean;
   holdCommit?: boolean;
   rollbackFailures?: number;
@@ -54,6 +55,11 @@ function coordinatorHarness(options: HarnessOptions = {}) {
   const oldRuntime = fakeRuntime("pet-a");
   const candidate = fakeRuntime("pet-b");
   const slot = new PetRuntimeSlot(rendererRoot, oldRuntime);
+  if (options.candidateMotionError) {
+    vi.mocked(candidate.host.playMotion).mockImplementation(() => {
+      throw options.candidateMotionError;
+    });
+  }
   if (options.destroyOldRuntimeError) {
     vi.mocked(oldRuntime.host.destroy).mockImplementation(() => {
       throw options.destroyOldRuntimeError;
@@ -136,12 +142,56 @@ describe("PetSwitchCoordinator", () => {
   it("rolls back the visual swap when persistence fails", async () => {
     const test = coordinatorHarness({ commitError: new Error("sqlite busy") });
     vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+    test.slot.playMotion("idle", { priority: 10, loop: true });
 
     const result = await test.coordinator.switch(request("pet-b"));
+    vi.mocked(test.oldRuntime.host.update).mockClear();
+    test.slot.update(42);
 
     expect(result).toMatchObject({ ok: false, code: "persist-failed" });
     expect(test.slot.activePetId).toBe("pet-a");
+    expect(test.candidate.host.playMotion).toHaveBeenCalledWith("idle", { priority: 10, loop: true });
+    expect(test.candidate.host.destroy).toHaveBeenCalledOnce();
     expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
+    expect(test.oldRuntime.host.update).toHaveBeenCalledWith(42);
+  });
+
+  it("starts the carried idle after visual activation and before persistence commits", async () => {
+    const test = coordinatorHarness({ holdCommit: true });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+    test.slot.playMotion("idle", { priority: 10, loop: true });
+
+    const switching = test.coordinator.switch(request("pet-b"));
+    await test.commitStarted;
+
+    expect(test.slot.activePetId).toBe("pet-b");
+    expect(test.candidate.host.playMotion).toHaveBeenCalledWith("idle", { priority: 10, loop: true });
+
+    test.releaseCommit();
+    await expect(switching).resolves.toMatchObject({ ok: true, petId: "pet-b" });
+    vi.mocked(test.candidate.host.update).mockClear();
+    test.slot.update(42);
+
+    expect(test.candidate.host.playMotion).toHaveBeenCalledOnce();
+    expect(test.candidate.host.playMotion).toHaveBeenCalledWith("idle", { priority: 10, loop: true });
+    expect(test.candidate.host.update).toHaveBeenCalledWith(42);
+  });
+
+  it("rolls back candidate idle startup failure before persistence", async () => {
+    const test = coordinatorHarness({ candidateMotionError: new Error("idle failed") });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+    test.slot.playMotion("idle", { priority: 10, loop: true });
+
+    const result = await test.coordinator.switch(request("pet-b"));
+    vi.mocked(test.oldRuntime.host.update).mockClear();
+    test.slot.update(42);
+
+    expect(result).toMatchObject({ ok: false, code: "load-failed", message: "idle failed" });
+    expect(test.commitSelection).not.toHaveBeenCalled();
+    expect(test.slot.activePetId).toBe("pet-a");
+    expect(test.candidate.host.destroy).toHaveBeenCalledOnce();
+    expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
+    expect(test.oldRuntime.host.update).toHaveBeenCalledWith(42);
   });
 
   it("rejects a concurrent request without disturbing the in-flight switch", async () => {

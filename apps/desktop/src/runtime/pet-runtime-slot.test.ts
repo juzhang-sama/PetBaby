@@ -85,6 +85,88 @@ describe("PetRuntimeSlot", () => {
     expect(swap.previous.host.destroy).toHaveBeenCalledOnce();
   });
 
+  it("continues looping idle on the activated candidate before updating it", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+
+    const swap = slot.prepare(candidate);
+    vi.mocked(candidate.host.update).mockClear();
+    expect(candidate.host.playMotion).not.toHaveBeenCalled();
+
+    swap.activate();
+    slot.update(42);
+
+    expect(candidate.host.playMotion).toHaveBeenCalledOnce();
+    expect(candidate.host.playMotion).toHaveBeenCalledWith("idle", { priority: 10, loop: true });
+    expect(candidate.host.update).toHaveBeenCalledOnce();
+    expect(candidate.host.update).toHaveBeenCalledWith(42);
+    expect(vi.mocked(candidate.host.playMotion).mock.invocationCallOrder[0])
+      .toBeLessThan(vi.mocked(candidate.host.update).mock.invocationCallOrder[0]!);
+    swap.commit();
+    idle.cancel();
+    expect(candidateIdle.cancel).toHaveBeenCalledOnce();
+    expect(oldIdle.cancel).not.toHaveBeenCalled();
+  });
+
+  it("rolls back an activated candidate without interrupting the previous idle", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const previousIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(previousIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+
+    const swap = slot.prepare(candidate);
+    swap.activate();
+    swap.rollback();
+    vi.mocked(oldRuntime.host.update).mockClear();
+    slot.update(42);
+
+    expect(candidate.host.playMotion).toHaveBeenCalledWith("idle", { priority: 10, loop: true });
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    expect(previousIdle.cancel).not.toHaveBeenCalled();
+    expect(oldRuntime.host.destroy).not.toHaveBeenCalled();
+    expect(oldRuntime.host.update).toHaveBeenCalledOnce();
+    expect(oldRuntime.host.update).toHaveBeenCalledWith(42);
+    idle.cancel();
+    expect(previousIdle.cancel).toHaveBeenCalledOnce();
+    expect(candidateIdle.cancel).not.toHaveBeenCalled();
+  });
+
+  it("rolls back when starting candidate idle fails", () => {
+    const root = fakeRoot();
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const previousIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(previousIdle);
+    vi.mocked(candidate.host.playMotion).mockImplementation(() => {
+      throw new Error("idle failed");
+    });
+    const slot = new PetRuntimeSlot(root, oldRuntime);
+    slot.setVisibility(true);
+    slot.playMotion("idle", { priority: 10, loop: true });
+    const swap = slot.prepare(candidate);
+
+    expect(() => swap.activate()).toThrow("idle failed");
+
+    expect(slot.activePetId).toBe("old");
+    expect(root.replaceChildren).toHaveBeenLastCalledWith(oldRuntime.getSurface());
+    expect(oldRuntime.host.setVisibility).toHaveBeenLastCalledWith(true);
+    expect(previousIdle.cancel).not.toHaveBeenCalled();
+    expect(oldRuntime.host.destroy).not.toHaveBeenCalled();
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    swap.rollback();
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+  });
+
   it("prepares the candidate with the current viewport and visibility before activation", () => {
     const slot = new PetRuntimeSlot(fakeRoot(), fakeRuntime("old"));
     const candidate = fakeRuntime("next");

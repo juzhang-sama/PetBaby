@@ -37,6 +37,13 @@ interface PendingRuntimeSwap {
   viewportRestored: boolean;
   visibilityRestored: boolean;
   candidateDestroyed: boolean;
+  candidateIdle: { state: ContinuousIdleMotion; handle: PetMotionHandle } | null;
+}
+
+interface ContinuousIdleMotion {
+  options: { loop: true; priority?: number };
+  handle: PetMotionHandle;
+  cancelled: boolean;
 }
 
 export class PetRuntimeSlot implements PetRenderer {
@@ -44,6 +51,7 @@ export class PetRuntimeSlot implements PetRenderer {
   private viewport: Viewport | null = null;
   private visible = false;
   private pending: PendingRuntimeSwap | null = null;
+  private continuousIdle: ContinuousIdleMotion | null = null;
   private destroyed = false;
 
   constructor(private readonly root: HTMLElement, initial: MountedPetRuntime) {
@@ -105,6 +113,7 @@ export class PetRuntimeSlot implements PetRenderer {
       viewportRestored: false,
       visibilityRestored: false,
       candidateDestroyed: false,
+      candidateIdle: null,
     };
     this.pending = state;
 
@@ -119,6 +128,13 @@ export class PetRuntimeSlot implements PetRenderer {
           state.previous.host.setVisibility(false);
           this.root.replaceChildren(candidate.getSurface());
           this.active = candidate;
+          const continuousIdle = this.continuousIdle;
+          if (continuousIdle && !continuousIdle.cancelled) {
+            state.candidateIdle = {
+              state: continuousIdle,
+              handle: candidate.host.playMotion("idle", continuousIdle.options),
+            };
+          }
           state.activated = true;
         } catch (error) {
           this.abortActivation(state);
@@ -128,6 +144,9 @@ export class PetRuntimeSlot implements PetRenderer {
       commit: () => {
         if (state.settled || !this.isPending(state)) return;
         if (!state.activated || this.active !== candidate) throw new Error("swap is not committable");
+        if (state.candidateIdle && this.continuousIdle === state.candidateIdle.state) {
+          state.candidateIdle.state.handle = state.candidateIdle.handle;
+        }
         state.settled = true;
         this.pending = null;
         state.previous.host.destroy();
@@ -152,7 +171,23 @@ export class PetRuntimeSlot implements PetRenderer {
 
   playMotion(motion: PetMotion, options?: { loop?: boolean; priority?: number }): PetMotionHandle {
     this.assertAlive();
-    return this.active.host.playMotion(motion, options);
+    const handle = this.active.host.playMotion(motion, options);
+    if (motion !== "idle" || options?.loop !== true) return handle;
+
+    const continuousIdle: ContinuousIdleMotion = {
+      options: { ...options, loop: true },
+      handle,
+      cancelled: false,
+    };
+    this.continuousIdle = continuousIdle;
+    return {
+      cancel: () => {
+        if (continuousIdle.cancelled) return;
+        continuousIdle.cancelled = true;
+        continuousIdle.handle.cancel();
+        if (this.continuousIdle === continuousIdle) this.continuousIdle = null;
+      },
+    };
   }
 
   setExpression(value: PetExpression, weight?: number): void {
