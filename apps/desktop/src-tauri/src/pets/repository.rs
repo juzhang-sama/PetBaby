@@ -1,3 +1,4 @@
+use crate::creation::domain::{new_entity_id, CreationMethod};
 use crate::pets::pet::{IdentityMode, Pet, PetSummary, Species};
 use crate::storage::Storage;
 use std::sync::{Arc, Mutex};
@@ -15,15 +16,6 @@ fn now_iso() -> String {
     format!("{secs}")
 }
 
-fn new_id(prefix: &str) -> String {
-    use std::time::{SystemTime, UNIX_EPOCH};
-    let nanos = SystemTime::now()
-        .duration_since(UNIX_EPOCH)
-        .map(|d| d.as_nanos())
-        .unwrap_or(0);
-    format!("{prefix}-{nanos:x}")
-}
-
 impl PetRepository {
     pub fn new(storage: Arc<Mutex<Storage>>) -> Self {
         Self { storage }
@@ -33,46 +25,83 @@ impl PetRepository {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT pet_id, species, identity_mode, created_at FROM pets ORDER BY created_at",
+                "SELECT pet_id, species, identity_mode, display_name, creation_method,
+                        source_template_id, source_template_version, lifecycle, completed_at,
+                        created_at
+                 FROM pets ORDER BY created_at",
             )
             .map_err(|error| error.to_string())?;
         let rows = statement
             .query_map([], |row| {
                 let species: String = row.get(1)?;
                 let mode: String = row.get(2)?;
-                Ok((
-                    row.get::<_, String>(0)?,
-                    species,
-                    mode,
-                    row.get::<_, String>(3)?,
-                ))
+                let method: String = row.get(4)?;
+                Ok(PetSummary {
+                    pet_id: row.get(0)?,
+                    species: parse_species(&species),
+                    identity_mode: parse_mode(&mode),
+                    display_name: row.get(3)?,
+                    creation_method: parse_creation_method(&method),
+                    source_template_id: row.get(5)?,
+                    source_template_version: row.get(6)?,
+                    lifecycle: row.get(7)?,
+                    completed_at: row.get(8)?,
+                    created_at: row.get(9)?,
+                })
             })
             .map_err(|error| error.to_string())?;
         let mut summaries = Vec::new();
         for row in rows {
-            let (pet_id, species, mode, created_at) = row.map_err(|error| error.to_string())?;
-            summaries.push(PetSummary {
-                pet_id,
-                species: parse_species(&species),
-                identity_mode: parse_mode(&mode),
-                created_at,
-            });
+            summaries.push(row.map_err(|error| error.to_string())?);
         }
         Ok(summaries)
     }
 
     pub fn create(&self, species: Species, mode: IdentityMode) -> Result<Pet, String> {
+        let method = method_for_identity_mode(mode);
+        self.insert(species, mode, method, None)
+    }
+
+    pub fn reserve(
+        &self,
+        method: CreationMethod,
+        source_template: Option<(&str, u32)>,
+    ) -> Result<Pet, String> {
+        let mode = match method {
+            CreationMethod::Upload => IdentityMode::RealPet,
+            CreationMethod::Composer => IdentityMode::Guided,
+            CreationMethod::Adoption => IdentityMode::Adopted,
+        };
+        self.insert(Species::Cat, mode, method, source_template)
+    }
+
+    fn insert(
+        &self,
+        species: Species,
+        mode: IdentityMode,
+        method: CreationMethod,
+        source_template: Option<(&str, u32)>,
+    ) -> Result<Pet, String> {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
-        let pet_id = new_id("pet");
+        let pet_id = new_entity_id("pet");
         let now = now_iso();
+        let (source_template_id, source_template_version) = source_template
+            .map(|(id, version)| (Some(id), Some(version)))
+            .unwrap_or((None, None));
         db.execute(
-            "INSERT INTO pets (pet_id, schema_version, species, identity_mode, created_at, updated_at)
-             VALUES (?1, 1, ?2, ?3, ?4, ?4)",
+            "INSERT INTO pets
+             (pet_id, schema_version, species, identity_mode, display_name, creation_method,
+              source_template_id, source_template_version, lifecycle, completed_at,
+              created_at, updated_at)
+             VALUES (?1, 1, ?2, ?3, NULL, ?4, ?5, ?6, 'draft', NULL, ?7, ?7)",
             rusqlite::params![
                 pet_id,
                 format!("{species:?}").to_lowercase(),
                 format!("{mode:?}").to_lowercase(),
-                now
+                creation_method_value(method),
+                source_template_id,
+                source_template_version,
+                now,
             ],
         )
         .map_err(|error| error.to_string())?;
@@ -81,6 +110,12 @@ impl PetRepository {
             schema_version: 1,
             species,
             identity_mode: mode,
+            display_name: None,
+            creation_method: method,
+            source_template_id: source_template_id.map(str::to_owned),
+            source_template_version,
+            lifecycle: "draft".into(),
+            completed_at: None,
             created_at: now.clone(),
             updated_at: now,
         })
@@ -90,7 +125,9 @@ impl PetRepository {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
         let mut statement = db
             .prepare(
-                "SELECT pet_id, schema_version, species, identity_mode, created_at, updated_at
+                "SELECT pet_id, schema_version, species, identity_mode, display_name,
+                        creation_method, source_template_id, source_template_version,
+                        lifecycle, completed_at, created_at, updated_at
                  FROM pets WHERE pet_id = ?1",
             )
             .map_err(|error| error.to_string())?;
@@ -98,13 +135,20 @@ impl PetRepository {
             .query_map(rusqlite::params![pet_id], |row| {
                 let species: String = row.get(2)?;
                 let mode: String = row.get(3)?;
+                let method: String = row.get(5)?;
                 Ok(Pet {
                     pet_id: row.get(0)?,
                     schema_version: row.get(1)?,
                     species: parse_species(&species),
                     identity_mode: parse_mode(&mode),
-                    created_at: row.get(4)?,
-                    updated_at: row.get(5)?,
+                    display_name: row.get(4)?,
+                    creation_method: parse_creation_method(&method),
+                    source_template_id: row.get(6)?,
+                    source_template_version: row.get(7)?,
+                    lifecycle: row.get(8)?,
+                    completed_at: row.get(9)?,
+                    created_at: row.get(10)?,
+                    updated_at: row.get(11)?,
                 })
             })
             .map_err(|error| error.to_string())?;
@@ -148,6 +192,7 @@ fn parse_mode(value: &str) -> IdentityMode {
 #[cfg(test)]
 mod tests {
     use super::*;
+    use crate::creation::domain::CreationMethod;
     use crate::pets::pet::{IdentityMode, Species};
     use crate::storage::Storage;
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -192,5 +237,65 @@ mod tests {
         assert!(repo.get(&pet.pet_id).unwrap().is_none());
         assert!(repo.delete(&pet.pet_id).is_err());
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reserve_creates_a_cat_draft_with_creation_metadata() {
+        let (repo, root) = temp_repo();
+        let pet = repo
+            .reserve(CreationMethod::Adoption, Some(("template-a", 7)))
+            .unwrap();
+        assert_eq!(pet.species, Species::Cat);
+        assert_eq!(pet.identity_mode, IdentityMode::Adopted);
+        assert_eq!(pet.creation_method, CreationMethod::Adoption);
+        assert_eq!(pet.source_template_id.as_deref(), Some("template-a"));
+        assert_eq!(pet.source_template_version, Some(7));
+        assert_eq!(pet.lifecycle, "draft");
+        assert_eq!(pet.display_name, None);
+        assert_eq!(pet.completed_at, None);
+
+        let loaded = repo.get(&pet.pet_id).unwrap().unwrap();
+        assert_eq!(loaded, pet);
+        let listed = repo.list().unwrap();
+        assert_eq!(listed.len(), 1);
+        assert_eq!(listed[0].creation_method, CreationMethod::Adoption);
+        assert_eq!(listed[0].source_template_id.as_deref(), Some("template-a"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn legacy_create_preserves_species_and_identity_while_mapping_method() {
+        let (repo, root) = temp_repo();
+        let pet = repo.create(Species::Dog, IdentityMode::Guided).unwrap();
+        assert_eq!(pet.species, Species::Dog);
+        assert_eq!(pet.identity_mode, IdentityMode::Guided);
+        assert_eq!(pet.creation_method, CreationMethod::Composer);
+        assert_eq!(pet.source_template_id, None);
+        assert_eq!(pet.source_template_version, None);
+        let _ = std::fs::remove_dir_all(root);
+    }
+}
+
+fn creation_method_value(method: CreationMethod) -> &'static str {
+    match method {
+        CreationMethod::Upload => "upload",
+        CreationMethod::Composer => "composer",
+        CreationMethod::Adoption => "adoption",
+    }
+}
+
+fn method_for_identity_mode(mode: IdentityMode) -> CreationMethod {
+    match mode {
+        IdentityMode::Guided => CreationMethod::Composer,
+        IdentityMode::Adopted => CreationMethod::Adoption,
+        IdentityMode::RealPet | IdentityMode::Reference => CreationMethod::Upload,
+    }
+}
+
+fn parse_creation_method(value: &str) -> CreationMethod {
+    match value {
+        "composer" => CreationMethod::Composer,
+        "adoption" => CreationMethod::Adoption,
+        _ => CreationMethod::Upload,
     }
 }

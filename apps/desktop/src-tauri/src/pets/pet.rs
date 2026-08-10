@@ -1,3 +1,4 @@
+use crate::creation::domain::CreationMethod;
 use serde::{Deserialize, Serialize};
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Deserialize, Serialize)]
@@ -23,6 +24,12 @@ pub struct Pet {
     pub schema_version: i32,
     pub species: Species,
     pub identity_mode: IdentityMode,
+    pub display_name: Option<String>,
+    pub creation_method: CreationMethod,
+    pub source_template_id: Option<String>,
+    pub source_template_version: Option<u32>,
+    pub lifecycle: String,
+    pub completed_at: Option<String>,
     pub created_at: String,
     pub updated_at: String,
 }
@@ -33,6 +40,12 @@ pub struct PetSummary {
     pub pet_id: String,
     pub species: Species,
     pub identity_mode: IdentityMode,
+    pub display_name: Option<String>,
+    pub creation_method: CreationMethod,
+    pub source_template_id: Option<String>,
+    pub source_template_version: Option<u32>,
+    pub lifecycle: String,
+    pub completed_at: Option<String>,
     pub created_at: String,
 }
 

@@ -26,6 +26,7 @@ sha2 = "=0.10.9"
 tauri = { version = "=2.11.5", features = ["tray-icon"] }
 thiserror = "=2.0.19"
 tokio = { version = "=1.47.2", features = ["time"] }
+unicode-segmentation = "=1.13.3"
 windows-sys = { version = "=0.61.2", features = [
   "Win32_Foundation",
   "Win32_Graphics_Gdi",

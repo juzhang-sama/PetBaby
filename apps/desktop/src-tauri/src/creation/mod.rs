@@ -1,3 +1,5 @@
+pub mod domain;
+pub mod name;
 pub mod profiles;
 
 use crate::storage::Storage;
