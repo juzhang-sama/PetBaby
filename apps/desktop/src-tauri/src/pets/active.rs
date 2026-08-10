@@ -138,27 +138,46 @@ impl ActivePetService {
             )
             .optional()
             .map_err(|error| error.to_string())?;
-        if current.as_deref() != Some(pet_id) {
+        let already_rolled_back = current.as_deref() == Some(previous_pet_id);
+        if !already_rolled_back && current.as_deref() != Some(pet_id) {
             return Err("active pet changed before switch rollback".into());
         }
         if let Some(variant_id) = accepted_variant_id {
-            let affected = tx
-                .execute(
-                    "UPDATE appearance_variants SET accepted = 0
-                     WHERE variant_id = ?1 AND pet_id = ?2 AND accepted = 1",
-                    rusqlite::params![variant_id, pet_id],
-                )
-                .map_err(|error| error.to_string())?;
-            if affected != 1 {
-                return Err("candidate does not belong to pet".into());
+            if already_rolled_back {
+                let candidate_is_unaccepted: Option<i64> = tx
+                    .query_row(
+                        "SELECT 1 FROM appearance_variants av
+                         WHERE av.variant_id = ?1 AND av.pet_id = ?2 AND av.accepted = 0
+                         AND EXISTS (SELECT 1 FROM variants v WHERE v.variant_id = ?1 AND v.pet_id = ?2)",
+                        rusqlite::params![variant_id, pet_id],
+                        |row| row.get(0),
+                    )
+                    .optional()
+                    .map_err(|error| error.to_string())?;
+                if candidate_is_unaccepted.is_none() {
+                    return Err("candidate does not belong to pet".into());
+                }
+            } else {
+                let affected = tx
+                    .execute(
+                        "UPDATE appearance_variants SET accepted = 0
+                         WHERE variant_id = ?1 AND pet_id = ?2 AND accepted = 1",
+                        rusqlite::params![variant_id, pet_id],
+                    )
+                    .map_err(|error| error.to_string())?;
+                if affected != 1 {
+                    return Err("candidate does not belong to pet".into());
+                }
             }
         }
-        tx.execute(
-            "INSERT INTO state (key, value) VALUES (?1, ?2)
-             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
-            rusqlite::params![ACTIVE_KEY, previous_pet_id],
-        )
-        .map_err(|error| error.to_string())?;
+        if !already_rolled_back {
+            tx.execute(
+                "INSERT INTO state (key, value) VALUES (?1, ?2)
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+                rusqlite::params![ACTIVE_KEY, previous_pet_id],
+            )
+            .map_err(|error| error.to_string())?;
+        }
         tx.commit().map_err(|error| error.to_string())?;
         drop(storage);
         self.session
@@ -413,10 +432,29 @@ mod tests {
         test.service
             .rollback_commit(BUILTIN_PET_ID, "pet-user", Some("variant-1"))
             .unwrap();
+        test.service
+            .rollback_commit(BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .unwrap();
 
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
         assert!(!test.variant_accepted("variant-1"));
         assert_eq!(test.service.active().unwrap(), BUILTIN_PET_ID);
+    }
+
+    #[test]
+    fn rollback_commit_without_a_variant_is_idempotent_after_the_previous_selection_is_restored() {
+        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        test.service.commit("pet-user", None).unwrap();
+
+        test.service
+            .rollback_commit(BUILTIN_PET_ID, "pet-user", None)
+            .unwrap();
+        test.service
+            .rollback_commit(BUILTIN_PET_ID, "pet-user", None)
+            .unwrap();
+
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        assert_eq!(test.session_active().as_deref(), Some(BUILTIN_PET_ID));
     }
 
     #[test]
