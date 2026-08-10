@@ -582,6 +582,58 @@ impl CreationStore {
         })
     }
 
+    pub fn revert_missing_local_composer_candidate(
+        &self,
+        session_id: &str,
+    ) -> Result<bool, String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let eligible: bool = tx
+            .query_row(
+                "SELECT EXISTS(
+                   SELECT 1 FROM creation_sessions cs
+                   WHERE cs.session_id=?1 AND cs.method='composer'
+                     AND (cs.status='candidateReady' OR
+                          (cs.status='retryableFailure' AND cs.last_stable_status='candidateReady'))
+                     AND (SELECT COUNT(*) FROM appearance_variants av
+                          WHERE av.session_id=cs.session_id AND av.pet_id=cs.pet_id
+                            AND av.job_id IS NULL AND av.accepted=0)=1
+                 )",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !eligible {
+            return Ok(false);
+        }
+        let deleted = tx
+            .execute(
+                "DELETE FROM appearance_variants
+                 WHERE session_id=?1 AND job_id IS NULL AND accepted=0",
+                [session_id],
+            )
+            .map_err(|error| error.to_string())?;
+        let updated = tx
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='draft', last_stable_status='draft', current_step='preview',
+                     error=NULL, updated_at=?2
+                 WHERE session_id=?1 AND method='composer'
+                   AND (status='candidateReady' OR
+                        (status='retryableFailure' AND last_stable_status='candidateReady'))",
+                rusqlite::params![session_id, profiles::now_iso()],
+            )
+            .map_err(|error| error.to_string())?;
+        if deleted != 1 || updated != 1 {
+            return Err("missing local composer candidate changed during recovery".into());
+        }
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(true)
+    }
+
     pub fn fail_upload_job(
         &self,
         job_id: &str,

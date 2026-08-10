@@ -334,6 +334,10 @@ body.settings-shell {
 .settings-shell .composer-options { display: grid; grid-template-columns: repeat(auto-fill, minmax(108px, 1fr)); gap: 8px; min-height: 118px; }
 .settings-shell .composer-option { display: grid; place-items: center; gap: 5px; min-height: 104px; padding: 7px; text-align: center; }
 .settings-shell .composer-option[aria-pressed="true"] { border-color: var(--pine); box-shadow: inset 0 0 0 2px color-mix(in srgb, var(--pine) 28%, transparent); }
+.settings-shell .composer-option[aria-disabled="true"] { cursor: not-allowed; opacity: 0.52; }
+.settings-shell .composer-color-swatch,
+.settings-shell .composer-pattern-none { width: 42px; height: 42px; border: 1px solid #c5d2cf; border-radius: 50%; }
+.settings-shell .composer-pattern-none { background: linear-gradient(135deg, transparent 46%, #b86161 47% 53%, transparent 54%), #f7faf9; }
 .settings-shell .composer-option-thumbnail { display: grid; overflow: hidden; width: 88px; height: 74px; place-items: center; border: 1px solid #d7e1df; border-radius: 8px; background: repeating-conic-gradient(#edf1ef 0 25%, #fff 0 50%) 50% / 12px 12px; }
 .settings-shell .composer-option-thumbnail img { width: 100%; height: 100%; object-fit: contain; transform: scale(1.04); }
 .settings-shell .composer-option-thumbnail[data-composer-kind="ears"] img { transform: scale(2.35); transform-origin: 50% 24%; }

@@ -18,7 +18,7 @@ export interface ComposerCreationApiPort {
     recipe: ComposerRecipe,
     currentStep: string,
   ): Promise<CreationSnapshot>;
-  composerCandidate(sessionId: string, pngB64: string): Promise<ComposerCandidateProjection>;
+  composerCandidate(sessionId: string, pngB64?: string): Promise<ComposerCandidateProjection>;
   recoverFinalization(): Promise<RecoveryReport>;
   setName(sessionId: string, displayName: string): Promise<CreationSnapshot>;
   abandon(sessionId: string): Promise<void>;
@@ -34,6 +34,7 @@ export interface ComposerCreationPorts {
   ): Promise<void>;
   exportPng(pack: ComposerPackManifest, recipe: ComposerRecipe): Promise<Blob>;
   blobToBase64(blob: Blob): Promise<string>;
+  assetAvailable(path: string): Promise<boolean>;
   preview: Pick<CandidatePreviewController, "show" | "clear">;
   finalize(sessionId: string): Promise<PetSwitchResult>;
   confirm(message: string): boolean;
@@ -71,6 +72,8 @@ const NEXT_STEP: Record<ComposerSelectionKind, ComposerStep> = {
 interface ComposerMutationCoordinator {
   initialFlight: Promise<CreationSnapshot> | null;
   pendingInitialBody: string | null;
+  initialSnapshot: CreationSnapshot | null;
+  initialRecipe: ComposerRecipe | null;
   sessionTails: Map<string, Promise<void>>;
   candidateFlights: Map<string, Promise<void>>;
   finalizeFlights: Map<string, Promise<PetSwitchResult>>;
@@ -84,6 +87,7 @@ interface PreviewMutationCoordinator {
 
 const MUTATION_COORDINATORS = new WeakMap<ComposerCreationApiPort, ComposerMutationCoordinator>();
 const PREVIEW_COORDINATORS = new WeakMap<object, PreviewMutationCoordinator>();
+const ASSET_HEALTH_FLIGHTS = new WeakMap<ComposerCreationPorts, Map<string, Promise<boolean>>>();
 
 export class ComposerCreationView {
   private packValue: ComposerPackManifest | null = null;
@@ -100,6 +104,7 @@ export class ComposerCreationView {
   private previewCleared = true;
   private elements: ComposerCreationElements | null = null;
   private cleanupListeners: Array<() => void> = [];
+  private assetHealth = new Map<string, boolean>();
   private readonly mutations: ComposerMutationCoordinator;
 
   constructor(private readonly ports: ComposerCreationPorts) {
@@ -109,6 +114,8 @@ export class ComposerCreationView {
   async open(): Promise<void> {
     const visit = this.beginVisit();
     const pack = await this.ports.loadPack();
+    if (!this.isCurrent(visit)) return;
+    await this.preflightAssets(pack, visit);
     if (!this.isCurrent(visit)) return;
     const draft = await this.readDraftAfterSharedMutations(visit);
     if (!this.isCurrent(visit)) return;
@@ -130,6 +137,12 @@ export class ComposerCreationView {
       this.stepValue = parseStep(draft.currentStep, draft);
       this.persistence = "saved";
       this.message = "组合草稿已恢复，当前进度已保存。";
+    } else if (this.mutations.initialSnapshot?.sessionId === draft.sessionId
+      && this.mutations.initialRecipe) {
+      this.composer = ComposerState.fromRecipe(pack, this.mutations.initialRecipe);
+      this.stepValue = "ears";
+      this.persistence = "unsaved";
+      this.message = "首次选择尚未保存，请重试保存。";
     } else {
       this.composer = null;
       this.stepValue = "body";
@@ -142,6 +155,8 @@ export class ComposerCreationView {
   async restore(sessionId: string): Promise<void> {
     const visit = this.beginVisit();
     const pack = await this.ports.loadPack();
+    await this.preflightAssets(pack, visit);
+    if (!this.isCurrent(visit)) return;
     await this.waitForSessionMutations(sessionId);
     let snapshot = await this.ports.creation.snapshot(sessionId);
     if (snapshot.status === "finalizing") {
@@ -166,8 +181,12 @@ export class ComposerCreationView {
   mount(elements: ComposerCreationElements): void {
     this.unmount();
     this.elements = elements;
-    this.listen(elements.previousButton, "click", () => { void this.goRelative(-1); });
-    this.listen(elements.nextButton, "click", () => { void this.goRelative(1); });
+    this.listen(elements.previousButton, "click", () => {
+      this.runDomAction(this.goRelative(-1), "保存上一步失败：");
+    });
+    this.listen(elements.nextButton, "click", () => {
+      this.runDomAction(this.goRelative(1), "保存下一步失败：");
+    });
     this.listen(elements.candidateButton, "click", () => {
       void this.createCandidate(elements.candidatePreview).catch((error) => {
         this.message = `动态预览未准备好：${errorMessage(error)}`;
@@ -180,7 +199,9 @@ export class ComposerCreationView {
         this.renderDom();
       });
     });
-    this.listen(elements.abandonButton, "click", () => { void this.abandon(); });
+    this.listen(elements.abandonButton, "click", () => {
+      this.runDomAction(this.abandon(), "放弃失败，可以重试：");
+    });
     this.renderDom();
   }
 
@@ -207,11 +228,13 @@ export class ComposerCreationView {
         let session = existingSession;
         if (!session) session = await this.ports.creation.start("composer");
         if (session.method !== "composer") throw new Error("creation session is not a composer draft");
+        this.mutations.initialSnapshot = session;
         let durable = session;
         while (this.mutations.pendingInitialBody) {
           const selected = this.mutations.pendingInitialBody;
           this.mutations.pendingInitialBody = null;
           const initial = ComposerState.start(pack, selected);
+          this.mutations.initialRecipe = initial.recipe();
           durable = await enqueueSessionMutation(
             this.mutations,
             session.sessionId,
@@ -223,13 +246,30 @@ export class ComposerCreationView {
         this.mutations.initialFlight = null;
       });
     }
-    const durable = await this.mutations.initialFlight;
+    let durable: CreationSnapshot;
+    try {
+      durable = await this.mutations.initialFlight;
+    } catch (error) {
+      const started = this.mutations.initialSnapshot;
+      const localRecipe = this.mutations.initialRecipe;
+      if (this.isCurrent(visit) && started && localRecipe) {
+        this.applySnapshot(started);
+        this.composer = ComposerState.fromRecipe(pack, localRecipe);
+        this.stepValue = "ears";
+        this.persistence = "unsaved";
+        this.message = `未保存：${errorMessage(error)}。请重试后再关闭。`;
+        await this.renderCurrent(visit);
+      }
+      throw error;
+    }
     if (!this.isCurrent(visit)) return;
     this.applySnapshot(durable);
     if (!durable.recipe) throw new Error("saved composer body did not return a recipe");
     this.composer = ComposerState.fromRecipe(pack, durable.recipe);
     this.stepValue = parseStep(durable.currentStep, durable);
     this.persistence = "saved";
+    this.mutations.initialSnapshot = null;
+    this.mutations.initialRecipe = null;
     this.message = "已保存，可以安全关闭后继续。";
     await this.renderCurrent(visit);
   }
@@ -257,13 +297,19 @@ export class ComposerCreationView {
     const flight = enqueueSessionMutation(this.mutations, sessionId, async (): Promise<void> => {
       if (!this.isCurrent(visit)) return;
       if (!this.canCreateCandidate()) throw new Error("组合草稿尚未保存");
-      const pack = this.requirePack();
-      const recipe = this.requireComposer().recipe();
-      const blob = await this.ports.exportPng(pack, recipe);
-      if (!this.isCurrent(visit)) return;
-      const encoded = await this.ports.blobToBase64(blob);
-      if (!this.isCurrent(visit)) return;
-      const projection = await this.ports.creation.composerCandidate(sessionId, encoded);
+      const locked = isCandidateLocked(this.snapshotValue);
+      let encoded: string | undefined;
+      if (!locked) {
+        const pack = this.requirePack();
+        const recipe = this.requireComposer().recipe();
+        const blob = await this.ports.exportPng(pack, recipe);
+        if (!this.isCurrent(visit)) return;
+        encoded = await this.ports.blobToBase64(blob);
+        if (!this.isCurrent(visit)) return;
+      }
+      const projection = locked
+        ? await this.ports.creation.composerCandidate(sessionId)
+        : await this.ports.creation.composerCandidate(sessionId, encoded!);
       if (!this.isCurrent(visit)) return;
       this.applySnapshot(projection.snapshot);
       this.candidateProjection = projection;
@@ -568,11 +614,26 @@ export class ComposerCreationView {
 
   private async renderCurrent(visit: number): Promise<void> {
     const recipe = this.composer?.recipe();
-    if (recipe) {
+    if (recipe && this.recipeAssetsAvailable(recipe)) {
       await this.ports.render(this.requirePack(), recipe, this.elements?.canvas);
       if (!this.isCurrent(visit)) return;
+    } else if (recipe) {
+      this.message = "当前选择的素材不可用，请选择其他可用选项。";
     }
     this.renderDom();
+  }
+
+  private async preflightAssets(pack: ComposerPackManifest, visit: number): Promise<void> {
+    const paths = composerAssetPaths(pack);
+    const results = await Promise.all(paths.map(async (path) =>
+      [path, await probeAsset(this.ports, path)] as const));
+    if (!this.isCurrent(visit)) return;
+    this.assetHealth = new Map(results);
+  }
+
+  private recipeAssetsAvailable(recipe: ComposerRecipe): boolean {
+    return recipeAssetPaths(this.requirePack(), recipe)
+      .every((path) => this.assetHealth.get(path) === true);
   }
 
   private renderDom(): void {
@@ -580,7 +641,6 @@ export class ComposerCreationView {
     if (!dom) return;
     dom.saveStatus.textContent = saveStateText(this.persistence);
     dom.saveStatus.dataset.state = this.persistence;
-    dom.message.textContent = this.message;
     dom.previousButton.disabled = STEP_ORDER.indexOf(this.stepValue) <= 0;
     dom.nextButton.disabled = this.persistence === "unsaved"
       || STEP_ORDER.indexOf(this.stepValue) >= STEP_ORDER.length - 1;
@@ -588,6 +648,7 @@ export class ComposerCreationView {
     dom.finishButton.disabled = !this.canFinish();
     this.renderSteps(dom.steps);
     this.renderOptions(dom.options);
+    dom.message.textContent = this.message;
   }
 
   private renderSteps(root: HTMLElement): void {
@@ -600,7 +661,9 @@ export class ComposerCreationView {
       button.disabled = !this.composer || this.snapshotValue?.status !== "draft";
       button.addEventListener("click", () => {
         this.stepValue = step;
-        void this.saveSelection(this.requireComposer().recipe(), step);
+        this.runDomAction(
+          this.saveSelection(this.requireComposer().recipe(), step),
+          "保存步骤失败：");
       });
       return button;
     }));
@@ -619,30 +682,45 @@ export class ComposerCreationView {
       id: string;
       label: string;
       image?: string;
+      swatch?: { kind: "color" | "none"; value?: string };
       selected: boolean;
       disabled: boolean;
       reason?: string;
     }> = [];
     if (this.stepValue === "body") {
-      for (const body of pack.bodies) options.push({
-        kind: "body", id: body.id, label: composerOptionLabel(body.id), image: body.image,
-        selected: recipe?.bodyId === body.id, disabled: false,
-      });
+      let usableBodies = 0;
+      for (const body of pack.bodies) {
+        const healthy = this.recipeAssetsAvailable(ComposerState.start(pack, body.id).recipe());
+        if (healthy) usableBodies += 1;
+        options.push({
+          kind: "body", id: body.id, label: composerOptionLabel(body.id), image: body.image,
+          selected: recipe?.bodyId === body.id, disabled: !healthy,
+          reason: healthy ? undefined : "该默认组合的素材不可用",
+        });
+      }
+      if (usableBodies === 0) this.message = "没有可用的完整默认组合，请检查素材包。";
     } else if (this.stepValue === "coat") {
       for (const color of pack.colors) options.push({
         kind: "color", id: color.id, label: composerOptionLabel(color.id),
         selected: recipe?.colorId === color.id, disabled: false,
+        swatch: { kind: "color", value: color.value },
       });
-      for (const pattern of pack.patterns) options.push({
-        kind: "pattern", id: pattern.id, label: composerOptionLabel(pattern.id), image: pattern.image ?? undefined,
-        selected: recipe?.patternId === pattern.id, disabled: false,
-      });
+      for (const pattern of pack.patterns) {
+        const healthy = pattern.image === null || this.assetHealth.get(pattern.image) === true;
+        options.push({
+          kind: "pattern", id: pattern.id, label: composerOptionLabel(pattern.id), image: pattern.image ?? undefined,
+          selected: recipe?.patternId === pattern.id, disabled: !healthy,
+          reason: healthy ? undefined : "该花纹素材不可用",
+          swatch: pattern.image === null ? { kind: "none" } : undefined,
+        });
+      }
     } else {
       const collection = this.stepValue === "ears" ? pack.ears
         : this.stepValue === "eyes" ? pack.eyes
           : this.stepValue === "muzzle" ? pack.muzzles : pack.tails;
       for (const item of collection) {
         const compatible = bodyId !== undefined && item.compatibleBodyIds.includes(bodyId);
+        const healthy = partAssets(item).every((path) => this.assetHealth.get(path) === true);
         const field = `${this.stepValue}Id` as "earsId" | "eyesId" | "muzzleId" | "tailId";
         options.push({
           kind: this.stepValue,
@@ -650,8 +728,9 @@ export class ComposerCreationView {
           label: composerOptionLabel(item.id),
           image: "openImage" in item ? item.openImage : item.image,
           selected: recipe?.[field] === item.id,
-          disabled: !compatible,
-          reason: compatible ? undefined : "与当前身体底型不兼容",
+          disabled: !compatible || !healthy,
+          reason: !compatible ? "与当前身体底型不兼容"
+            : healthy ? undefined : "该选项素材不可用",
         });
       }
     }
@@ -663,6 +742,7 @@ export class ComposerCreationView {
     id: string;
     label: string;
     image?: string;
+    swatch?: { kind: "color" | "none"; value?: string };
     selected: boolean;
     disabled: boolean;
     reason?: string;
@@ -671,7 +751,8 @@ export class ComposerCreationView {
     button.type = "button";
     button.className = "composer-option";
     button.setAttribute("aria-pressed", String(option.selected));
-    button.disabled = option.disabled;
+    button.setAttribute("aria-disabled", String(option.disabled));
+    button.tabIndex = 0;
     if (option.reason) {
       button.title = option.reason;
       button.setAttribute("aria-description", option.reason);
@@ -688,11 +769,24 @@ export class ComposerCreationView {
       thumbnail.append(image);
       button.append(thumbnail);
     }
+    if (option.swatch?.kind === "color") {
+      const swatch = document.createElement("span");
+      swatch.className = "composer-color-swatch";
+      swatch.setAttribute("aria-hidden", "true");
+      swatch.style.backgroundColor = option.swatch.value ?? "transparent";
+      button.append(swatch);
+    } else if (option.swatch?.kind === "none") {
+      const swatch = document.createElement("span");
+      swatch.className = "composer-pattern-none";
+      swatch.setAttribute("aria-hidden", "true");
+      button.append(swatch);
+    }
     const label = document.createElement("span");
     label.className = "composer-option-label";
     label.textContent = option.label;
     button.append(label);
     button.addEventListener("click", () => {
+      if (option.disabled) return;
       const action = option.kind === "body"
         ? this.selectBody(option.id)
         : this.select(option.kind, option.id);
@@ -709,10 +803,59 @@ export class ComposerCreationView {
     this.cleanupListeners.push(() => target.removeEventListener(type, listener));
   }
 
+  private runDomAction(action: Promise<unknown>, prefix: string): void {
+    void action.catch((error) => {
+      this.message = `${prefix}${errorMessage(error)}`;
+      this.renderDom();
+    });
+  }
+
   private unmount(): void {
     for (const cleanup of this.cleanupListeners.splice(0)) cleanup();
     this.elements = null;
   }
+}
+
+type AssetPart = {
+  image?: string;
+  openImage?: string;
+  closedImage?: string;
+  colorMask?: string;
+  patternMask?: string;
+};
+
+function partAssets(part: AssetPart): string[] {
+  return [part.image, part.openImage, part.closedImage, part.colorMask, part.patternMask]
+    .filter((path): path is string => typeof path === "string");
+}
+
+function composerAssetPaths(pack: ComposerPackManifest): string[] {
+  const paths = [
+    ...pack.bodies.flatMap(partAssets),
+    ...pack.ears.flatMap(partAssets),
+    ...pack.eyes.flatMap(partAssets),
+    ...pack.muzzles.flatMap(partAssets),
+    ...pack.tails.flatMap(partAssets),
+    ...pack.patterns.flatMap((pattern) => pattern.image ? [pattern.image] : []),
+  ];
+  return [...new Set(paths)];
+}
+
+function recipeAssetPaths(pack: ComposerPackManifest, recipe: ComposerRecipe): string[] {
+  const body = pack.bodies.find((item) => item.id === recipe.bodyId);
+  const ears = pack.ears.find((item) => item.id === recipe.earsId);
+  const eyes = pack.eyes.find((item) => item.id === recipe.eyesId);
+  const muzzle = pack.muzzles.find((item) => item.id === recipe.muzzleId);
+  const tail = pack.tails.find((item) => item.id === recipe.tailId);
+  const pattern = pack.patterns.find((item) => item.id === recipe.patternId);
+  return [...new Set([
+    ...(body ? partAssets(body) : []),
+    ...(ears ? partAssets(ears) : []),
+    ...(eyes ? partAssets(eyes) : []),
+    ...(muzzle ? partAssets(muzzle) : []),
+    ...(tail ? partAssets(tail) : []),
+    ...(pattern?.image ? [pattern.image] : []),
+  ])];
 }
 
 function mutationCoordinatorFor(creation: ComposerCreationApiPort): ComposerMutationCoordinator {
@@ -721,6 +864,8 @@ function mutationCoordinatorFor(creation: ComposerCreationApiPort): ComposerMuta
   const created: ComposerMutationCoordinator = {
     initialFlight: null,
     pendingInitialBody: null,
+    initialSnapshot: null,
+    initialRecipe: null,
     sessionTails: new Map(),
     candidateFlights: new Map(),
     finalizeFlights: new Map(),
@@ -729,6 +874,19 @@ function mutationCoordinatorFor(creation: ComposerCreationApiPort): ComposerMuta
   };
   MUTATION_COORDINATORS.set(creation, created);
   return created;
+}
+
+function probeAsset(ports: ComposerCreationPorts, path: string): Promise<boolean> {
+  let cache = ASSET_HEALTH_FLIGHTS.get(ports);
+  if (!cache) {
+    cache = new Map();
+    ASSET_HEALTH_FLIGHTS.set(ports, cache);
+  }
+  const existing = cache.get(path);
+  if (existing) return existing;
+  const flight = ports.assetAvailable(path).catch(() => false);
+  cache.set(path, flight);
+  return flight;
 }
 
 function enqueueSessionMutation<T>(

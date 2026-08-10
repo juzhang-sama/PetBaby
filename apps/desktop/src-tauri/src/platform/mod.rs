@@ -72,6 +72,21 @@ pub(crate) fn durable_replace_file(
     }
 }
 
+pub(crate) fn durable_move_directory(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::durable_move_directory(source, target)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (source, target);
+        Err("durable composer directory publication currently requires Windows".into())
+    }
+}
+
 pub(crate) fn sync_existing_directory_entry(path: &std::path::Path) -> Result<(), String> {
     #[cfg(unix)]
     {

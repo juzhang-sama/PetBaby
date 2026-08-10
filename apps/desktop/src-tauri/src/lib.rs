@@ -391,9 +391,9 @@ fn creation_composer_save(
 fn creation_composer_candidate(
     service: tauri::State<'_, creation::SharedCreationService>,
     session_id: String,
-    png_b64: String,
+    png_b64: Option<String>,
 ) -> Result<creation::service::ComposerCandidateProjection, String> {
-    service.store_composer_candidate(&session_id, &png_b64)
+    service.store_composer_candidate(&session_id, png_b64.as_deref())
 }
 
 #[tauri::command]

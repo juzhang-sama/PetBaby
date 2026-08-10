@@ -51,7 +51,7 @@ export function createCreationApi(invoke: InvokePort) {
       invoke<void>("creation_abandon", { sessionId }),
     composerSave: (sessionId: string, recipe: ComposerRecipe, currentStep: string) =>
       invoke<CreationSnapshot>("creation_composer_save", { sessionId, recipe, currentStep }),
-    composerCandidate: (sessionId: string, pngB64: string) =>
+    composerCandidate: (sessionId: string, pngB64?: string) =>
       invoke<ComposerCandidateProjection>("creation_composer_candidate", { sessionId, pngB64 }),
     uploadStart: (
       sessionId: string,

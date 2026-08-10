@@ -9,7 +9,61 @@ import {
   ComposerCreationView,
   composerOptionLabel,
   type ComposerCreationPorts,
+  type ComposerCreationElements,
 } from "./composer-creation-view";
+
+class FakeElement {
+  disabled = false;
+  textContent = "";
+  value = "";
+  className = "";
+  title = "";
+  tabIndex = 0;
+  src = "";
+  alt = "";
+  loading = "";
+  dataset: Record<string, string> = {};
+  style: Record<string, string> = {};
+  children: FakeElement[] = [];
+  private readonly attributes = new Map<string, string>();
+  private readonly listeners = new Map<string, Set<EventListener>>();
+
+  addEventListener(type: string, listener: EventListener): void {
+    const listeners = this.listeners.get(type) ?? new Set<EventListener>();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type: string): void {
+    for (const listener of this.listeners.get(type) ?? []) listener({ preventDefault() {} } as Event);
+  }
+
+  replaceChildren(...children: FakeElement[]): void { this.children = children; }
+  append(...children: FakeElement[]): void { this.children.push(...children); }
+  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+  removeAttribute(name: string): void { this.attributes.delete(name); }
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
+}
+
+function composerElements(): { raw: Record<keyof ComposerCreationElements, FakeElement>; typed: ComposerCreationElements } {
+  const raw = {
+    canvas: new FakeElement(), steps: new FakeElement(), options: new FakeElement(),
+    saveStatus: new FakeElement(), message: new FakeElement(), previousButton: new FakeElement(),
+    nextButton: new FakeElement(), candidateButton: new FakeElement(), candidatePreview: new FakeElement(),
+    nameInput: new FakeElement(), finishButton: new FakeElement(), abandonButton: new FakeElement(),
+  };
+  return { raw, typed: raw as unknown as ComposerCreationElements };
+}
+
+function stubComposerDocument(): void {
+  vi.stubGlobal("document", {
+    createElement: vi.fn(() => new FakeElement()),
+  });
+}
 
 function pack() {
   const path = fileURLToPath(new URL("../../public/creation-content/composer/cat-cute-v1/manifest.json", import.meta.url));
@@ -92,6 +146,7 @@ function composerPorts(options: { draft?: CreationSnapshot | null } = {}) {
     render: vi.fn(async () => undefined),
     exportPng: vi.fn(async () => new Blob(["png"], { type: "image/png" })),
     blobToBase64: vi.fn(async () => "encoded-png"),
+    assetAvailable: vi.fn(async () => true),
     preview: { show: vi.fn(async () => undefined), clear: vi.fn() },
     finalize: vi.fn(async (): Promise<PetSwitchResult> => {
       if (durable) durable = {
@@ -159,6 +214,23 @@ describe("ComposerCreationView", () => {
 
     expect(test.creation.start).toHaveBeenCalledTimes(1);
     expect(test.creation.composerSave).toHaveBeenCalledTimes(1);
+  });
+
+  it("keeps the started session and unsaved local recipe when the first save fails", async () => {
+    const test = composerPorts();
+    vi.mocked(test.creation.composerSave).mockRejectedValueOnce(new Error("disk busy"));
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+
+    await expect(view.selectBody("body-round")).rejects.toThrow("disk busy");
+
+    expect(view.sessionId()).toBe("session-composer");
+    expect(view.recipe()?.bodyId).toBe("body-round");
+    expect(view.saveState()).toBe("unsaved");
+    await view.retrySave();
+    expect(test.creation.start).toHaveBeenCalledTimes(1);
+    expect(test.creation.composerSave).toHaveBeenCalledTimes(2);
+    expect(view.saveState()).toBe("saved");
   });
 
   it("serializes different selections so a slow old save cannot overwrite the latest recipe", async () => {
@@ -413,6 +485,27 @@ describe("ComposerCreationView", () => {
     expect(reopened.creationSnapshot()?.status).toBe("completed");
   });
 
+  it("reads a durable candidate projection without re-exporting PNG after reopen", async () => {
+    const test = composerPorts();
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    await first.selectBody("body-round");
+    await first.createCandidate({} as HTMLElement);
+    first.destroy();
+    vi.mocked(test.ports.exportPng).mockClear();
+    vi.mocked(test.ports.blobToBase64).mockClear();
+    vi.mocked(test.creation.composerCandidate).mockClear();
+
+    const reopened = new ComposerCreationView(test.ports);
+    await reopened.open();
+    await reopened.createCandidate({} as HTMLElement);
+
+    expect(test.ports.exportPng).not.toHaveBeenCalled();
+    expect(test.ports.blobToBase64).not.toHaveBeenCalled();
+    expect(test.creation.composerCandidate).toHaveBeenCalledWith("session-composer");
+    expect(reopened.canFinish()).toBe(true);
+  });
+
   it("recovers finalizing through restore(sessionId), not only through draft open", async () => {
     const test = composerPorts();
     const first = new ComposerCreationView(test.ports);
@@ -608,6 +701,125 @@ describe("ComposerCreationView", () => {
 
     expect(reopened.sessionId()).toBeNull();
     expect(reopened.recipe()).toBeNull();
+  });
+
+  it("catches abandon listener rejection and renders a retryable error without unhandled rejection", async () => {
+    stubComposerDocument();
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    vi.mocked(test.creation.abandon).mockRejectedValueOnce(new Error("database busy"));
+    const elements = composerElements();
+    view.mount(elements.typed);
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+
+    elements.raw.abandonButton.dispatch("click");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    process.off("unhandledRejection", onUnhandled);
+
+    expect(unhandled).toEqual([]);
+    expect(elements.raw.message.textContent).toContain("database busy");
+    expect(view.sessionId()).toBe("session-composer");
+    vi.unstubAllGlobals();
+  });
+
+  it("catches previous and step save rejections without leaking unhandled promises", async () => {
+    stubComposerDocument();
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    const elements = composerElements();
+    view.mount(elements.typed);
+    vi.mocked(test.creation.composerSave)
+      .mockRejectedValueOnce(new Error("previous save busy"))
+      .mockRejectedValueOnce(new Error("step save busy"));
+    const unhandled: unknown[] = [];
+    const onUnhandled = (reason: unknown) => { unhandled.push(reason); };
+    process.on("unhandledRejection", onUnhandled);
+
+    elements.raw.previousButton.dispatch("click");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    const step = elements.raw.steps.children[2]!;
+    step.dispatch("click");
+    await new Promise((resolve) => setTimeout(resolve, 10));
+    process.off("unhandledRejection", onUnhandled);
+
+    expect(unhandled).toEqual([]);
+    expect(elements.raw.message.textContent).toContain("step save busy");
+    vi.unstubAllGlobals();
+  });
+
+  it("preflights broken assets, keeps unavailable choices focusable, and preserves a healthy default body", async () => {
+    stubComposerDocument();
+    const test = composerPorts();
+    Object.assign(test.ports, {
+      assetAvailable: vi.fn(async (path: string) => path !== "parts/ears/ears-round.png"),
+    });
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    const elements = composerElements();
+    view.mount(elements.typed);
+    const round = elements.raw.options.children[0]!;
+    const slim = elements.raw.options.children[1]!;
+
+    expect(round.disabled).toBe(false);
+    expect(round.getAttribute("aria-disabled")).toBe("true");
+    expect(round.getAttribute("aria-description")).toContain("素材");
+    expect(round.tabIndex).toBe(0);
+    expect(slim.getAttribute("aria-disabled")).not.toBe("true");
+    round.dispatch("click");
+    await Promise.resolve();
+    expect(test.creation.start).not.toHaveBeenCalled();
+    vi.unstubAllGlobals();
+  });
+
+  it("blocks composer entry with an explicit message when no complete default body remains", async () => {
+    stubComposerDocument();
+    const test = composerPorts();
+    const brokenDefaults = new Set([
+      "parts/ears/ears-round.png",
+      "parts/ears/ears-pointed.png",
+      "parts/ears/ears-tufted.png",
+    ]);
+    Object.assign(test.ports, {
+      assetAvailable: vi.fn(async (path: string) => !brokenDefaults.has(path)),
+    });
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    const elements = composerElements();
+    view.mount(elements.typed);
+
+    expect(elements.raw.options.children).toHaveLength(3);
+    expect(elements.raw.options.children.every((button) =>
+      button.getAttribute("aria-disabled") === "true")).toBe(true);
+    expect(elements.raw.message.textContent).toContain("没有可用");
+    vi.unstubAllGlobals();
+  });
+
+  it("renders visual swatches for colors and the no-pattern choice", async () => {
+    stubComposerDocument();
+    const manifest = pack();
+    const body = manifest.bodies[0]!;
+    const recipe = {
+      recipeVersion: 1, packId: manifest.packId, packVersion: manifest.packVersion,
+      layerContractVersion: manifest.layerContractVersion, bodyId: body.id,
+      ...body.defaults,
+    };
+    const test = composerPorts({ draft: snapshot({ recipe, currentStep: "coat" }) });
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    const elements = composerElements();
+    view.mount(elements.typed);
+
+    expect(elements.raw.options.children.some((button) =>
+      button.children.some((child) => child.className === "composer-color-swatch"))).toBe(true);
+    expect(elements.raw.options.children.some((button) =>
+      button.children.some((child) => child.className === "composer-pattern-none"))).toBe(true);
+    vi.unstubAllGlobals();
   });
 
   it("uses one preview canvas contract with accessible option and step controls", () => {

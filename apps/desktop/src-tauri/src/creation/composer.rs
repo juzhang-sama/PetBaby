@@ -580,6 +580,7 @@ fn validate_png_asset(pack_root: &Path, relative_path: &str) -> Result<(), Strin
     Ok(())
 }
 
+#[allow(dead_code)] // retained for full-pack release validation and contract tests
 pub fn validate_pack(
     pack: &ComposerPackManifest,
     content_root: &ContentRoot,
@@ -662,21 +663,131 @@ pub fn validate_recipe(pack: &ComposerPackManifest, recipe: &ComposerRecipe) -> 
     }
 }
 
-pub fn load_production_pack(content_root: &ContentRoot) -> Result<ComposerPackManifest, String> {
-    let manifest = content_root
-        .as_path()
-        .join("composer")
-        .join("cat-cute-v1")
-        .join("manifest.json");
+pub fn recipe_matches_body_defaults(
+    pack: &ComposerPackManifest,
+    recipe: &ComposerRecipe,
+) -> Result<bool, String> {
+    validate_recipe(pack, recipe)?;
+    let body = pack
+        .bodies
+        .iter()
+        .find(|body| body.id == recipe.body_id)
+        .ok_or_else(|| format!("bodyId does not exist: {}", recipe.body_id))?;
+    Ok(recipe.ears_id == body.defaults.ears_id
+        && recipe.eyes_id == body.defaults.eyes_id
+        && recipe.muzzle_id == body.defaults.muzzle_id
+        && recipe.tail_id == body.defaults.tail_id
+        && recipe.color_id == body.defaults.color_id
+        && recipe.pattern_id == body.defaults.pattern_id)
+}
+
+fn production_pack_root(content_root: &ContentRoot) -> Result<PathBuf, String> {
+    let content_root = content_root.as_path();
+    let canonical_content = checked_directory(content_root, "content root")?;
+    let canonical_composer = checked_directory(&content_root.join("composer"), "composer root")?;
+    if canonical_composer.parent() != Some(canonical_content.as_path()) {
+        return Err("composer root escapes the content root".into());
+    }
+    let canonical_pack = checked_directory(
+        &content_root.join("composer").join("cat-cute-v1"),
+        "composer pack root",
+    )?;
+    if canonical_pack.parent() != Some(canonical_composer.as_path()) {
+        return Err("composer pack root escapes the content root".into());
+    }
+    Ok(canonical_pack)
+}
+
+pub fn validate_recipe_assets(
+    pack: &ComposerPackManifest,
+    content_root: &ContentRoot,
+    recipe: &ComposerRecipe,
+) -> Result<(), String> {
+    validate_recipe(pack, recipe)?;
+    let pack_root = production_pack_root(content_root)?;
+    let body = pack
+        .bodies
+        .iter()
+        .find(|item| item.id == recipe.body_id)
+        .unwrap();
+    let ears = pack
+        .ears
+        .iter()
+        .find(|item| item.id == recipe.ears_id)
+        .unwrap();
+    let eyes = pack
+        .eyes
+        .iter()
+        .find(|item| item.id == recipe.eyes_id)
+        .unwrap();
+    let muzzle = pack
+        .muzzles
+        .iter()
+        .find(|item| item.id == recipe.muzzle_id)
+        .unwrap();
+    let tail = pack
+        .tails
+        .iter()
+        .find(|item| item.id == recipe.tail_id)
+        .unwrap();
+    let pattern = pack
+        .patterns
+        .iter()
+        .find(|item| item.id == recipe.pattern_id)
+        .unwrap();
+    let mut selected = vec![
+        body.image.as_str(),
+        ears.image.as_str(),
+        eyes.open_image.as_str(),
+        eyes.closed_image.as_str(),
+        muzzle.image.as_str(),
+        tail.image.as_str(),
+    ];
+    for path in [
+        body.color_mask.as_deref(),
+        body.pattern_mask.as_deref(),
+        ears.color_mask.as_deref(),
+        ears.pattern_mask.as_deref(),
+        eyes.color_mask.as_deref(),
+        eyes.pattern_mask.as_deref(),
+        muzzle.color_mask.as_deref(),
+        muzzle.pattern_mask.as_deref(),
+        tail.color_mask.as_deref(),
+        tail.pattern_mask.as_deref(),
+        pattern.image.as_deref(),
+    ]
+    .into_iter()
+    .flatten()
+    {
+        selected.push(path);
+    }
+    selected.sort_unstable();
+    selected.dedup();
+    for relative_path in selected {
+        validate_png_asset(&pack_root, relative_path)?;
+    }
+    Ok(())
+}
+
+pub fn load_production_pack_manifest(
+    content_root: &ContentRoot,
+) -> Result<ComposerPackManifest, String> {
+    let pack_root = production_pack_root(content_root)?;
+    let manifest = pack_root.join("manifest.json");
     let metadata = std::fs::symlink_metadata(&manifest)
         .map_err(|error| format!("composer manifest is unavailable: {error}"))?;
     if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
         return Err("composer manifest must be a regular trusted file".into());
     }
-    let pack = parse_pack(
+    parse_pack(
         &std::fs::read_to_string(&manifest)
             .map_err(|error| format!("composer manifest cannot be read: {error}"))?,
-    )?;
+    )
+}
+
+#[allow(dead_code)] // retained for release/content-contract validation
+pub fn load_production_pack(content_root: &ContentRoot) -> Result<ComposerPackManifest, String> {
+    let pack = load_production_pack_manifest(content_root)?;
     validate_pack(&pack, content_root)?;
     Ok(pack)
 }
@@ -886,6 +997,47 @@ mod tests {
                 self.gate.clone(),
             )
         }
+
+        fn service_for_content(&self, content: &Path) -> CreationService {
+            let session: SharedActivePetSession = Arc::new(Mutex::new(ActivePetSession::new()));
+            session
+                .lock()
+                .unwrap()
+                .set_active(BUILTIN_PET_ID.into())
+                .unwrap();
+            let active = Arc::new(ActivePetService::new(
+                self.storage.clone(),
+                session,
+                self.root.join("pets"),
+                self.gate.clone(),
+            ));
+            let deletion = Arc::new(PetDeletionService::new(
+                self.storage.clone(),
+                active,
+                self.root.clone(),
+                self.gate.clone(),
+            ));
+            CreationService::new(
+                self.storage.clone(),
+                self.root.clone(),
+                deletion,
+                crate::creation::content::test_content_root(content).unwrap(),
+                self.gate.clone(),
+            )
+        }
+    }
+
+    fn copy_tree(source: &Path, target: &Path) {
+        std::fs::create_dir_all(target).unwrap();
+        for entry in std::fs::read_dir(source).unwrap() {
+            let entry = entry.unwrap();
+            let destination = target.join(entry.file_name());
+            if entry.file_type().unwrap().is_dir() {
+                copy_tree(&entry.path(), &destination);
+            } else {
+                std::fs::copy(entry.path(), destination).unwrap();
+            }
+        }
     }
 
     fn production_recipe(body_id: &str) -> ComposerRecipe {
@@ -925,6 +1077,72 @@ mod tests {
         let restored = reopened.snapshot(&session.session_id).unwrap();
         assert_eq!(restored.recipe, Some(recipe));
         assert_eq!(restored.current_step, "ears");
+    }
+
+    #[test]
+    fn first_body_save_rejects_a_recipe_that_does_not_equal_that_bodys_defaults() {
+        let test = ComposerServiceHarness::new();
+        let session = test.service.start(CreationMethod::Composer).unwrap();
+        let mut recipe = production_recipe("body-round");
+        recipe.ears_id = "ears-folded".into();
+
+        assert!(test
+            .service
+            .save_composer_recipe(&session.session_id, &recipe, "ears")
+            .is_err());
+        let restored = test.service.snapshot(&session.session_id).unwrap();
+        assert_eq!(restored.recipe, None);
+        assert_eq!(restored.current_step, "composer");
+    }
+
+    #[test]
+    fn an_unselected_broken_asset_does_not_block_a_healthy_default_recipe() {
+        let test = ComposerServiceHarness::new();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../public/creation-content/composer/cat-cute-v1");
+        let content = test.root.join("partial-content");
+        let copied_pack = content.join("composer/cat-cute-v1");
+        copy_tree(&source, &copied_pack);
+        std::fs::write(
+            copied_pack.join("parts/ears/ears-pointed.png"),
+            b"broken but unselected",
+        )
+        .unwrap();
+        let service = test.service_for_content(&content);
+        let session = service.start(CreationMethod::Composer).unwrap();
+
+        let saved = service.save_composer_recipe(
+            &session.session_id,
+            &production_recipe("body-round"),
+            "ears",
+        );
+
+        assert!(saved.is_ok(), "unselected asset blocked save: {saved:?}");
+    }
+
+    #[test]
+    fn a_broken_asset_selected_by_the_recipe_is_rejected() {
+        let test = ComposerServiceHarness::new();
+        let source = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("../public/creation-content/composer/cat-cute-v1");
+        let content = test.root.join("selected-broken-content");
+        let copied_pack = content.join("composer/cat-cute-v1");
+        copy_tree(&source, &copied_pack);
+        std::fs::write(
+            copied_pack.join("parts/ears/ears-round.png"),
+            b"broken selected asset",
+        )
+        .unwrap();
+        let service = test.service_for_content(&content);
+        let session = service.start(CreationMethod::Composer).unwrap();
+
+        assert!(service
+            .save_composer_recipe(
+                &session.session_id,
+                &production_recipe("body-round"),
+                "ears",
+            )
+            .is_err());
     }
 
     #[test]

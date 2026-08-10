@@ -6,37 +6,72 @@ use windows_sys::Win32::{
     },
 };
 
-pub(crate) fn durable_replace_file(
+pub(crate) fn encode_windows_path(path: &std::path::Path) -> Result<Vec<u16>, String> {
+    use std::os::windows::ffi::OsStrExt;
+    let absolute = if path.is_absolute() {
+        path.to_path_buf()
+    } else {
+        std::env::current_dir()
+            .map_err(|error| error.to_string())?
+            .join(path)
+    };
+    let raw: Vec<u16> = absolute.as_os_str().encode_wide().collect();
+    if raw.contains(&0) {
+        return Err("Windows path contains an embedded NUL".into());
+    }
+    let slash = b'\\' as u16;
+    let question = b'?' as u16;
+    let mut encoded = if raw.starts_with(&[slash, slash, question, slash]) {
+        raw
+    } else if raw.starts_with(&[slash, slash]) {
+        let mut extended = "\\\\?\\UNC\\".encode_utf16().collect::<Vec<_>>();
+        extended.extend_from_slice(&raw[2..]);
+        extended
+    } else {
+        let mut extended = "\\\\?\\".encode_utf16().collect::<Vec<_>>();
+        extended.extend_from_slice(&raw);
+        extended
+    };
+    encoded.push(0);
+    Ok(encoded)
+}
+
+fn durable_move(
     source: &std::path::Path,
     target: &std::path::Path,
+    replace: bool,
 ) -> Result<(), String> {
-    use std::os::windows::ffi::OsStrExt;
     use windows_sys::Win32::Storage::FileSystem::{
         MoveFileExW, MOVEFILE_REPLACE_EXISTING, MOVEFILE_WRITE_THROUGH,
     };
-
-    let encode_path = |path: &std::path::Path| -> Result<Vec<u16>, String> {
-        let mut encoded: Vec<u16> = path.as_os_str().encode_wide().collect();
-        if encoded.contains(&0) {
-            return Err("Windows path contains an embedded NUL".into());
-        }
-        encoded.push(0);
-        Ok(encoded)
-    };
-    let source = encode_path(source)?;
-    let target = encode_path(target)?;
-    let moved = unsafe {
-        MoveFileExW(
-            source.as_ptr(),
-            target.as_ptr(),
-            MOVEFILE_REPLACE_EXISTING | MOVEFILE_WRITE_THROUGH,
-        )
-    };
+    let source = encode_windows_path(source)?;
+    let target = encode_windows_path(target)?;
+    let flags = MOVEFILE_WRITE_THROUGH
+        | if replace {
+            MOVEFILE_REPLACE_EXISTING
+        } else {
+            0
+        };
+    let moved = unsafe { MoveFileExW(source.as_ptr(), target.as_ptr(), flags) };
     if moved == 0 {
         Err(std::io::Error::last_os_error().to_string())
     } else {
         Ok(())
     }
+}
+
+pub(crate) fn durable_replace_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    durable_move(source, target, true)
+}
+
+pub(crate) fn durable_move_directory(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    durable_move(source, target, false)
 }
 
 use crate::{

@@ -2,18 +2,36 @@ use crate::creation::domain::{new_entity_id, ComposerRecipe};
 use crate::runtime_assets::motion_profile::{parse_motion_profile, MotionProfileV1};
 use base64::Engine as _;
 use image::ImageDecoder as _;
+use sha2::{Digest, Sha256};
 use std::io::{Cursor, Read, Seek, Write};
 use std::path::{Path, PathBuf};
 
 #[cfg(windows)]
 use std::os::windows::{
-    ffi::OsStrExt,
     fs::OpenOptionsExt,
     io::{AsRawHandle, FromRawHandle, OwnedHandle},
 };
 
 const MAX_COMPOSER_PNG_BYTES: usize = 10 * 1024 * 1024;
 const MAX_COMPOSER_B64_BYTES: usize = MAX_COMPOSER_PNG_BYTES.div_ceil(3) * 4;
+const COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent.json";
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct ComposerPublishIntent {
+    version: u32,
+    session_id: String,
+    stage_name: String,
+    body_sha256: String,
+    profile_sha256: String,
+    recipe_sha256: String,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    volume_serial: u32,
+    file_index: u64,
+}
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -96,10 +114,13 @@ pub struct PublishedComposerCandidate {
     _parent_guards: Vec<OwnedDirectoryGuard>,
     candidate_guard: Option<OwnedDirectoryGuard>,
     file_guards: Vec<std::fs::File>,
+    intent_path: PathBuf,
+    intent_guard: Option<std::fs::File>,
 }
 
 struct OwnedDirectoryGuard {
     path: PathBuf,
+    identity: FileIdentity,
     #[cfg(windows)]
     handle: OwnedHandle,
 }
@@ -107,21 +128,36 @@ struct OwnedDirectoryGuard {
 impl OwnedDirectoryGuard {
     #[cfg(windows)]
     fn open(path: &Path, label: &str) -> Result<Self, String> {
+        Self::open_with_delete_sharing(path, label, false)
+    }
+
+    #[cfg(windows)]
+    fn open_movable(path: &Path, label: &str) -> Result<Self, String> {
+        Self::open_with_delete_sharing(path, label, true)
+    }
+
+    #[cfg(windows)]
+    fn open_with_delete_sharing(
+        path: &Path,
+        label: &str,
+        share_delete: bool,
+    ) -> Result<Self, String> {
         use windows_sys::Win32::Foundation::{GENERIC_WRITE, INVALID_HANDLE_VALUE};
         use windows_sys::Win32::Storage::FileSystem::{
             CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION, DELETE,
             FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
             FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
-            FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
+            FILE_SHARE_DELETE, FILE_SHARE_READ, FILE_SHARE_WRITE, OPEN_EXISTING,
         };
 
-        let mut wide: Vec<u16> = path.as_os_str().encode_wide().collect();
-        wide.push(0);
+        let wide = crate::platform::windows::encode_windows_path(path)?;
+        let share =
+            FILE_SHARE_READ | FILE_SHARE_WRITE | if share_delete { FILE_SHARE_DELETE } else { 0 };
         let handle = unsafe {
             CreateFileW(
                 wide.as_ptr(),
                 FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES | GENERIC_WRITE | DELETE,
-                FILE_SHARE_READ | FILE_SHARE_WRITE,
+                share,
                 std::ptr::null(),
                 OPEN_EXISTING,
                 FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
@@ -152,6 +188,7 @@ impl OwnedDirectoryGuard {
             .map_err(|error| format!("{label} directory cannot be resolved: {error}"))?;
         Ok(Self {
             path: canonical,
+            identity: identity_from_info(&info),
             handle,
         })
     }
@@ -161,57 +198,9 @@ impl OwnedDirectoryGuard {
         Err("secure composer publication currently requires Windows handle-relative I/O".into())
     }
 
-    #[cfg(windows)]
-    fn rename_child_handle_to(
-        &self,
-        child: &mut OwnedDirectoryGuard,
-        target_name: &str,
-    ) -> Result<(), String> {
-        use windows_sys::Win32::Storage::FileSystem::{
-            FileRenameInfo, FlushFileBuffers, SetFileInformationByHandle, FILE_RENAME_INFO,
-        };
-        validate_component(target_name, "candidate target name")?;
-        let target = self.path.join(target_name);
-        let target_text = target.to_string_lossy();
-        let win32_target = target_text.strip_prefix(r"\\?\").unwrap_or(&target_text);
-        let encoded: Vec<u16> = std::ffi::OsStr::new(win32_target).encode_wide().collect();
-        let header = std::mem::offset_of!(FILE_RENAME_INFO, FileName);
-        let byte_len = header + (encoded.len() + 1) * std::mem::size_of::<u16>();
-        let words = byte_len.div_ceil(std::mem::size_of::<usize>());
-        let mut storage = vec![0usize; words];
-        let info = storage.as_mut_ptr().cast::<FILE_RENAME_INFO>();
-        unsafe {
-            (*info).Anonymous.ReplaceIfExists = false;
-            (*info).RootDirectory = std::ptr::null_mut();
-            (*info).FileNameLength = (encoded.len() * 2) as u32;
-            std::ptr::copy_nonoverlapping(
-                encoded.as_ptr(),
-                (*info).FileName.as_mut_ptr(),
-                encoded.len(),
-            );
-        }
-        if unsafe {
-            SetFileInformationByHandle(
-                child.handle.as_raw_handle(),
-                FileRenameInfo,
-                info.cast(),
-                byte_len as u32,
-            )
-        } == 0
-        {
-            return Err(format!(
-                "publish composer candidate by directory handle: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        child.path = target;
-        if unsafe { FlushFileBuffers(child.handle.as_raw_handle()) } == 0 {
-            return Err(format!(
-                "flush published composer candidate directory handle: {}",
-                std::io::Error::last_os_error()
-            ));
-        }
-        Ok(())
+    #[cfg(not(windows))]
+    fn open_movable(_path: &Path, _label: &str) -> Result<Self, String> {
+        Err("durable composer directory publication currently requires Windows".into())
     }
 
     #[cfg(windows)]
@@ -220,23 +209,51 @@ impl OwnedDirectoryGuard {
     }
 
     #[cfg(not(windows))]
-    fn rename_child_handle_to(
-        &self,
-        _child: &mut OwnedDirectoryGuard,
-        _target_name: &str,
-    ) -> Result<(), String> {
-        Err("secure composer publication currently requires Windows handle-relative rename".into())
-    }
-
-    #[cfg(not(windows))]
     fn mark_delete(&self) -> Result<(), String> {
         Err("secure composer cleanup currently requires Windows handle-relative deletion".into())
     }
 }
 
+#[cfg(windows)]
+fn identity_from_info(
+    info: &windows_sys::Win32::Storage::FileSystem::BY_HANDLE_FILE_INFORMATION,
+) -> FileIdentity {
+    FileIdentity {
+        volume_serial: info.dwVolumeSerialNumber,
+        file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+    }
+}
+
+#[cfg(windows)]
+fn file_identity(file: &std::fs::File) -> Result<FileIdentity, String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(format!(
+            "inspect composer candidate file identity: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok(identity_from_info(&info))
+}
+
+#[cfg(not(windows))]
+fn file_identity(_file: &std::fs::File) -> Result<FileIdentity, String> {
+    Err("secure composer file identity currently requires Windows".into())
+}
+
+fn sha256_hex(bytes: &[u8]) -> String {
+    let mut hasher = Sha256::new();
+    hasher.update(bytes);
+    format!("{:x}", hasher.finalize())
+}
+
 impl PublishedComposerCandidate {
     pub fn commit(&mut self) {
         self.committed = true;
+        let _ = self.remove_intent();
     }
 
     pub fn rollback(&mut self) -> Result<(), String> {
@@ -258,8 +275,26 @@ impl PublishedComposerCandidate {
                 "unpublished composer candidate remained after handle-relative deletion".into(),
             );
         }
+        self.remove_intent()?;
         self.newly_published = false;
         Ok(())
+    }
+
+    fn remove_intent(&mut self) -> Result<(), String> {
+        let Some(intent) = self.intent_guard.take() else {
+            return Ok(());
+        };
+        mark_file_delete(&intent)?;
+        drop(intent);
+        if std::fs::symlink_metadata(&self.intent_path).is_ok() {
+            return Err("composer publish intent remained after exact deletion".into());
+        }
+        Ok(())
+    }
+
+    #[cfg(test)]
+    fn simulate_process_exit_before_database_commit(&mut self) {
+        self.committed = true;
     }
 }
 
@@ -278,7 +313,15 @@ pub fn publish_composer_candidate(
     profile: &MotionProfileV1,
     recipe: &ComposerRecipe,
 ) -> Result<PublishedComposerCandidate, String> {
-    publish_composer_candidate_inner(app_data_dir, session_id, png, profile, recipe, || {})
+    publish_composer_candidate_inner(
+        app_data_dir,
+        session_id,
+        png,
+        profile,
+        recipe,
+        || {},
+        || Ok(()),
+    )
 }
 
 #[cfg(test)]
@@ -290,7 +333,21 @@ pub fn publish_composer_candidate_with_hook(
     recipe: &ComposerRecipe,
     hook: impl FnOnce(),
 ) -> Result<PublishedComposerCandidate, String> {
-    publish_composer_candidate_inner(app_data_dir, session_id, png, profile, recipe, hook)
+    publish_composer_candidate_inner(app_data_dir, session_id, png, profile, recipe, hook, || {
+        Ok(())
+    })
+}
+
+#[cfg(test)]
+pub fn publish_composer_candidate_with_post_rename_hook(
+    app_data_dir: &Path,
+    session_id: &str,
+    png: &[u8],
+    profile: &MotionProfileV1,
+    recipe: &ComposerRecipe,
+    hook: impl FnOnce() -> Result<(), String>,
+) -> Result<PublishedComposerCandidate, String> {
+    publish_composer_candidate_inner(app_data_dir, session_id, png, profile, recipe, || {}, hook)
 }
 
 fn publish_composer_candidate_inner(
@@ -299,7 +356,8 @@ fn publish_composer_candidate_inner(
     png: &[u8],
     profile: &MotionProfileV1,
     recipe: &ComposerRecipe,
-    hook: impl FnOnce(),
+    before_publish: impl FnOnce(),
+    after_rename: impl FnOnce() -> Result<(), String>,
 ) -> Result<PublishedComposerCandidate, String> {
     validate_component(session_id, "session id")?;
     let profile_json = serde_json::to_vec_pretty(profile).map_err(|error| error.to_string())?;
@@ -311,34 +369,34 @@ fn publish_composer_candidate_inner(
         ensure_locked_child(&app_data_guard, "creation-sessions", "creation sessions")?;
     let (session_dir, session_guard) =
         ensure_locked_child(&sessions_guard, session_id, "creation session")?;
-    hook();
+    before_publish();
     let candidate_dir = session_dir.join("candidate");
     if std::fs::symlink_metadata(&candidate_dir).is_ok() {
-        let candidate_guard = OwnedDirectoryGuard::open(&candidate_dir, "candidate directory")?;
-        if candidate_guard.path.parent() != Some(session_dir.as_path()) {
-            return Err("candidate directory escapes its creation session".into());
-        }
-        let file_guards = lock_candidate_files(&candidate_guard, png, &profile_json, &recipe_json)?;
-        return Ok(candidate_projection(
-            candidate_dir,
-            png,
-            false,
-            vec![app_data_guard, sessions_guard, session_guard],
-            candidate_guard,
-            file_guards,
-        ));
+        return Err("composer candidate already exists; exact recovery is required".into());
     }
 
     let staging_name = format!(".candidate-stage-{}", new_entity_id("publish"));
     validate_component(staging_name.trim_start_matches('.'), "candidate staging id")?;
     let staging = session_dir.join(&staging_name);
+    let intent = ComposerPublishIntent {
+        version: 1,
+        session_id: session_id.to_owned(),
+        stage_name: staging_name.clone(),
+        body_sha256: sha256_hex(png),
+        profile_sha256: sha256_hex(&profile_json),
+        recipe_sha256: sha256_hex(&recipe_json),
+    };
+    let intent_json = serde_json::to_vec_pretty(&intent).map_err(|error| error.to_string())?;
+    let intent_path = session_dir.join(COMPOSER_INTENT_FILE);
+    let intent_guard = write_new_synced_file(&intent_path, &intent_json)?;
     std::fs::create_dir(&staging)
         .map_err(|error| format!("create composer candidate staging directory: {error}"))?;
-    let mut staging_guard = OwnedDirectoryGuard::open(&staging, "candidate staging")?;
+    let mut staging_guard = OwnedDirectoryGuard::open_movable(&staging, "candidate staging")?;
     if staging_guard.path.parent() != Some(session_dir.as_path()) {
         return Err("candidate staging directory escapes its creation session".into());
     }
     let mut file_guards = Vec::new();
+    let mut source_file_identities = Vec::new();
     let stage_result = (|| {
         file_guards.push(write_new_synced_file(&staging.join("body.png"), png)?);
         file_guards.push(write_new_synced_file(
@@ -356,12 +414,17 @@ fn publish_composer_candidate_inner(
             &profile_json,
             &recipe_json,
         )?;
-        // Windows cannot rename a directory while child handles deny delete sharing. The
-        // directory handle remains locked and is the source of the rename; final files are
-        // immediately re-opened without delete sharing and revalidated below.
+        source_file_identities = file_guards
+            .iter()
+            .map(file_identity)
+            .collect::<Result<Vec<_>, _>>()?;
+        // MoveFileExW rejects a directory while child file handles remain open even
+        // when every handle shares delete access. The directory handle and FileId stay
+        // pinned across the write-through move; child FileIds/hashes are revalidated.
         file_guards.clear();
-        session_guard.rename_child_handle_to(&mut staging_guard, "candidate")?;
-        crate::platform::sync_existing_directory_entry(&candidate_dir)
+        crate::platform::durable_move_directory(&staging, &candidate_dir)?;
+        staging_guard.path = candidate_dir.clone();
+        Ok(())
     })();
     if let Err(error) = stage_result {
         let cleanup_files = if file_guards.is_empty() {
@@ -370,34 +433,101 @@ fn publish_composer_candidate_inner(
         } else {
             Ok(file_guards)
         };
-        let cleanup = cleanup_files.and_then(|files| delete_locked_directory(staging_guard, files));
+        let cleanup = cleanup_files
+            .and_then(|files| delete_locked_directory(staging_guard, files))
+            .and_then(|()| delete_locked_file(intent_guard, &intent_path));
         return Err(match cleanup {
             Ok(()) => error,
             Err(cleanup) => format!("{error}; staging cleanup failed: {cleanup}"),
         });
     }
-    let candidate_guard = staging_guard;
-    if candidate_guard.path.parent() != Some(session_dir.as_path()) {
+    let verification_guard =
+        match OwnedDirectoryGuard::open_movable(&candidate_dir, "candidate verification") {
+            Ok(guard) => guard,
+            Err(error) => {
+                return Err(format!(
+                "open durable composer candidate after rename: {error}; publish intent retained"
+            ))
+            }
+        };
+    if verification_guard.path.parent() != Some(session_dir.as_path()) {
         return Err("published candidate directory escapes its creation session".into());
     }
-    file_guards = lock_candidate_files(&candidate_guard, png, &profile_json, &recipe_json)?;
+    if verification_guard.identity != staging_guard.identity {
+        return Err(
+            "durable composer candidate identity differs from the staged directory; publish intent retained"
+                .into(),
+        );
+    }
+    let final_file_guards =
+        match lock_candidate_files(&verification_guard, png, &profile_json, &recipe_json) {
+            Ok(files) => files,
+            Err(error) => {
+                return Err(format!(
+                    "re-lock durable composer candidate: {error}; publish intent retained"
+                ))
+            }
+        };
+    for (source_identity, final_file) in source_file_identities.iter().zip(&final_file_guards) {
+        if *source_identity != file_identity(final_file)? {
+            return Err(
+                "durable composer candidate file identity changed during publication; publish intent retained"
+                    .into(),
+            );
+        }
+    }
+    let published_identity = verification_guard.identity;
+    // The final file handles deliberately do not share delete access. They pin the
+    // directory contents while the two movable directory handles are released, so
+    // the path cannot be swapped before acquiring the long-lived directory guard.
+    drop(verification_guard);
+    drop(staging_guard);
+    let candidate_guard = match OwnedDirectoryGuard::open(&candidate_dir, "candidate directory") {
+        Ok(guard) => guard,
+        Err(error) => {
+            return Err(format!(
+                "lock durable composer candidate after identity verification: {error}; publish intent retained"
+            ))
+        }
+    };
+    if candidate_guard.identity != published_identity {
+        return Err(
+            "durable composer candidate identity changed before final lock; publish intent retained"
+                .into(),
+        );
+    }
+    if let Err(error) = after_rename() {
+        let cleanup = delete_published_directory(
+            candidate_guard,
+            final_file_guards,
+            intent_guard,
+            &candidate_dir,
+            &intent_path,
+        );
+        return Err(match cleanup {
+            Ok(()) => error,
+            Err(cleanup) => format!("{error}; exact post-rename cleanup failed: {cleanup}"),
+        });
+    }
     Ok(candidate_projection(
         candidate_dir,
-        png,
         true,
         vec![app_data_guard, sessions_guard, session_guard],
         candidate_guard,
-        file_guards,
+        final_file_guards,
+        intent_path,
+        intent_guard,
     ))
 }
 
 fn candidate_projection(
     candidate_dir: PathBuf,
-    _body: &[u8],
     newly_published: bool,
     parent_guards: Vec<OwnedDirectoryGuard>,
     candidate_guard: OwnedDirectoryGuard,
     file_guards: Vec<std::fs::File>,
+    intent_path: PathBuf,
+    intent_guard: std::fs::File,
 ) -> PublishedComposerCandidate {
     PublishedComposerCandidate {
         body_path: candidate_dir.join("body.png"),
@@ -408,6 +538,8 @@ fn candidate_projection(
         _parent_guards: parent_guards,
         candidate_guard: Some(candidate_guard),
         file_guards,
+        intent_path,
+        intent_guard: Some(intent_guard),
     }
 }
 
@@ -435,32 +567,287 @@ pub fn recover_exact_composer_orphan(
     if session_guard.path.parent() != Some(sessions_guard.path.as_path()) {
         return Err("creation session directory escapes creation sessions".into());
     }
+    let intent_path = session_guard.path.join(COMPOSER_INTENT_FILE);
+    match std::fs::symlink_metadata(&intent_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            if std::fs::symlink_metadata(session_guard.path.join("candidate")).is_ok() {
+                return Err(
+                    "composer candidate exists without an exact durable publish intent".into(),
+                );
+            }
+            return Ok(false);
+        }
+        Err(error) => return Err(format!("inspect composer publish intent: {error}")),
+    }
+    let (intent_guard, intent_bytes) = lock_bounded_regular_file(
+        &intent_path,
+        &session_guard.path,
+        "composer publish intent",
+        16 * 1024,
+    )?;
+    let intent: ComposerPublishIntent = serde_json::from_slice(&intent_bytes)
+        .map_err(|error| format!("composer publish intent is invalid: {error}"))?;
+    validate_component(
+        intent.stage_name.trim_start_matches('.'),
+        "candidate staging id",
+    )?;
+    if intent.version != 1
+        || intent.session_id != session_id
+        || !intent.stage_name.starts_with(".candidate-stage-")
+        || intent.body_sha256.len() != 64
+        || intent.profile_sha256
+            != sha256_hex(
+                &serde_json::to_vec_pretty(expected_profile).map_err(|error| error.to_string())?,
+            )
+        || intent.recipe_sha256
+            != sha256_hex(
+                &serde_json::to_vec_pretty(expected_recipe).map_err(|error| error.to_string())?,
+            )
+    {
+        return Err("composer publish intent does not match the durable session facts".into());
+    }
     let candidate_path = session_guard.path.join("candidate");
-    if std::fs::symlink_metadata(&candidate_path).is_err() {
-        return Ok(false);
+    let stage_path = session_guard.path.join(&intent.stage_name);
+    let candidate_exists = std::fs::symlink_metadata(&candidate_path).is_ok();
+    let stage_exists = std::fs::symlink_metadata(&stage_path).is_ok();
+    if candidate_exists && stage_exists {
+        return Err("composer publish intent has both candidate and staging directories".into());
     }
-    let candidate_guard = OwnedDirectoryGuard::open(&candidate_path, "orphan candidate")?;
+    let owned_path = if candidate_exists {
+        Some(candidate_path)
+    } else if stage_exists {
+        Some(stage_path)
+    } else {
+        None
+    };
+    if let Some(path) = owned_path {
+        let directory = OwnedDirectoryGuard::open(&path, "owned composer publication")?;
+        if directory.path.parent() != Some(session_guard.path.as_path()) {
+            return Err("owned composer publication escapes its creation session".into());
+        }
+        let (files, bytes) = lock_exact_candidate_file_set(&directory)?;
+        validate_exact_candidate_bytes(&bytes, expected_profile, expected_recipe)?;
+        if sha256_hex(&bytes[0]) != intent.body_sha256
+            || sha256_hex(&bytes[1]) != intent.profile_sha256
+            || sha256_hex(&bytes[2]) != intent.recipe_sha256
+        {
+            return Err("owned composer publication hashes do not match its durable intent".into());
+        }
+        delete_locked_directory(directory, files)?;
+    }
+    delete_locked_file(intent_guard, &intent_path)?;
+    drop((session_guard, sessions_guard, app_data_guard));
+    Ok(true)
+}
+
+pub fn clear_committed_composer_publish_intent(
+    app_data_dir: &Path,
+    session_id: &str,
+    expected_profile: &MotionProfileV1,
+    expected_recipe: &ComposerRecipe,
+) -> Result<bool, String> {
+    validate_component(session_id, "session id")?;
+    let app_data_guard = OwnedDirectoryGuard::open(app_data_dir, "app data")?;
+    let sessions_guard = OwnedDirectoryGuard::open(
+        &app_data_guard.path.join("creation-sessions"),
+        "creation sessions",
+    )?;
+    if sessions_guard.path.parent() != Some(app_data_guard.path.as_path()) {
+        return Err("creation sessions directory escapes app data".into());
+    }
+    let session_guard =
+        OwnedDirectoryGuard::open(&sessions_guard.path.join(session_id), "creation session")?;
+    if session_guard.path.parent() != Some(sessions_guard.path.as_path()) {
+        return Err("creation session directory escapes creation sessions".into());
+    }
+    let intent_path = session_guard.path.join(COMPOSER_INTENT_FILE);
+    match std::fs::symlink_metadata(&intent_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
+        Err(error) => return Err(format!("inspect composer publish intent: {error}")),
+    }
+    let (intent_guard, intent_bytes) = lock_bounded_regular_file(
+        &intent_path,
+        &session_guard.path,
+        "composer publish intent",
+        32 * 1024,
+    )?;
+    let intent: ComposerPublishIntent = serde_json::from_slice(&intent_bytes)
+        .map_err(|error| format!("composer publish intent is invalid: {error}"))?;
+    let profile_json =
+        serde_json::to_vec_pretty(expected_profile).map_err(|error| error.to_string())?;
+    let recipe_json =
+        serde_json::to_vec_pretty(expected_recipe).map_err(|error| error.to_string())?;
+    if intent.version != 1
+        || intent.session_id != session_id
+        || !intent.stage_name.starts_with(".candidate-stage-")
+        || intent.profile_sha256 != sha256_hex(&profile_json)
+        || intent.recipe_sha256 != sha256_hex(&recipe_json)
+    {
+        return Err("composer publish intent does not match the committed session facts".into());
+    }
+    let candidate_guard = OwnedDirectoryGuard::open(
+        &session_guard.path.join("candidate"),
+        "stored composer candidate",
+    )?;
     if candidate_guard.path.parent() != Some(session_guard.path.as_path()) {
-        return Err("orphan candidate directory escapes its creation session".into());
+        return Err("stored composer candidate escapes its creation session".into());
     }
-    let (files, bytes) = lock_exact_candidate_file_set(&candidate_guard)?;
+    let (_files, bytes) = lock_exact_candidate_file_set(&candidate_guard)?;
+    validate_exact_candidate_bytes(&bytes, expected_profile, expected_recipe)?;
+    if sha256_hex(&bytes[0]) != intent.body_sha256 {
+        return Err("committed composer candidate body does not match its publish intent".into());
+    }
+    let stage_path = session_guard.path.join(&intent.stage_name);
+    if std::fs::symlink_metadata(&stage_path).is_ok() {
+        let stage_guard = OwnedDirectoryGuard::open(&stage_path, "owned composer staging")?;
+        if stage_guard.path.parent() != Some(session_guard.path.as_path()) {
+            return Err("owned composer staging escapes its creation session".into());
+        }
+        let (stage_files, stage_bytes) = lock_exact_candidate_file_set(&stage_guard)?;
+        validate_exact_candidate_bytes(&stage_bytes, expected_profile, expected_recipe)?;
+        if sha256_hex(&stage_bytes[0]) != intent.body_sha256
+            || sha256_hex(&stage_bytes[1]) != intent.profile_sha256
+            || sha256_hex(&stage_bytes[2]) != intent.recipe_sha256
+        {
+            return Err("owned composer staging does not match its publish intent".into());
+        }
+        delete_locked_directory(stage_guard, stage_files)?;
+    }
+    delete_locked_file(intent_guard, &intent_path)?;
+    Ok(true)
+}
+
+pub struct StoredComposerCandidate {
+    pub body: Vec<u8>,
+    pub motion_profile: MotionProfileV1,
+}
+
+pub fn read_exact_composer_candidate(
+    app_data_dir: &Path,
+    session_id: &str,
+    expected_profile: &MotionProfileV1,
+    expected_recipe: &ComposerRecipe,
+) -> Result<StoredComposerCandidate, String> {
+    try_read_exact_composer_candidate(app_data_dir, session_id, expected_profile, expected_recipe)?
+        .ok_or_else(|| "stored composer candidate is missing".into())
+}
+
+pub fn try_read_exact_composer_candidate(
+    app_data_dir: &Path,
+    session_id: &str,
+    expected_profile: &MotionProfileV1,
+    expected_recipe: &ComposerRecipe,
+) -> Result<Option<StoredComposerCandidate>, String> {
+    validate_component(session_id, "session id")?;
+    let app_data_guard = OwnedDirectoryGuard::open(app_data_dir, "app data")?;
+    let sessions_guard = OwnedDirectoryGuard::open(
+        &app_data_guard.path.join("creation-sessions"),
+        "creation sessions",
+    )?;
+    if sessions_guard.path.parent() != Some(app_data_guard.path.as_path()) {
+        return Err("creation sessions directory escapes app data".into());
+    }
+    let session_guard =
+        OwnedDirectoryGuard::open(&sessions_guard.path.join(session_id), "creation session")?;
+    if session_guard.path.parent() != Some(sessions_guard.path.as_path()) {
+        return Err("creation session directory escapes creation sessions".into());
+    }
+    let candidate_path = session_guard.path.join("candidate");
+    match std::fs::symlink_metadata(&candidate_path) {
+        Ok(_) => {}
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(None),
+        Err(error) => return Err(format!("inspect stored composer candidate: {error}")),
+    }
+    let candidate_guard = OwnedDirectoryGuard::open(&candidate_path, "stored composer candidate")?;
+    if candidate_guard.path.parent() != Some(session_guard.path.as_path()) {
+        return Err("stored composer candidate escapes its creation session".into());
+    }
+    let (_files, bytes) = lock_exact_candidate_file_set(&candidate_guard)?;
+    let motion_profile = validate_exact_candidate_bytes(&bytes, expected_profile, expected_recipe)?;
+    Ok(Some(StoredComposerCandidate {
+        body: bytes[0].clone(),
+        motion_profile,
+    }))
+}
+
+fn validate_exact_candidate_bytes(
+    bytes: &[Vec<u8>],
+    expected_profile: &MotionProfileV1,
+    expected_recipe: &ComposerRecipe,
+) -> Result<MotionProfileV1, String> {
+    if bytes.len() != 3 {
+        return Err("composer candidate must contain exactly three file bodies".into());
+    }
     let recipe: ComposerRecipe = serde_json::from_slice(&bytes[2])
-        .map_err(|error| format!("orphan composer recipe is invalid: {error}"))?;
+        .map_err(|error| format!("composer recipe is invalid: {error}"))?;
     if &recipe != expected_recipe {
-        return Err("orphan composer recipe does not match the durable draft".into());
+        return Err("composer recipe does not match the durable session".into());
     }
     let profile = parse_motion_profile(
         std::str::from_utf8(&bytes[1])
-            .map_err(|error| format!("orphan motion profile is not UTF-8: {error}"))?,
+            .map_err(|error| format!("composer motion profile is not UTF-8: {error}"))?,
     )?;
     if &profile != expected_profile {
-        return Err("orphan composer motion profile does not match trusted body semantics".into());
+        return Err("composer motion profile does not match trusted body semantics".into());
     }
     let encoded = base64::engine::general_purpose::STANDARD.encode(&bytes[0]);
     decode_composer_png(&encoded)?;
-    delete_locked_directory(candidate_guard, files)?;
-    drop((session_guard, sessions_guard, app_data_guard));
-    Ok(true)
+    Ok(profile)
+}
+
+#[cfg(windows)]
+fn lock_bounded_regular_file(
+    path: &Path,
+    expected_parent: &Path,
+    label: &str,
+    limit: u64,
+) -> Result<(std::fs::File, Vec<u8>), String> {
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_SHARE_READ,
+    };
+    let file = std::fs::OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ | DELETE)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT)
+        .open(path)
+        .map_err(|error| format!("open {label}: {error}"))?;
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect {label}: {error}"))?;
+    if crate::platform::is_link_or_reparse_point(&metadata)
+        || !metadata.is_file()
+        || metadata.len() > limit
+    {
+        return Err(format!("{label} must be a bounded regular file"));
+    }
+    if path
+        .canonicalize()
+        .map_err(|error| format!("resolve {label}: {error}"))?
+        .parent()
+        != Some(expected_parent)
+    {
+        return Err(format!("{label} escapes its owned directory"));
+    }
+    let mut reader = file.try_clone().map_err(|error| error.to_string())?;
+    let mut bytes = Vec::new();
+    reader
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {label}: {error}"))?;
+    Ok((file, bytes))
+}
+
+#[cfg(not(windows))]
+fn lock_bounded_regular_file(
+    _path: &Path,
+    _expected_parent: &Path,
+    _label: &str,
+    _limit: u64,
+) -> Result<(std::fs::File, Vec<u8>), String> {
+    Err("secure composer file locking currently requires Windows".into())
 }
 
 fn lock_exact_candidate_file_set(
@@ -534,24 +921,20 @@ fn lock_exact_candidate_file_set(
     }
 }
 
+#[cfg(windows)]
 fn write_new_synced_file(path: &Path, bytes: &[u8]) -> Result<std::fs::File, String> {
-    #[cfg(not(windows))]
-    {
-        let _ = (path, bytes);
-        return Err("secure composer file creation currently requires Windows handle I/O".into());
-    }
-    #[cfg(windows)]
     let mut file = {
         use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
         use windows_sys::Win32::Storage::FileSystem::{
-            DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_READ,
+            DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_DELETE,
+            FILE_SHARE_READ,
         };
         std::fs::OpenOptions::new()
             .read(true)
             .write(true)
             .create_new(true)
             .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
-            .share_mode(FILE_SHARE_READ)
+            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
             .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
             .open(path)
             .map_err(|error| format!("create staged composer candidate file: {error}"))?
@@ -561,6 +944,11 @@ fn write_new_synced_file(path: &Path, bytes: &[u8]) -> Result<std::fs::File, Str
     file.sync_all()
         .map_err(|error| format!("sync staged composer candidate file: {error}"))?;
     Ok(file)
+}
+
+#[cfg(not(windows))]
+fn write_new_synced_file(_path: &Path, _bytes: &[u8]) -> Result<std::fs::File, String> {
+    Err("secure composer file creation currently requires Windows handle I/O".into())
 }
 
 fn lock_candidate_files(
@@ -695,6 +1083,37 @@ fn ensure_locked_child(
         return Err(format!("{label} directory escapes its owned parent"));
     }
     Ok((guard.path.clone(), guard))
+}
+
+fn delete_locked_file(file: std::fs::File, path: &Path) -> Result<(), String> {
+    mark_file_delete(&file)?;
+    drop(file);
+    if std::fs::symlink_metadata(path).is_ok() {
+        return Err(format!(
+            "locked composer file remained after deletion: {}",
+            path.display()
+        ));
+    }
+    Ok(())
+}
+
+fn delete_published_directory(
+    candidate: OwnedDirectoryGuard,
+    mut files: Vec<std::fs::File>,
+    intent: std::fs::File,
+    candidate_path: &Path,
+    intent_path: &Path,
+) -> Result<(), String> {
+    for file in &files {
+        mark_file_delete(file)?;
+    }
+    files.clear();
+    candidate.mark_delete()?;
+    drop(candidate);
+    if std::fs::symlink_metadata(candidate_path).is_ok() {
+        return Err("exact published composer candidate remained after deletion".into());
+    }
+    delete_locked_file(intent, intent_path)
 }
 
 fn delete_locked_directory(
@@ -898,6 +1317,23 @@ mod tests {
         png_b64(1024, 1024, image::ColorType::Rgba8, true)
     }
 
+    fn valid_candidate_b64_with_compression(
+        compression: image::codecs::png::CompressionType,
+    ) -> String {
+        let mut pixels = vec![0; 1024 * 1024 * 4];
+        let center = ((512 * 1024 + 512) * 4) as usize;
+        pixels[center..center + 4].copy_from_slice(&[100, 80, 60, 255]);
+        let mut bytes = Vec::new();
+        image::codecs::png::PngEncoder::new_with_quality(
+            &mut bytes,
+            compression,
+            image::codecs::png::FilterType::Adaptive,
+        )
+        .write_image(&pixels, 1024, 1024, image::ExtendedColorType::Rgba8)
+        .unwrap();
+        base64::engine::general_purpose::STANDARD.encode(bytes)
+    }
+
     #[test]
     fn composer_candidate_rejects_invalid_png_shapes_without_changing_draft() {
         let invalid = [
@@ -918,7 +1354,7 @@ mod tests {
             let test = ComposerCandidateHarness::new();
             assert!(
                 test.service
-                    .store_composer_candidate(&test.session_id, &encoded)
+                    .store_composer_candidate(&test.session_id, Some(&encoded))
                     .is_err(),
                 "accepted {label}"
             );
@@ -946,7 +1382,7 @@ mod tests {
             let test = ComposerCandidateHarness::new();
             assert!(test
                 .service
-                .store_composer_candidate(&test.session_id, &encoded)
+                .store_composer_candidate(&test.session_id, Some(&encoded))
                 .is_err());
             assert_eq!(
                 test.service.snapshot(&test.session_id).unwrap().status,
@@ -973,7 +1409,7 @@ mod tests {
             .unwrap();
         assert!(missing_recipe
             .service
-            .store_composer_candidate(&missing_recipe.session_id, &encoded)
+            .store_composer_candidate(&missing_recipe.session_id, Some(&encoded))
             .is_err());
         assert_eq!(missing_recipe.candidate_count(), 0);
 
@@ -990,7 +1426,7 @@ mod tests {
             .unwrap();
         assert!(wrong_method
             .service
-            .store_composer_candidate(&wrong_method.session_id, &encoded)
+            .store_composer_candidate(&wrong_method.session_id, Some(&encoded))
             .is_err());
         assert_eq!(wrong_method.candidate_count(), 0);
 
@@ -1009,7 +1445,7 @@ mod tests {
             .unwrap();
         assert!(terminal
             .service
-            .store_composer_candidate(&terminal.session_id, &encoded)
+            .store_composer_candidate(&terminal.session_id, Some(&encoded))
             .is_err());
         assert_eq!(terminal.candidate_count(), 0);
     }
@@ -1026,7 +1462,7 @@ mod tests {
 
         let projection = test
             .service
-            .store_composer_candidate(&test.session_id, &encoded)
+            .store_composer_candidate(&test.session_id, Some(&encoded))
             .unwrap();
 
         assert_eq!(projection.motion_profile, expected);
@@ -1049,11 +1485,11 @@ mod tests {
         let encoded = valid_candidate_b64();
         let first = test
             .service
-            .store_composer_candidate(&test.session_id, &encoded)
+            .store_composer_candidate(&test.session_id, Some(&encoded))
             .unwrap();
         let second = test
             .service
-            .store_composer_candidate(&test.session_id, &encoded)
+            .store_composer_candidate(&test.session_id, None)
             .unwrap();
         assert_eq!(first.snapshot.candidate_id, second.snapshot.candidate_id);
         assert_eq!(test.candidate_count(), 1);
@@ -1072,7 +1508,7 @@ mod tests {
             .unwrap();
         assert!(failing
             .service
-            .store_composer_candidate(&failing.session_id, &encoded)
+            .store_composer_candidate(&failing.session_id, Some(&encoded))
             .is_err());
         assert!(!failing
             .root
@@ -1095,7 +1531,7 @@ mod tests {
         let test = ComposerCandidateHarness::new();
         let encoded = valid_candidate_b64();
         test.service
-            .store_composer_candidate(&test.session_id, &encoded)
+            .store_composer_candidate(&test.session_id, Some(&encoded))
             .unwrap();
         test.storage
             .lock()
@@ -1112,7 +1548,7 @@ mod tests {
 
         let projection = test
             .service
-            .store_composer_candidate(&test.session_id, &encoded)
+            .store_composer_candidate(&test.session_id, None)
             .unwrap();
 
         assert_eq!(
@@ -1124,6 +1560,102 @@ mod tests {
             CreationSessionStatus::CandidateReady
         );
         assert_eq!(test.candidate_count(), 1);
+    }
+
+    #[test]
+    fn existing_candidate_projection_reads_db_owned_files_without_png_byte_identity() {
+        let test = ComposerCandidateHarness::new();
+        let original =
+            valid_candidate_b64_with_compression(image::codecs::png::CompressionType::Best);
+        let equivalent =
+            valid_candidate_b64_with_compression(image::codecs::png::CompressionType::Fast);
+        assert_ne!(original, equivalent);
+        test.service
+            .store_composer_candidate(&test.session_id, Some(&original))
+            .unwrap();
+
+        let projection = test
+            .service
+            .store_composer_candidate(&test.session_id, None)
+            .expect("durable projection must not depend on re-exported PNG bytes");
+
+        assert_eq!(
+            projection.body_url,
+            format!("data:image/png;base64,{original}")
+        );
+        assert_eq!(test.candidate_count(), 1);
+    }
+
+    #[test]
+    fn startup_recovery_converges_a_db_candidate_whose_durable_directory_is_missing() {
+        let test = ComposerCandidateHarness::new();
+        test.service
+            .store_composer_candidate(&test.session_id, Some(&valid_candidate_b64()))
+            .unwrap();
+        std::fs::remove_dir_all(
+            test.root
+                .join("creation-sessions")
+                .join(&test.session_id)
+                .join("candidate"),
+        )
+        .unwrap();
+
+        let report = test.service.recover_composer_orphans().unwrap();
+        let restored = test.service.snapshot(&test.session_id).unwrap();
+
+        assert_eq!(restored.status, CreationSessionStatus::Draft);
+        assert_eq!(test.candidate_count(), 0);
+        assert_eq!(report.recovered_count, 1);
+        assert_eq!(
+            test.service
+                .recover_composer_orphans()
+                .unwrap()
+                .recovered_count,
+            0
+        );
+    }
+
+    #[test]
+    fn startup_recovery_keeps_a_valid_db_candidate_and_clears_only_its_stale_intent() {
+        let test = ComposerCandidateHarness::new();
+        let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+        let content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+        let root = crate::creation::content::test_content_root(&content).unwrap();
+        let pack = crate::creation::composer::load_production_pack(&root).unwrap();
+        let profile =
+            crate::creation::composer::motion_profile_for_recipe(&pack, &test.recipe).unwrap();
+        let mut published = publish_composer_candidate(
+            &test.root,
+            &test.session_id,
+            &decoded.bytes,
+            &profile,
+            &test.recipe,
+        )
+        .unwrap();
+        CreationStore::new(test.storage.clone())
+            .record_local_candidate(
+                &test.session_id,
+                &published.body_path,
+                &published.motion_profile_path,
+            )
+            .unwrap();
+        published.simulate_process_exit_before_database_commit();
+        drop(published);
+
+        let first = test.service.recover_composer_orphans().unwrap();
+        let second = test.service.recover_composer_orphans().unwrap();
+
+        assert_eq!(first.recovered_count, 0, "{:?}", first.warnings);
+        assert!(first.warnings.is_empty());
+        assert_eq!(second.recovered_count, 0);
+        assert_eq!(test.candidate_count(), 1);
+        assert_eq!(
+            test.service.snapshot(&test.session_id).unwrap().status,
+            CreationSessionStatus::CandidateReady
+        );
+        let session = test.root.join("creation-sessions").join(&test.session_id);
+        assert!(session.join("candidate/body.png").is_file());
+        assert!(!session.join(COMPOSER_INTENT_FILE).exists());
     }
 
     #[test]
@@ -1144,7 +1676,7 @@ mod tests {
             &test.recipe,
         )
         .unwrap();
-        published.commit();
+        published.simulate_process_exit_before_database_commit();
         drop(published);
         assert_eq!(test.candidate_count(), 0);
 
@@ -1162,8 +1694,88 @@ mod tests {
             .join("candidate")
             .exists());
         test.service
-            .store_composer_candidate(&test.session_id, &encoded)
+            .store_composer_candidate(&test.session_id, Some(&encoded))
             .unwrap();
+    }
+
+    #[test]
+    fn post_rename_relock_failure_moves_to_exact_recovery_and_allows_retry() {
+        let test = ComposerCandidateHarness::new();
+        let encoded = valid_candidate_b64();
+        let decoded = decode_composer_png(&encoded).unwrap();
+        let content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+        let content_root = crate::creation::content::test_content_root(&content).unwrap();
+        let pack = crate::creation::composer::load_production_pack(&content_root).unwrap();
+        let profile =
+            crate::creation::composer::motion_profile_for_recipe(&pack, &test.recipe).unwrap();
+        let candidate = test
+            .root
+            .join("creation-sessions")
+            .join(&test.session_id)
+            .join("candidate");
+        let result = publish_composer_candidate_with_post_rename_hook(
+            &test.root,
+            &test.session_id,
+            &decoded.bytes,
+            &profile,
+            &test.recipe,
+            || Err("forced post-rename validation failure".into()),
+        );
+
+        assert!(result.is_err());
+        assert!(!candidate.exists());
+        let recovery = test.service.recover_composer_orphans().unwrap();
+        assert_eq!(recovery.recovered_count, 0, "{:?}", recovery.warnings);
+        test.service
+            .store_composer_candidate(&test.session_id, Some(&encoded))
+            .unwrap();
+    }
+
+    #[test]
+    fn startup_recovery_removes_only_exact_owned_staging_and_preserves_unknown_sentinels() {
+        let test = ComposerCandidateHarness::new();
+        let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+        let content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+        let root = crate::creation::content::test_content_root(&content).unwrap();
+        let pack = crate::creation::composer::load_production_pack(&root).unwrap();
+        let profile =
+            crate::creation::composer::motion_profile_for_recipe(&pack, &test.recipe).unwrap();
+        let session_dir = test.root.join("creation-sessions").join(&test.session_id);
+        let owned = session_dir.join(".candidate-stage-publish-owned");
+        std::fs::create_dir_all(&owned).unwrap();
+        std::fs::write(owned.join("body.png"), &decoded.bytes).unwrap();
+        std::fs::write(
+            owned.join("motion-profile.json"),
+            serde_json::to_vec_pretty(&profile).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            owned.join("recipe.json"),
+            serde_json::to_vec_pretty(&test.recipe).unwrap(),
+        )
+        .unwrap();
+        let intent = ComposerPublishIntent {
+            version: 1,
+            session_id: test.session_id.clone(),
+            stage_name: ".candidate-stage-publish-owned".into(),
+            body_sha256: sha256_hex(&decoded.bytes),
+            profile_sha256: sha256_hex(&serde_json::to_vec_pretty(&profile).unwrap()),
+            recipe_sha256: sha256_hex(&serde_json::to_vec_pretty(&test.recipe).unwrap()),
+        };
+        std::fs::write(
+            session_dir.join(COMPOSER_INTENT_FILE),
+            serde_json::to_vec_pretty(&intent).unwrap(),
+        )
+        .unwrap();
+        let unknown = session_dir.join(".candidate-stage-do-not-touch");
+        std::fs::create_dir(&unknown).unwrap();
+        std::fs::write(unknown.join("sentinel.txt"), b"keep").unwrap();
+
+        let report = test.service.recover_composer_orphans().unwrap();
+
+        assert_eq!(report.recovered_count, 1, "{:?}", report.warnings);
+        assert!(!owned.exists());
+        assert!(unknown.join("sentinel.txt").exists());
     }
 
     #[test]
@@ -1237,12 +1849,12 @@ mod tests {
             &test.recipe,
         )
         .unwrap();
-        published.commit();
+        published.simulate_process_exit_before_database_commit();
         drop(published);
 
         let recovery = test.service.recover_composer_orphans().unwrap();
 
-        assert_eq!(recovery.recovered_count, 1);
+        assert_eq!(recovery.recovered_count, 1, "{:?}", recovery.warnings);
         assert_eq!(recovery.warnings.len(), 1);
         assert!(recovery.warnings[0].contains(&test.session_id));
         assert!(bad_candidate.join("unexpected.txt").exists());
@@ -1288,6 +1900,62 @@ mod tests {
         assert!(!crate::platform::is_link_or_reparse_point(
             &std::fs::symlink_metadata(&session_dir).unwrap()
         ));
+    }
+
+    #[test]
+    fn windows_directory_publish_uses_the_documented_write_through_primitive() {
+        let platform = include_str!("../platform/windows.rs");
+        let candidate = include_str!("candidate.rs");
+        assert!(platform.contains("fn durable_move_directory"));
+        assert!(platform.contains("MOVEFILE_WRITE_THROUGH"));
+        assert!(candidate.contains("durable_move_directory"));
+    }
+
+    #[test]
+    fn non_windows_file_creation_is_a_separate_compile_time_fail_closed_implementation() {
+        let candidate = include_str!("candidate.rs");
+        let function = ["fn write_new", "_synced_file("].concat();
+        let windows = ["#[cfg(windows)]", "\n", "fn write_new", "_synced_file"].concat();
+        let other = ["#[cfg(not(windows))]", "\n", "fn write_new", "_synced_file"].concat();
+        assert_eq!(candidate.matches(&function).count(), 2);
+        assert!(candidate.contains(&windows));
+        assert!(candidate.contains(&other));
+        let movable = ["fn open", "_movable("].concat();
+        let other_movable = [
+            "#[cfg(not(windows))]\n    fn open",
+            "_movable(_path: &Path, _label: &str)",
+        ]
+        .concat();
+        assert_eq!(candidate.matches(&movable).count(), 2);
+        assert!(candidate.contains(&other_movable));
+    }
+
+    #[test]
+    fn composer_publish_supports_unicode_and_extended_length_app_data_paths() {
+        let test = ComposerCandidateHarness::new();
+        let app_data = test
+            .root
+            .join("候选目录".repeat(20))
+            .join(format!("segment-a-{}", "a".repeat(112)))
+            .join(format!("segment-b-{}", "b".repeat(112)));
+        let session_id = "session-long-unicode";
+        std::fs::create_dir_all(app_data.join("creation-sessions").join(session_id)).unwrap();
+        let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+        let content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+        let content_root = crate::creation::content::test_content_root(&content).unwrap();
+        let pack = crate::creation::composer::load_production_pack(&content_root).unwrap();
+        let profile =
+            crate::creation::composer::motion_profile_for_recipe(&pack, &test.recipe).unwrap();
+
+        let mut published = publish_composer_candidate(
+            &app_data,
+            session_id,
+            &decoded.bytes,
+            &profile,
+            &test.recipe,
+        )
+        .expect("Unicode extended-length app data path must publish");
+        published.rollback().unwrap();
     }
 
     struct CandidateHarness {
