@@ -75,6 +75,19 @@ describe("CreationFlow", () => {
     expect(flow.petId).toBe("pet-1");
   });
 
+  it("restores ready creation as complete", () => {
+    const flow = new CreationFlow(new FakeStore());
+    flow.restore({ petId: "pet-1", status: "ready", jobId: "job-1", variantId: "job-1", error: null });
+    expect(flow.step).toBe("complete");
+  });
+
+  it("refuses to resume a corrupt creation", () => {
+    const flow = new CreationFlow(new FakeStore());
+    expect(() => flow.restore({
+      petId: "pet-1", status: "corrupt", jobId: null, variantId: null, error: "manifest damaged",
+    })).toThrow("corrupt pet is not resumable");
+  });
+
   it("uses the latest resume snapshot when polling", async () => {
     const store = new FakeStore();
     store.snapshot = { petId: "pet-1", status: "awaitingConfirm", jobId: "job-1", variantId: "job-1", error: null };
