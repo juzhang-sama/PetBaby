@@ -10,6 +10,7 @@ import type {
 
 export interface MountedPetRuntime extends PetRendererRuntime {
   petId: string;
+  isPreviewFallback?(): boolean;
 }
 
 export interface PreparedRuntimeSwap {

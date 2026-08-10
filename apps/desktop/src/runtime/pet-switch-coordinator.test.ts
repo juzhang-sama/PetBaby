@@ -35,6 +35,7 @@ interface HarnessOptions {
   loadError?: Error;
   commitError?: Error;
   holdLoad?: boolean;
+  holdCommit?: boolean;
   rollbackFailures?: number;
   destroyOldRuntimeError?: Error;
 }
@@ -61,15 +62,26 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     petId,
     source: "installed",
   }));
-  const commitSelection = vi.fn(async () => {
-    if (options.commitError) throw options.commitError;
-  });
   const refreshHitRegion = vi.fn(async () => undefined);
+  const rollbackCommit = vi.fn(async () => undefined);
   const probe = vi.fn();
   let resolveLoadStarted!: () => void;
   const loadStarted = new Promise<void>((resolve) => { resolveLoadStarted = resolve; });
   let releaseLoad!: () => void;
   const releasePromise = new Promise<void>((resolve) => { releaseLoad = resolve; });
+  let resolveCommitStarted!: () => void;
+  const commitStarted = new Promise<void>((resolve) => { resolveCommitStarted = resolve; });
+  let releaseCommit!: () => void;
+  const commitReleasePromise = new Promise<void>((resolve) => { releaseCommit = resolve; });
+  let candidatePreviewFallback = false;
+  candidate.isPreviewFallback = () => candidatePreviewFallback;
+  const commitSelection = vi.fn(async () => {
+    if (options.holdCommit) {
+      resolveCommitStarted();
+      await commitReleasePromise;
+    }
+    if (options.commitError) throw options.commitError;
+  });
   const load = vi.fn(async (_descriptor: RuntimePetDescriptor, _stagingRoot: HTMLElement) => {
     if (options.loadError) throw options.loadError;
     if (options.holdLoad) {
@@ -83,11 +95,13 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     load,
     probe,
     commit: commitSelection,
+    rollbackCommit,
     refreshHitRegion,
   });
   return {
     candidate,
     commitSelection,
+    commitStarted,
     coordinator,
     load,
     loadStarted,
@@ -96,8 +110,11 @@ function coordinatorHarness(options: HarnessOptions = {}) {
     probe,
     refreshHitRegion,
     releaseLoad,
+    releaseCommit,
+    rollbackCommit,
     rendererRoot,
     slot,
+    triggerCandidatePreviewFallback: () => { candidatePreviewFallback = true; },
   };
 }
 
@@ -190,6 +207,26 @@ describe("PetSwitchCoordinator", () => {
     await expect(test.coordinator.switch(request("pet-b"))).resolves.toMatchObject({
       ok: false,
       code: "persist-failed",
+      message: expect.stringContaining("rollback 未收敛"),
     });
+  });
+
+  it("compensates persistence and rolls back when a candidate falls back during a pending commit", async () => {
+    const test = coordinatorHarness({ holdCommit: true });
+    vi.stubGlobal("document", { createElement: vi.fn(() => ({}) as HTMLElement) });
+
+    const switching = test.coordinator.switch(request("pet-b", "r-fallback"));
+    await test.commitStarted;
+    test.triggerCandidatePreviewFallback();
+    test.releaseCommit();
+
+    await expect(switching).resolves.toMatchObject({
+      ok: false,
+      code: "load-failed",
+      message: expect.stringContaining("预览帧"),
+    });
+    expect(test.slot.activePetId).toBe("pet-a");
+    expect(test.rollbackCommit).toHaveBeenCalledWith("pet-a", "pet-b", undefined);
+    expect(test.oldRuntime.host.destroy).not.toHaveBeenCalled();
   });
 });

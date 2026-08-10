@@ -337,6 +337,16 @@ fn pet_commit_switch(
 }
 
 #[tauri::command]
+fn pet_rollback_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    previous_pet_id: String,
+    pet_id: String,
+    accepted_variant_id: Option<String>,
+) -> Result<(), String> {
+    state.rollback_commit(&previous_pet_id, &pet_id, accepted_variant_id.as_deref())
+}
+
+#[tauri::command]
 fn pet_state_load(
     state: tauri::State<'_, pets::state::SharedStateStore>,
     pet_id: String,
@@ -683,6 +693,7 @@ pub fn run() {
             pet_creation_resume,
             pet_prepare_switch,
             pet_commit_switch,
+            pet_rollback_switch,
             pet_state_load,
             pet_state_save,
             app_setting_get,

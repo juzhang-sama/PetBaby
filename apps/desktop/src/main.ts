@@ -145,6 +145,11 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
     },
     probe: assertVisibleFrame,
     commit: (petId, acceptedVariantId) => invoke("pet_commit_switch", { petId, acceptedVariantId }),
+    rollbackCommit: (previousPetId, petId, acceptedVariantId) => invoke("pet_rollback_switch", {
+      previousPetId,
+      petId,
+      acceptedVariantId,
+    }),
     refreshHitRegion,
   });
   await listen<PetSwitchRequest>(PET_SWITCH_REQUEST, async ({ payload }) => {

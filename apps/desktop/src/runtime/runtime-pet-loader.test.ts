@@ -62,7 +62,7 @@ describe("loadRuntimePet", () => {
     expect(ports.createRuntime).toHaveBeenCalledWith(
       "pet-user-1",
       { source: "installed-manifest" },
-      { root },
+      expect.objectContaining({ root }),
     );
   });
 
@@ -150,8 +150,11 @@ describe("loadRuntimePet", () => {
     expect(ports.createRuntime).toHaveBeenCalledWith(
       "pet-user-1",
       { source: "installed-manifest" },
-      expect.objectContaining({ root, diagnose, onSurfaceChanged }),
+      expect.objectContaining({ root, diagnose, onSurfaceChanged: expect.any(Function) }),
     );
+    const runtimeOptions = ports.createRuntime.mock.calls[0]?.[2];
+    await runtimeOptions?.onSurfaceChanged?.();
+    expect(onSurfaceChanged).toHaveBeenCalledOnce();
   });
 
   it("does not turn a hot-switch candidate load failure into a preview success", async () => {

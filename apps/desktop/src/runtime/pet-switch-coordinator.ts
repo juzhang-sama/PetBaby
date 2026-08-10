@@ -11,6 +11,7 @@ export interface PetSwitchCoordinatorPorts {
   load(descriptor: RuntimePetDescriptor, stagingRoot: HTMLElement): Promise<MountedPetRuntime>;
   probe(surface: HTMLCanvasElement): void;
   commit(petId: string, acceptedVariantId?: string): Promise<void>;
+  rollbackCommit(previousPetId: string, petId: string, acceptedVariantId?: string): Promise<void>;
   refreshHitRegion(): Promise<void>;
 }
 
@@ -41,14 +42,20 @@ export class PetSwitchCoordinator {
       this.log(request, "activate");
       swap.activate();
       await this.ports.refreshHitRegion();
+      if (runtime.isPreviewFallback?.()) {
+        return this.failPreviewFallback(request, swap, false);
+      }
       try {
         this.log(request, "commit");
         await this.ports.commit(request.petId, request.acceptedVariantId);
       } catch (error) {
         this.log(request, "persist-failed", error);
-        this.rollbackSafely(request, swap);
+        const rollbackConverged = this.rollbackSafely(request, swap);
         await this.ports.refreshHitRegion().catch(() => undefined);
-        return failure(request, "persist-failed", messageOf(error));
+        return failure(request, "persist-failed", withRollbackState(messageOf(error), rollbackConverged));
+      }
+      if (runtime.isPreviewFallback?.()) {
+        return this.failPreviewFallback(request, swap, true);
       }
       try {
         swap.commit();
@@ -59,9 +66,9 @@ export class PetSwitchCoordinator {
       return { ok: true, requestId: request.requestId, petId: request.petId };
     } catch (error) {
       this.log(request, "failed", error);
-      if (swap) this.rollbackSafely(request, swap);
+      const rollbackConverged = swap ? this.rollbackSafely(request, swap) : true;
       await this.ports.refreshHitRegion().catch(() => undefined);
-      return failure(request, classify(error), messageOf(error));
+      return failure(request, classify(error), withRollbackState(messageOf(error), rollbackConverged));
     } finally {
       this.busy = false;
     }
@@ -73,15 +80,39 @@ export class PetSwitchCoordinator {
     else console.error("Pet switch", { ...details, message: messageOf(error) });
   }
 
-  private rollbackSafely(request: PetSwitchRequest, swap: PreparedRuntimeSwap): void {
+  private async failPreviewFallback(
+    request: PetSwitchRequest,
+    swap: PreparedRuntimeSwap,
+    committed: boolean,
+  ): Promise<PetSwitchResult> {
+    let compensationMessage = "";
+    if (committed) {
+      try {
+        await this.ports.rollbackCommit(swap.previous.petId, request.petId, request.acceptedVariantId);
+      } catch (error) {
+        this.log(request, "persist-compensation", error);
+        compensationMessage = `；持久化补偿失败：${messageOf(error)}`;
+      }
+    }
+    const rollbackConverged = this.rollbackSafely(request, swap);
+    await this.ports.refreshHitRegion().catch(() => undefined);
+    return failure(
+      request,
+      "load-failed",
+      withRollbackState(`候选运行时已降级为预览帧${compensationMessage}`, rollbackConverged),
+    );
+  }
+
+  private rollbackSafely(request: PetSwitchRequest, swap: PreparedRuntimeSwap): boolean {
     for (let attempt = 1; attempt <= 2; attempt += 1) {
       try {
         swap.rollback();
-        return;
+        return true;
       } catch (error) {
         this.log(request, `rollback-${attempt}`, error);
       }
     }
+    return false;
   }
 }
 
@@ -103,4 +134,8 @@ function failure(
   message: string,
 ): PetSwitchResult {
   return { ok: false, requestId: request.requestId, petId: request.petId, code, message };
+}
+
+function withRollbackState(message: string, rollbackConverged: boolean): string {
+  return rollbackConverged ? message : `${message}；rollback 未收敛，visual state unknown`;
 }

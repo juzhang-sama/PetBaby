@@ -95,6 +95,7 @@ impl ActivePetService {
                 .execute(
                     "UPDATE appearance_variants SET accepted = 1
                      WHERE variant_id = ?1 AND pet_id = ?2
+                     AND accepted = 0
                      AND EXISTS (SELECT 1 FROM variants v WHERE v.variant_id = ?1 AND v.pet_id = ?2)",
                     rusqlite::params![variant_id, pet_id],
                 )
@@ -115,6 +116,55 @@ impl ActivePetService {
             .lock()
             .map_err(|_| "session lock poisoned")?
             .set_active(pet_id.into())
+    }
+
+    pub fn rollback_commit(
+        &self,
+        previous_pet_id: &str,
+        pet_id: &str,
+        accepted_variant_id: Option<&str>,
+    ) -> Result<(), String> {
+        self.prepare(previous_pet_id)?;
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let current: Option<String> = tx
+            .query_row(
+                "SELECT value FROM state WHERE key = ?1",
+                rusqlite::params![ACTIVE_KEY],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if current.as_deref() != Some(pet_id) {
+            return Err("active pet changed before switch rollback".into());
+        }
+        if let Some(variant_id) = accepted_variant_id {
+            let affected = tx
+                .execute(
+                    "UPDATE appearance_variants SET accepted = 0
+                     WHERE variant_id = ?1 AND pet_id = ?2 AND accepted = 1",
+                    rusqlite::params![variant_id, pet_id],
+                )
+                .map_err(|error| error.to_string())?;
+            if affected != 1 {
+                return Err("candidate does not belong to pet".into());
+            }
+        }
+        tx.execute(
+            "INSERT INTO state (key, value) VALUES (?1, ?2)
+             ON CONFLICT(key) DO UPDATE SET value=excluded.value",
+            rusqlite::params![ACTIVE_KEY, previous_pet_id],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        drop(storage);
+        self.session
+            .lock()
+            .map_err(|_| "session lock poisoned")?
+            .set_active(previous_pet_id.into())
     }
 
     fn read_persisted_active(&self) -> Result<Option<String>, String> {
@@ -353,5 +403,42 @@ mod tests {
         assert_eq!(test.persisted_active().as_deref(), Some("pet-user"));
         assert!(test.variant_accepted("variant-1"));
         assert_eq!(test.service.active().unwrap(), "pet-user");
+    }
+
+    #[test]
+    fn rollback_commit_restores_previous_selection_and_unaccepts_the_candidate() {
+        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        test.service.commit("pet-user", Some("variant-1")).unwrap();
+
+        test.service
+            .rollback_commit(BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .unwrap();
+
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        assert!(!test.variant_accepted("variant-1"));
+        assert_eq!(test.service.active().unwrap(), BUILTIN_PET_ID);
+    }
+
+    #[test]
+    fn commit_rejects_an_already_accepted_candidate() {
+        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        test.service.commit("pet-user", Some("variant-1")).unwrap();
+
+        assert!(test.service.commit("pet-user", Some("variant-1")).is_err());
+        assert!(test.variant_accepted("variant-1"));
+    }
+
+    #[test]
+    fn rollback_commit_rejects_a_stale_active_selection_without_unaccepting_the_variant() {
+        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        test.service.commit("pet-user", Some("variant-1")).unwrap();
+        test.service.commit(BUILTIN_PET_ID, None).unwrap();
+
+        assert!(test
+            .service
+            .rollback_commit(BUILTIN_PET_ID, "pet-user", Some("variant-1"))
+            .is_err());
+        assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));
+        assert!(test.variant_accepted("variant-1"));
     }
 }

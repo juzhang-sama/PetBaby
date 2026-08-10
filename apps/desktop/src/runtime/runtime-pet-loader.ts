@@ -91,18 +91,26 @@ export async function loadRuntimePet(
     if (descriptor.source === "installed") {
       previewUrl = `pet-asset://localhost/${descriptor.petId}/assets/body.png`;
       manifest = await ports.readInstalledManifest(descriptor.petId);
-      const runtime = rejectCandidatePreviewFallback(
-        await ports.createRuntime(descriptor.petId, manifest, {
+      let runtime: PetRendererRuntime | undefined;
+      let previewFallback = false;
+      const onSurfaceChanged = async (): Promise<void> => {
+        if (runtime?.kind() === "static-png" && manifestVersionOf(manifest) === 2) previewFallback = true;
+        await options.onSurfaceChanged?.();
+      };
+      runtime = await ports.createRuntime(descriptor.petId, manifest, {
           root,
           diagnose: options.diagnose,
-          onSurfaceChanged: options.onSurfaceChanged,
-        }),
+          onSurfaceChanged,
+        });
+      const loadedRuntime = rejectCandidatePreviewFallback(
+        runtime,
         manifest,
         options,
       );
       return {
         petId: descriptor.petId,
-        ...runtime,
+        ...loadedRuntime,
+        isPreviewFallback: () => previewFallback,
       };
     }
 
@@ -111,18 +119,26 @@ export async function loadRuntimePet(
     previewUrl = source.previewUrl;
     const transport = ports.createBuiltinTransport(source.manifestUrl);
     manifest = await transport.readManifest(descriptor.petId);
-    const runtime = rejectCandidatePreviewFallback(
-      await ports.createRuntime(
+    let runtime: PetRendererRuntime | undefined;
+    let previewFallback = false;
+    const onSurfaceChanged = async (): Promise<void> => {
+      if (runtime?.kind() === "static-png" && manifestVersionOf(manifest) === 2) previewFallback = true;
+      await options.onSurfaceChanged?.();
+    };
+    runtime = await ports.createRuntime(
         descriptor.petId,
         manifest,
-        builtinRuntimeOptions(root, source, transport, options),
-      ),
+        builtinRuntimeOptions(root, source, transport, { ...options, onSurfaceChanged }),
+      );
+    const loadedRuntime = rejectCandidatePreviewFallback(
+      runtime,
       manifest,
       options,
     );
     return {
       petId: descriptor.petId,
-      ...runtime,
+      ...loadedRuntime,
+      isPreviewFallback: () => previewFallback,
     };
   } catch (error) {
     options.diagnose?.({
