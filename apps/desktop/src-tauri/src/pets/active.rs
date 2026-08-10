@@ -67,7 +67,7 @@ pub struct ActivePetService {
     session: SharedActivePetSession,
     pets_dir: PathBuf,
     mutation_gate: SharedPetMutationGate,
-    reconciliation_transaction: Mutex<()>,
+    switch_transaction: Mutex<()>,
     reconciliation_cache: Mutex<Option<CachedReconciliation>>,
     #[cfg(test)]
     after_owner_pin_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
@@ -87,7 +87,7 @@ impl ActivePetService {
             session,
             pets_dir,
             mutation_gate,
-            reconciliation_transaction: Mutex::new(()),
+            switch_transaction: Mutex::new(()),
             reconciliation_cache: Mutex::new(None),
             #[cfg(test)]
             after_owner_pin_hook: Mutex::new(None),
@@ -154,6 +154,10 @@ impl ActivePetService {
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<CommitCompensation, String> {
+        let _switch_transaction = self
+            .switch_transaction
+            .lock()
+            .map_err(|_| "switch transaction lock poisoned")?;
         let _owner_pin =
             self.mutation_gate
                 .assert_owner(request_id, MutationKind::Switch, pet_id)?;
@@ -195,6 +199,10 @@ impl ActivePetService {
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<(), String> {
+        let _switch_transaction = self
+            .switch_transaction
+            .lock()
+            .map_err(|_| "switch transaction lock poisoned")?;
         let _owner_pin = request_id
             .map(|request_id| {
                 self.mutation_gate
@@ -258,6 +266,10 @@ impl ActivePetService {
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<(), String> {
+        let _switch_transaction = self
+            .switch_transaction
+            .lock()
+            .map_err(|_| "switch transaction lock poisoned")?;
         let _owner_pin = request_id
             .map(|request_id| {
                 self.mutation_gate
@@ -278,13 +290,13 @@ impl ActivePetService {
         pet_id: &str,
         accepted_variant_id: Option<&str>,
     ) -> Result<CommitReconciliation, String> {
+        let _switch_transaction = self
+            .switch_transaction
+            .lock()
+            .map_err(|_| "switch transaction lock poisoned")?;
         let owner_pin =
             self.mutation_gate
                 .assert_owner(request_id, MutationKind::Switch, pet_id)?;
-        let _reconciliation_transaction = self
-            .reconciliation_transaction
-            .lock()
-            .map_err(|_| "reconciliation transaction lock poisoned")?;
         #[cfg(test)]
         self.run_after_owner_pin_hook();
 
@@ -1143,13 +1155,17 @@ mod tests {
         assert_eq!(retry, first);
         test.service.finish("switch-retry").unwrap();
 
-        test.service
+        assert!(test
+            .service
             .prepare(Some("switch-retry"), "pet-user")
+            .is_err());
+        test.service
+            .prepare(Some("switch-retry-next"), "pet-user")
             .unwrap();
         let next_generation = test
             .service
             .reconcile_commit(
-                "switch-retry",
+                "switch-retry-next",
                 BUILTIN_PET_ID,
                 "pet-user",
                 Some("variant-1"),
@@ -1159,7 +1175,7 @@ mod tests {
             next_generation.status,
             CommitReconciliationStatus::NotCommitted
         );
-        test.service.cancel("switch-retry").unwrap();
+        test.service.cancel("switch-retry-next").unwrap();
     }
 
     #[test]
@@ -1234,6 +1250,122 @@ mod tests {
             assert_eq!(retry, first);
         });
         test.service.finish("switch-concurrent-reconcile").unwrap();
+    }
+
+    #[test]
+    fn reconcile_waits_for_an_inflight_commit_before_classifying_persistence() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-commit-race"), "pet-user")
+            .unwrap();
+        let first_hook = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        test.service.set_after_owner_pin_hook({
+            let first_hook = first_hook.clone();
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                if first_hook.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    entered.wait();
+                    release.wait();
+                }
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let commit = scope.spawn(|| {
+                test.service
+                    .commit(Some("switch-commit-race"), "pet-user", None)
+            });
+            entered.wait();
+            let (result_tx, result_rx) = std::sync::mpsc::channel();
+            let service = &test.service;
+            let reconcile = scope.spawn(move || {
+                let result = service.reconcile_commit(
+                    "switch-commit-race",
+                    BUILTIN_PET_ID,
+                    "pet-user",
+                    None,
+                );
+                result_tx.send(result.clone()).unwrap();
+                result
+            });
+            assert!(result_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err());
+            release.wait();
+            commit.join().unwrap().unwrap();
+            assert_eq!(
+                reconcile.join().unwrap().unwrap().status,
+                CommitReconciliationStatus::Compensated
+            );
+        });
+        test.service.finish("switch-commit-race").unwrap();
+    }
+
+    #[test]
+    fn reconcile_waits_for_an_inflight_rollback_before_classifying_persistence() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-rollback-race"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(Some("switch-rollback-race"), "pet-user", None)
+            .unwrap();
+        let first_hook = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let entered = Arc::new(std::sync::Barrier::new(2));
+        let release = Arc::new(std::sync::Barrier::new(2));
+        test.service.set_after_owner_pin_hook({
+            let first_hook = first_hook.clone();
+            let entered = entered.clone();
+            let release = release.clone();
+            move || {
+                if first_hook.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    entered.wait();
+                    release.wait();
+                }
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let rollback = scope.spawn(|| {
+                test.service.rollback_switch(
+                    "switch-rollback-race",
+                    BUILTIN_PET_ID,
+                    "pet-user",
+                    None,
+                )
+            });
+            entered.wait();
+            let (result_tx, result_rx) = std::sync::mpsc::channel();
+            let service = &test.service;
+            let reconcile = scope.spawn(move || {
+                let result = service.reconcile_commit(
+                    "switch-rollback-race",
+                    BUILTIN_PET_ID,
+                    "pet-user",
+                    None,
+                );
+                result_tx.send(result.clone()).unwrap();
+                result
+            });
+            assert!(result_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err());
+            release.wait();
+            assert_eq!(
+                rollback.join().unwrap().unwrap().status,
+                CommitCompensationStatus::Compensated
+            );
+            assert_eq!(
+                reconcile.join().unwrap().unwrap().status,
+                CommitReconciliationStatus::NotCommitted
+            );
+        });
+        test.service.finish("switch-rollback-race").unwrap();
     }
 
     #[test]

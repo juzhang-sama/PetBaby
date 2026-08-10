@@ -1,3 +1,4 @@
+use std::collections::HashSet;
 use std::sync::{Arc, Condvar, Mutex};
 use std::time::{Duration, Instant};
 
@@ -25,6 +26,7 @@ struct MutationOwner {
 struct MutationState {
     owner: Option<MutationOwner>,
     next_token: u64,
+    retired_cross_window_request_ids: HashSet<String>,
 }
 
 pub struct PetMutationGate {
@@ -88,13 +90,7 @@ impl PetMutationGate {
             .map_err(|_| "pet mutation gate lock poisoned")?;
         let token = loop {
             let now = (self.clock)();
-            if state.owner.as_ref().is_some_and(|owner| {
-                !owner.scoped
-                    && owner.pins == 0
-                    && now.saturating_sub(owner.started_at) >= self.timeout
-            }) {
-                state.owner = None;
-            }
+            Self::retire_stale_cross_window_owner(&mut state, now, self.timeout);
             match state.owner.as_ref() {
                 None => {
                     state.next_token = state.next_token.wrapping_add(1).max(1);
@@ -179,8 +175,11 @@ impl PetMutationGate {
         match state.owner.as_ref() {
             None => Ok(None),
             Some(owner) if owner.request_id == request_id && !owner.scoped && owner.pins == 0 => {
+                let owner = state.owner.take().expect("matching owner must exist");
                 let token = owner.token;
-                state.owner = None;
+                state
+                    .retired_cross_window_request_ids
+                    .insert(owner.request_id);
                 self.changed.notify_all();
                 Ok(Some(token))
             }
@@ -197,11 +196,7 @@ impl PetMutationGate {
             .state
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
-        if state.owner.as_ref().is_some_and(|owner| {
-            !owner.scoped && owner.pins == 0 && now.saturating_sub(owner.started_at) >= self.timeout
-        }) {
-            state.owner = None;
-        }
+        Self::retire_stale_cross_window_owner(&mut state, now, self.timeout);
         if let Some(owner) = state.owner.as_ref() {
             if owner.request_id == request_id
                 && owner.kind == kind
@@ -211,6 +206,9 @@ impl PetMutationGate {
                 return Ok(owner.token);
             }
             return Err("已有宠物变更正在进行".into());
+        }
+        if state.retired_cross_window_request_ids.contains(request_id) {
+            return Err("pet mutation request id has already been retired".into());
         }
         state.next_token = state.next_token.wrapping_add(1).max(1);
         let token = state.next_token;
@@ -224,6 +222,21 @@ impl PetMutationGate {
             pins: 0,
         });
         Ok(token)
+    }
+
+    fn retire_stale_cross_window_owner(
+        state: &mut MutationState,
+        now: Duration,
+        timeout: Duration,
+    ) {
+        if state.owner.as_ref().is_some_and(|owner| {
+            !owner.scoped && owner.pins == 0 && now.saturating_sub(owner.started_at) >= timeout
+        }) {
+            let owner = state.owner.take().expect("stale owner must exist");
+            state
+                .retired_cross_window_request_ids
+                .insert(owner.request_id);
+        }
     }
 
     fn finish_scoped(&self, request_id: &str, token: u64) {
@@ -465,6 +478,66 @@ mod tests {
         assert!(gate
             .assert_owner("local-a", MutationKind::Switch, "pet-a")
             .is_err());
+    }
+
+    #[test]
+    fn finished_cross_window_request_id_is_retired_for_the_process_lifetime() {
+        let gate = PetMutationGate::new(Duration::from_secs(60));
+        gate.begin("cross-once", MutationKind::Switch, "pet-a")
+            .unwrap();
+        gate.finish("cross-once").unwrap();
+
+        assert!(gate
+            .begin("cross-once", MutationKind::Switch, "pet-a")
+            .is_err());
+        assert!(gate
+            .begin("cross-new", MutationKind::Switch, "pet-a")
+            .is_ok());
+    }
+
+    #[test]
+    fn ttl_recovered_request_id_is_retired_but_a_new_id_can_start() {
+        let (gate, now) = gate_with_clock(Duration::from_secs(60));
+        gate.begin("cross-stale", MutationKind::Switch, "pet-a")
+            .unwrap();
+        now.store(60, Ordering::SeqCst);
+
+        assert!(gate
+            .begin("cross-stale", MutationKind::Switch, "pet-a")
+            .is_err());
+        assert!(gate
+            .begin("cross-after-stale", MutationKind::Delete, "pet-b")
+            .is_ok());
+    }
+
+    #[test]
+    fn scoped_request_ids_can_be_reused_even_after_a_cross_window_retirement() {
+        let gate = PetMutationGate::new(Duration::from_secs(60));
+        gate.begin("shared-local-id", MutationKind::Switch, "pet-a")
+            .unwrap();
+        gate.finish("shared-local-id").unwrap();
+
+        drop(
+            gate.scoped("shared-local-id", MutationKind::Creation, "pet-a")
+                .unwrap(),
+        );
+        drop(
+            gate.scoped("shared-local-id", MutationKind::Creation, "pet-a")
+                .unwrap(),
+        );
+    }
+
+    #[test]
+    fn delayed_retired_finish_cannot_release_a_new_request_owner() {
+        let gate = PetMutationGate::new(Duration::from_secs(60));
+        gate.begin("cross-old", MutationKind::Switch, "pet-a")
+            .unwrap();
+        gate.finish("cross-old").unwrap();
+        gate.begin("cross-new", MutationKind::Delete, "pet-b")
+            .unwrap();
+
+        assert!(gate.finish("cross-old").is_err());
+        assert_current_owner(&gate, "cross-new", "pet-b");
     }
 
     #[test]
