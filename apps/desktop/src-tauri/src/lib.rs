@@ -664,18 +664,26 @@ pub fn run() {
                 .path()
                 .app_data_dir()
                 .map_err(|error| error.to_string())?;
-            let storage = Arc::new(Mutex::new(storage::Storage::open(&data_dir.join("pets"))?));
+            let pets_dir = data_dir.join("pets");
+            let storage = Arc::new(Mutex::new(storage::Storage::open(&pets_dir)?));
+            let migration = runtime_assets::migration::migrate_all_v1_assets(&pets_dir);
+            for failure in &migration.failures {
+                eprintln!(
+                    "[desktop-pet] pet motion migration failed: {}: {}",
+                    failure.pet_id, failure.error
+                );
+            }
             let session = Arc::new(Mutex::new(pets::ActivePetSession::new()));
             let active = Arc::new(pets::active::ActivePetService::new(
                 storage.clone(),
                 session,
-                data_dir.join("pets"),
+                pets_dir.clone(),
             ));
             active.restore()?;
             let catalog = Arc::new(PetCatalogService::new(
                 storage.clone(),
                 active.clone(),
-                data_dir.join("pets"),
+                pets_dir,
             ));
             let deletion = Arc::new(PetDeletionService::new(
                 storage.clone(),

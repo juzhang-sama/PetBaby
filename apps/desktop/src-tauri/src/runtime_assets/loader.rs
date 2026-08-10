@@ -29,7 +29,7 @@ enum AssetReadError {
     Corrupt,
 }
 
-fn validate_asset_manifest(path: &Path) -> Result<(), AssetReadError> {
+fn validate_asset_manifest(path: &Path) -> Result<RuntimeAssetManifest, AssetReadError> {
     let data = match std::fs::read(path) {
         Ok(data) => data,
         Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
@@ -49,17 +49,17 @@ fn validate_asset_manifest(path: &Path) -> Result<(), AssetReadError> {
             return Err(AssetReadError::Corrupt);
         }
     }
-    if let RuntimeAssetManifest::V3(value) = manifest {
-        let profile = std::fs::read_to_string(assets_dir.join(value.motion_profile))
+    if let RuntimeAssetManifest::V3(value) = &manifest {
+        let profile = std::fs::read_to_string(assets_dir.join(&value.motion_profile))
             .map_err(|_| AssetReadError::Corrupt)?;
         parse_motion_profile(&profile).map_err(|_| AssetReadError::Corrupt)?;
     }
-    Ok(())
+    Ok(manifest)
 }
 
 pub fn validate_asset_directory(assets_dir: &Path) -> Result<(), String> {
     match validate_asset_manifest(&assets_dir.join("manifest.json")) {
-        Ok(()) => Ok(()),
+        Ok(_) => Ok(()),
         Err(AssetReadError::Missing) => Err("asset manifest is missing".into()),
         Err(AssetReadError::Corrupt) => Err("asset directory is corrupt".into()),
     }
@@ -68,7 +68,8 @@ pub fn validate_asset_directory(assets_dir: &Path) -> Result<(), String> {
 pub fn inspect_pet_asset(pets_dir: &Path, pet_id: &str) -> AssetHealth {
     let manifest_path = pets_dir.join(pet_id).join("assets").join("manifest.json");
     let status = match validate_asset_manifest(&manifest_path) {
-        Ok(()) => "healthy",
+        Ok(RuntimeAssetManifest::V1(_)) => "legacy",
+        Ok(RuntimeAssetManifest::V2(_) | RuntimeAssetManifest::V3(_)) => "healthy",
         Err(AssetReadError::Missing) => "missing",
         Err(AssetReadError::Corrupt) => "corrupt",
     };
@@ -169,12 +170,19 @@ mod tests {
     }
 
     #[test]
-    fn reports_healthy_for_intact_asset() {
+    fn reports_legacy_for_intact_v1_asset() {
         let (pets_dir, root) = setup();
         let health = scan_assets(&pets_dir);
         assert_eq!(health.len(), 1);
         assert_eq!(health[0].pet_id, "pet-a");
-        assert_eq!(health[0].status, "healthy");
+        assert_eq!(health[0].status, "legacy");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_healthy_for_intact_v3_asset() {
+        let (pets_dir, root) = setup_v3();
+        assert_eq!(inspect_pet_asset(&pets_dir, "pet-a").status, "healthy");
         let _ = std::fs::remove_dir_all(root);
     }
 
@@ -238,7 +246,7 @@ mod tests {
         std::fs::create_dir_all(pets_dir.join("unrelated")).unwrap();
         let health = inspect_pet_asset(&pets_dir, "pet-a");
         assert_eq!(health.pet_id, "pet-a");
-        assert_eq!(health.status, "healthy");
+        assert_eq!(health.status, "legacy");
         let missing = inspect_pet_asset(&pets_dir, "pet-missing");
         assert_eq!(missing.status, "missing");
         let _ = std::fs::remove_dir_all(root);

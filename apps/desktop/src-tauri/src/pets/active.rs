@@ -258,7 +258,10 @@ impl ActivePetService {
 mod tests {
     use super::*;
     use crate::pets::{ActivePetSession, SharedActivePetSession};
-    use crate::runtime_assets::importer::import_png_source;
+    use crate::runtime_assets::{
+        importer::import_png_source,
+        migration::{migrate_v1_pet_assets, MigrationOutcome},
+    };
     use crate::storage::Storage;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -317,6 +320,15 @@ mod tests {
                 )
                 .unwrap();
             drop(storage);
+            test
+        }
+
+        fn with_current_pet(pet_id: &str, variant_id: &str) -> Self {
+            let test = Self::with_healthy_pet(pet_id, variant_id);
+            assert_eq!(
+                migrate_v1_pet_assets(&test.pets_dir.join(pet_id).join("assets")).unwrap(),
+                MigrationOutcome::Migrated
+            );
             test
         }
 
@@ -380,18 +392,9 @@ mod tests {
     }
 
     fn write_png(path: &Path, width: u32, height: u32) {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-        bytes.extend_from_slice(&13u32.to_be_bytes());
-        bytes.extend_from_slice(b"IHDR");
-        bytes.extend_from_slice(&width.to_be_bytes());
-        bytes.extend_from_slice(&height.to_be_bytes());
-        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
-        bytes.extend_from_slice(&[0; 4]);
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        bytes.extend_from_slice(b"IEND");
-        bytes.extend_from_slice(&[0; 4]);
-        std::fs::write(path, bytes).unwrap();
+        image::RgbaImage::from_pixel(width, height, image::Rgba([80, 90, 100, 255]))
+            .save(path)
+            .unwrap();
     }
 
     #[test]
@@ -406,8 +409,16 @@ mod tests {
     }
 
     #[test]
-    fn restores_a_healthy_installed_pet() {
+    fn restore_does_not_activate_an_unmigrated_v1_pet() {
         let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        test.save_active("pet-user");
+        assert_eq!(test.service.restore().unwrap(), BUILTIN_PET_ID);
+        assert_eq!(test.session_active().as_deref(), Some(BUILTIN_PET_ID));
+    }
+
+    #[test]
+    fn restores_a_current_installed_pet() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.save_active("pet-user");
         assert_eq!(test.service.restore().unwrap(), "pet-user");
         assert_eq!(test.session_active().as_deref(), Some("pet-user"));
@@ -415,7 +426,7 @@ mod tests {
 
     #[test]
     fn prepare_describes_builtin_and_healthy_installed_pet() {
-        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         assert_eq!(
             test.service.prepare(BUILTIN_PET_ID).unwrap(),
             RuntimePetDescriptor {
@@ -431,7 +442,7 @@ mod tests {
 
     #[test]
     fn creation_commit_accepts_variant_and_persists_active_atomically() {
-        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service.commit("pet-user", Some("variant-1")).unwrap();
         assert_eq!(test.persisted_active().as_deref(), Some("pet-user"));
         assert!(test.variant_accepted("variant-1"));
@@ -440,7 +451,7 @@ mod tests {
 
     #[test]
     fn rollback_commit_restores_previous_selection_and_unaccepts_the_candidate() {
-        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service.commit("pet-user", Some("variant-1")).unwrap();
 
         test.service
@@ -457,7 +468,7 @@ mod tests {
 
     #[test]
     fn rollback_commit_without_a_variant_is_idempotent_after_the_previous_selection_is_restored() {
-        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service.commit("pet-user", None).unwrap();
 
         test.service
@@ -473,7 +484,7 @@ mod tests {
 
     #[test]
     fn commit_rejects_an_already_accepted_candidate() {
-        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service.commit("pet-user", Some("variant-1")).unwrap();
 
         assert!(test.service.commit("pet-user", Some("variant-1")).is_err());
@@ -482,7 +493,7 @@ mod tests {
 
     #[test]
     fn rollback_commit_rejects_a_stale_active_selection_without_unaccepting_the_variant() {
-        let test = ActiveHarness::with_healthy_pet("pet-user", "variant-1");
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
         test.service.commit("pet-user", Some("variant-1")).unwrap();
         test.service.commit(BUILTIN_PET_ID, None).unwrap();
 

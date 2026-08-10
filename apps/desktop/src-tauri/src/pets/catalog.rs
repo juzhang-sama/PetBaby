@@ -60,6 +60,7 @@ struct PetFacts {
     accepted: bool,
     asset_healthy: bool,
     legacy_healthy_asset: bool,
+    legacy_asset: bool,
     compile_error: Option<String>,
 }
 
@@ -263,6 +264,7 @@ impl PetCatalogService {
             }
             _ => false,
         };
+        facts.legacy_asset = inspect_pet_asset(&self.pets_dir, pet_id).status == "legacy";
         Ok(facts)
     }
 
@@ -356,6 +358,9 @@ impl PetCatalogService {
 }
 
 fn project(facts: &PetFacts) -> PetLifecycle {
+    if facts.legacy_asset {
+        return PetLifecycle::Corrupt;
+    }
     if facts.has_runtime_variant {
         if !facts.asset_healthy {
             return PetLifecycle::Corrupt;
@@ -394,7 +399,10 @@ mod tests {
         active::{ActivePetService, BUILTIN_PET_ID},
         ActivePetSession,
     };
-    use crate::runtime_assets::importer::import_png_source;
+    use crate::runtime_assets::{
+        importer::import_png_source,
+        migration::{migrate_v1_pet_assets, MigrationOutcome},
+    };
     use crate::storage::Storage;
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU32, Ordering};
@@ -521,6 +529,31 @@ mod tests {
             self.write_healthy_asset_with_manifest_identity(pet_id, pet_id, variant_id);
         }
 
+        fn write_current_asset(&self, pet_id: &str, variant_id: &str) {
+            self.write_healthy_asset(pet_id, variant_id);
+            assert_eq!(
+                migrate_v1_pet_assets(&self.pets_dir.join(pet_id).join("assets")).unwrap(),
+                MigrationOutcome::Migrated
+            );
+        }
+
+        fn write_current_asset_with_manifest_identity(
+            &self,
+            asset_pet_id: &str,
+            manifest_pet_id: &str,
+            variant_id: &str,
+        ) {
+            self.write_healthy_asset_with_manifest_identity(
+                asset_pet_id,
+                manifest_pet_id,
+                variant_id,
+            );
+            assert_eq!(
+                migrate_v1_pet_assets(&self.pets_dir.join(asset_pet_id).join("assets")).unwrap(),
+                MigrationOutcome::Migrated
+            );
+        }
+
         fn write_healthy_asset_with_manifest_identity(
             &self,
             asset_pet_id: &str,
@@ -555,18 +588,9 @@ mod tests {
     }
 
     fn write_png(path: &Path, width: u32, height: u32) {
-        let mut bytes = Vec::new();
-        bytes.extend_from_slice(&[0x89, 0x50, 0x4E, 0x47, 0x0D, 0x0A, 0x1A, 0x0A]);
-        bytes.extend_from_slice(&13u32.to_be_bytes());
-        bytes.extend_from_slice(b"IHDR");
-        bytes.extend_from_slice(&width.to_be_bytes());
-        bytes.extend_from_slice(&height.to_be_bytes());
-        bytes.extend_from_slice(&[8, 6, 0, 0, 0]);
-        bytes.extend_from_slice(&[0; 4]);
-        bytes.extend_from_slice(&0u32.to_be_bytes());
-        bytes.extend_from_slice(b"IEND");
-        bytes.extend_from_slice(&[0; 4]);
-        std::fs::write(path, bytes).unwrap();
+        image::RgbaImage::from_pixel(width, height, image::Rgba([80, 90, 100, 255]))
+            .save(path)
+            .unwrap();
     }
 
     fn facts(status: &str) -> PetFacts {
@@ -680,20 +704,19 @@ mod tests {
     }
 
     #[test]
-    fn healthy_legacy_asset_without_a_runtime_row_is_ready() {
+    fn catalog_never_marks_a_legacy_v1_runtime_ready() {
         let test = CatalogHarness::new(BUILTIN_PET_ID);
-        test.insert_pet("pet-legacy", "1");
-        test.write_healthy_asset("pet-legacy", "legacy-variant");
+        test.insert_pet("pet-1", "1");
+        test.write_healthy_asset("pet-1", "legacy-variant");
 
         let entry = test
             .service
             .list()
             .unwrap()
             .into_iter()
-            .find(|entry| entry.pet_id == "pet-legacy")
+            .find(|entry| entry.pet_id == "pet-1")
             .unwrap();
-        assert_eq!(entry.status, PetLifecycle::Ready);
-        assert_eq!(entry.issue, None);
+        assert_eq!(entry.status, PetLifecycle::Corrupt);
         test.cleanup();
     }
 
@@ -704,7 +727,7 @@ mod tests {
         test.insert_job("job-1", "pet-1", "success", None, "1");
         test.insert_candidate("job-1", "pet-1", false);
         test.insert_runtime_variant("job-1", "pet-1");
-        test.write_healthy_asset("pet-1", "job-1");
+        test.write_current_asset("pet-1", "job-1");
         test.active.commit("pet-1", Some("job-1")).unwrap();
 
         let entry = test
@@ -725,7 +748,7 @@ mod tests {
         let test = CatalogHarness::new(BUILTIN_PET_ID);
         test.insert_pet("pet-1", "1");
         test.insert_runtime_variant("runtime-variant", "pet-1");
-        test.write_healthy_asset("pet-1", "manifest-variant");
+        test.write_current_asset("pet-1", "manifest-variant");
 
         let entry = test
             .service
@@ -760,7 +783,7 @@ mod tests {
         let test = CatalogHarness::new(BUILTIN_PET_ID);
         test.insert_pet("pet-1", "1");
         test.insert_runtime_variant("runtime-variant", "pet-1");
-        test.write_healthy_asset_with_manifest_identity("pet-1", "other-pet", "runtime-variant");
+        test.write_current_asset_with_manifest_identity("pet-1", "other-pet", "runtime-variant");
 
         let entry = test
             .service
