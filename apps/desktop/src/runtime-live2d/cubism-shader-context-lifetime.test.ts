@@ -91,4 +91,30 @@ describe("WebViewCubismShaderContextLifetime", () => {
     expect(shader.release).not.toHaveBeenCalled();
     expect(shaders.has(context)).toBe(false);
   });
+
+  it("invalidates a shared context without changing its owner count", () => {
+    const { manager, shaders } = createManager();
+    const context = {};
+    const invalidShader = { release: vi.fn() };
+    shaders.set(context, invalidShader);
+    const lifetime = new WebViewCubismShaderContextLifetime(() => manager);
+    const first = lifetime.acquire(context);
+    const second = lifetime.acquire(context);
+
+    lifetime.invalidate(context);
+    lifetime.invalidate(context);
+
+    expect(invalidShader.release).not.toHaveBeenCalled();
+    expect(shaders.has(context)).toBe(false);
+
+    const replacement = { release: vi.fn() };
+    shaders.set(context, replacement);
+    first.release();
+    expect(replacement.release).not.toHaveBeenCalled();
+    expect(shaders.get(context)).toBe(replacement);
+
+    second.release();
+    expect(replacement.release).toHaveBeenCalledOnce();
+    expect(shaders.has(context)).toBe(false);
+  });
 });

@@ -19,6 +19,14 @@ export class WebViewCubismShaderContextLifetime<Context extends CubismShaderCont
     private readonly diagnose: (error: unknown) => void = () => undefined,
   ) {}
 
+  invalidate(context: Context): void {
+    try {
+      this.getManager().deleteShader(context);
+    } catch (error) {
+      this.diagnose(error);
+    }
+  }
+
   acquire(context: Context): CubismShaderContextLease {
     this.owners.set(context, (this.owners.get(context) ?? 0) + 1);
     let released = false;

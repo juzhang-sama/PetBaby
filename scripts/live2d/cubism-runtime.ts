@@ -248,6 +248,10 @@ class OfficialCubismAdapter implements CubismControlAdapter {
   private frameworkLease: CubismFrameworkLease | null = null;
   private shaderContextLease: CubismShaderContextLease | null = null;
   private pendingParameters = new Map<string, number>();
+  private readonly onContextLost = (event: Event): void => {
+    event.preventDefault();
+    if (this.gl) shaderContextLifetime.invalidate(this.gl);
+  };
 
   async initialize(canvas: HTMLCanvasElement): Promise<void> {
     this.canvas = canvas;
@@ -264,6 +268,7 @@ class OfficialCubismAdapter implements CubismControlAdapter {
         throw error;
       }
     }
+    canvas.addEventListener("webglcontextlost", this.onContextLost);
   }
 
   async loadModel(modelUrl: string): Promise<void> {
@@ -333,6 +338,7 @@ class OfficialCubismAdapter implements CubismControlAdapter {
     } finally {
       this.model = null;
       this.pendingParameters.clear();
+      this.canvas?.removeEventListener("webglcontextlost", this.onContextLost);
       try {
         this.shaderContextLease?.release();
       } catch (error) {

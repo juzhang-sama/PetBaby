@@ -5,6 +5,15 @@ const hasLocalCubismSdk = existsSync(new URL(
   "../../.vendor/live2d-cubism-sdk/Framework/src/live2dcubismframework.ts",
   import.meta.url,
 ));
+const cubismShaderModuleSpecifier = "@cubism-framework/rendering/cubismshader_webgl";
+
+function createCanvas(gl: WebGLRenderingContext): HTMLCanvasElement {
+  return {
+    getContext: vi.fn(() => gl),
+    addEventListener: vi.fn(),
+    removeEventListener: vi.fn(),
+  } as unknown as HTMLCanvasElement;
+}
 
 afterEach(() => {
   vi.unstubAllGlobals();
@@ -37,9 +46,7 @@ describe("official Cubism runtime lifecycle", () => {
     });
 
     const { createCubismAdapter } = await import("@cubism-runtime");
-    const canvas = {
-      getContext: vi.fn(() => ({})),
-    } as unknown as HTMLCanvasElement;
+    const canvas = createCanvas({} as WebGLRenderingContext);
 
     const first = createCubismAdapter();
     await first.initialize(canvas);
@@ -68,13 +75,15 @@ describe("official Cubism runtime lifecycle", () => {
     });
 
     const { createCubismAdapter } = await import("@cubism-runtime");
-    const { CubismShaderManager_WebGL } = await import("@cubism-framework/rendering/cubismshader_webgl");
+    const { CubismShaderManager_WebGL } = await import(
+      /* @vite-ignore */ cubismShaderModuleSpecifier
+    );
     const firstGl = {} as WebGLRenderingContext;
     const secondGl = {} as WebGLRenderingContext;
     const first = createCubismAdapter();
     const second = createCubismAdapter();
-    await first.initialize({ getContext: vi.fn(() => firstGl) } as unknown as HTMLCanvasElement);
-    await second.initialize({ getContext: vi.fn(() => secondGl) } as unknown as HTMLCanvasElement);
+    await first.initialize(createCanvas(firstGl));
+    await second.initialize(createCanvas(secondGl));
     const shaders = CubismShaderManager_WebGL.getInstance();
     const shaderMap = (shaders as unknown as {
       _shaderMap: Map<WebGLRenderingContext, { release(): void }>;
@@ -114,9 +123,11 @@ describe("official Cubism runtime lifecycle", () => {
     });
 
     const { createCubismAdapter } = await import("@cubism-runtime");
-    const { CubismShaderManager_WebGL } = await import("@cubism-framework/rendering/cubismshader_webgl");
+    const { CubismShaderManager_WebGL } = await import(
+      /* @vite-ignore */ cubismShaderModuleSpecifier
+    );
     const gl = { isContextLost: vi.fn(() => false) } as unknown as WebGLRenderingContext;
-    const canvas = { getContext: vi.fn(() => gl) } as unknown as HTMLCanvasElement;
+    const canvas = createCanvas(gl);
     const first = createCubismAdapter();
     const second = createCubismAdapter();
     await first.initialize(canvas);
@@ -149,5 +160,61 @@ describe("official Cubism runtime lifecycle", () => {
     expect(() => second.destroy()).not.toThrow();
     expect(events).toEqual(["first-model", "second-model", "shader", "framework"]);
     expect(shaders.getShader(gl)).toBeUndefined();
+  });
+
+  it.skipIf(!hasLocalCubismSdk)("invalidates shaders on context loss and removes its listener on destroy", async () => {
+    vi.stubGlobal("Live2DCubismCore", {
+      Logging: {
+        csmSetLogFunction: vi.fn(),
+        csmGetLogFunction: vi.fn(() => undefined),
+      },
+      Memory: {
+        initializeAmountOfMemory: vi.fn(),
+      },
+      Version: {
+        csmGetVersion: vi.fn(() => 0x05000000),
+      },
+    });
+
+    const { createCubismAdapter } = await import("@cubism-runtime");
+    const { CubismShaderManager_WebGL } = await import(
+      /* @vite-ignore */ cubismShaderModuleSpecifier
+    );
+    const gl = { isContextLost: vi.fn(() => false) } as unknown as WebGLRenderingContext;
+    const listeners = new Map<string, EventListenerOrEventListenerObject>();
+    const canvas = {
+      getContext: vi.fn(() => gl),
+      addEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+        listeners.set(type, listener);
+      }),
+      removeEventListener: vi.fn((type: string, listener: EventListenerOrEventListenerObject) => {
+        if (listeners.get(type) === listener) listeners.delete(type);
+      }),
+    } as unknown as HTMLCanvasElement;
+    const adapter = createCubismAdapter();
+    await adapter.initialize(canvas);
+    const shaders = CubismShaderManager_WebGL.getInstance();
+    const shaderMap = (shaders as unknown as {
+      _shaderMap: Map<WebGLRenderingContext, { release(): void }>;
+    })._shaderMap;
+    const invalidShader = { release: vi.fn() };
+    shaderMap.set(gl, invalidShader);
+
+    const listener = listeners.get("webglcontextlost");
+    expect(listener).toBeDefined();
+    const event = { preventDefault: vi.fn() } as unknown as Event;
+    if (typeof listener === "function") listener(event);
+    else listener?.handleEvent(event);
+
+    expect(invalidShader.release).not.toHaveBeenCalled();
+    expect(shaders.getShader(gl)).toBeUndefined();
+
+    const replacement = { release: vi.fn() };
+    shaderMap.set(gl, replacement);
+    adapter.destroy();
+
+    expect(replacement.release).toHaveBeenCalledOnce();
+    expect(canvas.removeEventListener).toHaveBeenCalledWith("webglcontextlost", listener);
+    expect(listeners.has("webglcontextlost")).toBe(false);
   });
 });
