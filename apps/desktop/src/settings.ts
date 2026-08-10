@@ -490,8 +490,8 @@ async function activatePreparedCandidate(visit: number, expectedFlow: CreationFl
   confirmRetry.disabled = true;
   try {
     await expectedFlow.activateCandidate();
-    if (!isCurrentWizard(visit, expectedFlow)) return;
     clearCreationPet(expectedFlow.petId ?? undefined);
+    if (!isCurrentWizard(visit, expectedFlow)) return;
     showStep("complete");
     wizardStatus.textContent = "宠物已出现在桌面。";
   } catch (error) {
@@ -560,11 +560,6 @@ function switchView(view: "list" | "create"): void {
   if (view === "list") void renderList();
   if (view === "create") void restoreWizardView();
 }
-
-window.addEventListener("pet-creation-resume-requested", (event) => {
-  const petId = (event as CustomEvent<{ petId?: string }>).detail?.petId;
-  if (petId) enterCreationResume(petId);
-});
 
 tabList.addEventListener("click", () => switchView("list"));
 tabCreate.addEventListener("click", () => switchView("create"));
