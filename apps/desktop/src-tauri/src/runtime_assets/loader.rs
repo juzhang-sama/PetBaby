@@ -22,6 +22,52 @@ fn sha256_hex(data: &[u8]) -> String {
         .collect()
 }
 
+#[derive(Debug, Clone, Copy, PartialEq)]
+enum AssetReadError {
+    Missing,
+    Corrupt,
+}
+
+fn validate_asset_manifest(path: &Path) -> Result<(), AssetReadError> {
+    let data = match std::fs::read(path) {
+        Ok(data) => data,
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+            return Err(AssetReadError::Missing)
+        }
+        Err(_) => return Err(AssetReadError::Corrupt),
+    };
+    let json = String::from_utf8(data).map_err(|_| AssetReadError::Corrupt)?;
+    let manifest = parse_manifest(&json).map_err(|_| AssetReadError::Corrupt)?;
+    let files = match &manifest {
+        RuntimeAssetManifest::V1(value) => &value.files,
+        RuntimeAssetManifest::V2(value) => &value.files,
+    };
+    let assets_dir = path.parent().ok_or(AssetReadError::Corrupt)?;
+    for file in files {
+        validate_relative_path(&file.relative_path).map_err(|_| AssetReadError::Corrupt)?;
+        let bytes = std::fs::read(assets_dir.join(&file.relative_path))
+            .map_err(|_| AssetReadError::Corrupt)?;
+        if sha256_hex(&bytes) != file.sha256 {
+            return Err(AssetReadError::Corrupt);
+        }
+    }
+    Ok(())
+}
+
+pub fn inspect_pet_asset(pets_dir: &Path, pet_id: &str) -> AssetHealth {
+    let manifest_path = pets_dir.join(pet_id).join("assets").join("manifest.json");
+    let status = match validate_asset_manifest(&manifest_path) {
+        Ok(()) => "healthy",
+        Err(AssetReadError::Missing) => "missing",
+        Err(AssetReadError::Corrupt) => "corrupt",
+    };
+    AssetHealth {
+        pet_id: pet_id.to_owned(),
+        status,
+        manifest_path: manifest_path.to_string_lossy().into_owned(),
+    }
+}
+
 pub fn scan_assets(pets_dir: &Path) -> Vec<AssetHealth> {
     let mut result = Vec::new();
     let Ok(entries) = std::fs::read_dir(pets_dir) else {
@@ -33,64 +79,7 @@ pub fn scan_assets(pets_dir: &Path) -> Vec<AssetHealth> {
             continue;
         }
         let pet_id = entry.file_name().to_string_lossy().to_string();
-        let manifest_path = pet_dir.join("assets").join("manifest.json");
-        if !manifest_path.exists() {
-            result.push(AssetHealth {
-                pet_id,
-                status: "missing",
-                manifest_path: manifest_path.to_string_lossy().to_string(),
-            });
-            continue;
-        }
-        let Ok(data) = std::fs::read(&manifest_path) else {
-            result.push(AssetHealth {
-                pet_id,
-                status: "corrupt",
-                manifest_path: manifest_path.to_string_lossy().to_string(),
-            });
-            continue;
-        };
-        let Ok(json) = String::from_utf8(data) else {
-            result.push(AssetHealth {
-                pet_id,
-                status: "corrupt",
-                manifest_path: manifest_path.to_string_lossy().to_string(),
-            });
-            continue;
-        };
-        let Ok(manifest) = parse_manifest(&json) else {
-            result.push(AssetHealth {
-                pet_id,
-                status: "corrupt",
-                manifest_path: manifest_path.to_string_lossy().to_string(),
-            });
-            continue;
-        };
-        let files = match &manifest {
-            RuntimeAssetManifest::V1(value) => &value.files,
-            RuntimeAssetManifest::V2(value) => &value.files,
-        };
-        let mut healthy = true;
-        for file in files {
-            if validate_relative_path(&file.relative_path).is_err() {
-                healthy = false;
-                break;
-            }
-            let file_path = pet_dir.join("assets").join(&file.relative_path);
-            let Ok(bytes) = std::fs::read(&file_path) else {
-                healthy = false;
-                break;
-            };
-            if sha256_hex(&bytes) != file.sha256 {
-                healthy = false;
-                break;
-            }
-        }
-        result.push(AssetHealth {
-            pet_id,
-            status: if healthy { "healthy" } else { "corrupt" },
-            manifest_path: manifest_path.to_string_lossy().to_string(),
-        });
+        result.push(inspect_pet_asset(pets_dir, &pet_id));
     }
     result
 }
@@ -161,6 +150,18 @@ mod tests {
         std::fs::write(&img, b"corrupted content").unwrap();
         let health = scan_assets(&pets_dir);
         assert_eq!(health[0].status, "corrupt");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn inspects_one_pet_without_scanning_siblings() {
+        let (pets_dir, root) = setup();
+        std::fs::create_dir_all(pets_dir.join("unrelated")).unwrap();
+        let health = inspect_pet_asset(&pets_dir, "pet-a");
+        assert_eq!(health.pet_id, "pet-a");
+        assert_eq!(health.status, "healthy");
+        let missing = inspect_pet_asset(&pets_dir, "pet-missing");
+        assert_eq!(missing.status, "missing");
         let _ = std::fs::remove_dir_all(root);
     }
 }

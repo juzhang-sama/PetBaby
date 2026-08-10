@@ -7,8 +7,9 @@ mod runtime_assets;
 mod storage;
 mod windowing;
 
+use pets::active::{RuntimePetDescriptor, SharedActivePetService};
 use pets::pet::{IdentityMode, Pet, PetSummary, Species};
-use pets::{ActivePetSession, SharedActivePetSession, SharedPetRepository};
+use pets::SharedPetRepository;
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -226,20 +227,25 @@ fn pet_delete(state: tauri::State<'_, SharedPetRepository>, pet_id: String) -> R
 }
 
 #[tauri::command]
-fn pet_set_active(
-    state: tauri::State<'_, SharedActivePetSession>,
-    pet_id: String,
-) -> Result<(), String> {
-    let mut session = state.lock().map_err(|_| "session lock poisoned")?;
-    session.set_active(pet_id)
+fn pet_get_active(state: tauri::State<'_, SharedActivePetService>) -> Result<String, String> {
+    state.active()
 }
 
 #[tauri::command]
-fn pet_get_active(
-    state: tauri::State<'_, SharedActivePetSession>,
-) -> Result<Option<String>, String> {
-    let session = state.lock().map_err(|_| "session lock poisoned")?;
-    Ok(session.active().cloned())
+fn pet_prepare_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    pet_id: String,
+) -> Result<RuntimePetDescriptor, String> {
+    state.prepare(&pet_id)
+}
+
+#[tauri::command]
+fn pet_commit_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    pet_id: String,
+    accepted_variant_id: Option<String>,
+) -> Result<(), String> {
+    state.commit(&pet_id, accepted_variant_id.as_deref())
 }
 
 #[tauri::command]
@@ -510,16 +516,21 @@ pub fn run() {
                 .app_data_dir()
                 .map_err(|error| error.to_string())?;
             let storage = Arc::new(Mutex::new(storage::Storage::open(&data_dir.join("pets"))?));
+            let session = Arc::new(Mutex::new(pets::ActivePetSession::new()));
+            let active = Arc::new(pets::active::ActivePetService::new(
+                storage.clone(),
+                session,
+                data_dir.join("pets"),
+            ));
+            active.restore()?;
+            app.manage(active as SharedActivePetService);
             app.manage(Arc::new(Mutex::new(pets::repository::PetRepository::new(
                 storage.clone(),
             ))) as SharedPetRepository);
-            app.manage(Arc::new(Mutex::new(ActivePetSession::new())) as SharedActivePetSession);
-            let state_store = Arc::new(Mutex::new(pets::state::StateStore::new(storage)));
+            let state_store = Arc::new(Mutex::new(pets::state::StateStore::new(storage.clone())));
             app.manage(state_store.clone() as pets::state::SharedStateStore);
 
-            let creation_store = Arc::new(Mutex::new(creation::CreationStore::new(Arc::new(
-                Mutex::new(storage::Storage::open(&data_dir.join("pets"))?),
-            ))));
+            let creation_store = Arc::new(Mutex::new(creation::CreationStore::new(storage)));
             app.manage(creation_store.clone() as creation::SharedCreationStore);
 
             let manager = generation::tasks::GenerationManager::new(
@@ -572,8 +583,9 @@ pub fn run() {
             pet_create,
             pet_get,
             pet_delete,
-            pet_set_active,
             pet_get_active,
+            pet_prepare_switch,
+            pet_commit_switch,
             pet_state_load,
             pet_state_save,
             app_setting_get,
