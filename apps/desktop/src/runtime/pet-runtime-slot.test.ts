@@ -152,7 +152,7 @@ describe("PetRuntimeSlot", () => {
     });
     const slot = new PetRuntimeSlot(root, oldRuntime);
     slot.setVisibility(true);
-    slot.playMotion("idle", { priority: 10, loop: true });
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
     const swap = slot.prepare(candidate);
 
     expect(() => swap.activate()).toThrow("idle failed");
@@ -165,6 +165,94 @@ describe("PetRuntimeSlot", () => {
     expect(candidate.host.destroy).toHaveBeenCalledOnce();
     swap.rollback();
     expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    idle.cancel();
+    expect(previousIdle.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("cancels both runtime idle owners between activation and commit", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    const swap = slot.prepare(candidate);
+    swap.activate();
+
+    idle.cancel();
+    swap.commit();
+    idle.cancel();
+
+    expect(oldIdle.cancel).toHaveBeenCalledOnce();
+    expect(candidateIdle.cancel).toHaveBeenCalledOnce();
+    expect(oldRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(candidate.host.destroy).not.toHaveBeenCalled();
+  });
+
+  it("keeps explicit idle cancellation after an activated swap rolls back", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    const swap = slot.prepare(candidate);
+    swap.activate();
+
+    idle.cancel();
+    swap.rollback();
+    idle.cancel();
+
+    expect(oldIdle.cancel).toHaveBeenCalledOnce();
+    expect(candidateIdle.cancel).toHaveBeenCalledOnce();
+    expect(oldRuntime.host.destroy).not.toHaveBeenCalled();
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("does not cancel destroyed owners again when destroyed during an activated swap", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    slot.prepare(candidate).activate();
+
+    slot.destroy();
+    idle.cancel();
+
+    expect(oldRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    expect(oldIdle.cancel).not.toHaveBeenCalled();
+    expect(candidateIdle.cancel).not.toHaveBeenCalled();
+  });
+
+  it("does not cancel the committed owner again after slot destruction", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const oldIdle = { cancel: vi.fn() };
+    const candidateIdle = { cancel: vi.fn() };
+    vi.mocked(oldRuntime.host.playMotion).mockReturnValue(oldIdle);
+    vi.mocked(candidate.host.playMotion).mockReturnValue(candidateIdle);
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const idle = slot.playMotion("idle", { priority: 10, loop: true });
+    const swap = slot.prepare(candidate);
+    swap.activate();
+    swap.commit();
+
+    slot.destroy();
+    idle.cancel();
+
+    expect(oldRuntime.host.destroy).toHaveBeenCalledOnce();
+    expect(candidate.host.destroy).toHaveBeenCalledOnce();
+    expect(oldIdle.cancel).not.toHaveBeenCalled();
+    expect(candidateIdle.cancel).not.toHaveBeenCalled();
   });
 
   it("prepares the candidate with the current viewport and visibility before activation", () => {

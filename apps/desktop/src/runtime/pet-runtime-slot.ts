@@ -37,12 +37,12 @@ interface PendingRuntimeSwap {
   viewportRestored: boolean;
   visibilityRestored: boolean;
   candidateDestroyed: boolean;
-  candidateIdle: { state: ContinuousIdleMotion; handle: PetMotionHandle } | null;
+  candidateIdle: ContinuousIdleMotion | null;
 }
 
 interface ContinuousIdleMotion {
   options: { loop: true; priority?: number };
-  handle: PetMotionHandle;
+  owners: Map<MountedPetRuntime, PetMotionHandle>;
   cancelled: boolean;
 }
 
@@ -130,10 +130,9 @@ export class PetRuntimeSlot implements PetRenderer {
           this.active = candidate;
           const continuousIdle = this.continuousIdle;
           if (continuousIdle && !continuousIdle.cancelled) {
-            state.candidateIdle = {
-              state: continuousIdle,
-              handle: candidate.host.playMotion("idle", continuousIdle.options),
-            };
+            const handle = candidate.host.playMotion("idle", continuousIdle.options);
+            continuousIdle.owners.set(candidate, handle);
+            state.candidateIdle = continuousIdle;
           }
           state.activated = true;
         } catch (error) {
@@ -144,12 +143,10 @@ export class PetRuntimeSlot implements PetRenderer {
       commit: () => {
         if (state.settled || !this.isPending(state)) return;
         if (!state.activated || this.active !== candidate) throw new Error("swap is not committable");
-        if (state.candidateIdle && this.continuousIdle === state.candidateIdle.state) {
-          state.candidateIdle.state.handle = state.candidateIdle.handle;
-        }
         state.settled = true;
         this.pending = null;
         state.previous.host.destroy();
+        this.removeIdleOwner(state.previous, state);
       },
       rollback: () => {
         if (state.settled || !this.isPending(state)) return;
@@ -176,7 +173,7 @@ export class PetRuntimeSlot implements PetRenderer {
 
     const continuousIdle: ContinuousIdleMotion = {
       options: { ...options, loop: true },
-      handle,
+      owners: new Map([[this.active, handle]]),
       cancelled: false,
     };
     this.continuousIdle = continuousIdle;
@@ -184,8 +181,19 @@ export class PetRuntimeSlot implements PetRenderer {
       cancel: () => {
         if (continuousIdle.cancelled) return;
         continuousIdle.cancelled = true;
-        continuousIdle.handle.cancel();
+        let firstError: unknown;
+        let failed = false;
+        for (const owner of new Set(continuousIdle.owners.values())) {
+          try {
+            owner.cancel();
+          } catch (error) {
+            if (!failed) firstError = error;
+            failed = true;
+          }
+        }
+        continuousIdle.owners.clear();
         if (this.continuousIdle === continuousIdle) this.continuousIdle = null;
+        if (failed) throw firstError;
       },
     };
   }
@@ -229,11 +237,16 @@ export class PetRuntimeSlot implements PetRenderer {
     if (pending) {
       pending.settled = true;
       this.active.host.destroy();
+      this.removeIdleOwner(this.active, pending);
       const inactive = this.active === pending.previous ? pending.candidate : pending.previous;
       inactive.host.destroy();
+      this.removeIdleOwner(inactive, pending);
+      this.continuousIdle = null;
       return;
     }
     this.active.host.destroy();
+    this.removeIdleOwner(this.active);
+    this.continuousIdle = null;
   }
 
   private isPending(state: PendingRuntimeSwap): boolean {
@@ -276,6 +289,7 @@ export class PetRuntimeSlot implements PetRenderer {
     }
     if (!state.candidateDestroyed) {
       state.candidate.host.destroy();
+      this.removeIdleOwner(state.candidate, state);
       state.candidateDestroyed = true;
     }
     state.settled = true;
@@ -288,5 +302,10 @@ export class PetRuntimeSlot implements PetRenderer {
     } catch {
       // The caller is handling a more relevant failure.
     }
+  }
+
+  private removeIdleOwner(runtime: MountedPetRuntime, pending?: PendingRuntimeSwap): void {
+    this.continuousIdle?.owners.delete(runtime);
+    pending?.candidateIdle?.owners.delete(runtime);
   }
 }
