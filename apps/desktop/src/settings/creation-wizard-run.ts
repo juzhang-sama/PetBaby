@@ -14,6 +14,17 @@ export interface WizardRefreshToken {
   revision: number;
 }
 
+export function refreshFailureDisposition(input: {
+  currentVisitSamePet: boolean;
+  revisionMatches: boolean;
+}): { syncControls: boolean; message: string | null } {
+  if (!input.currentVisitSamePet) return { syncControls: false, message: null };
+  return {
+    syncControls: true,
+    message: input.revisionMatches ? "恢复最新状态失败，可重试" : null,
+  };
+}
+
 export class CreationWizardRun {
   private visit = 0;
   private active = false;

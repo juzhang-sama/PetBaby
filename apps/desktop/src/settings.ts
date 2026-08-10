@@ -6,6 +6,7 @@ import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-vie
 import { requestPetSwitch } from "./settings/pet-switch-client";
 import {
   CreationWizardRun,
+  refreshFailureDisposition,
   type WizardOperationToken,
 } from "./settings/creation-wizard-run";
 
@@ -485,13 +486,27 @@ async function refreshCurrentVisitForPet(operation: WizardOperationToken): Promi
   if (!refresh || !isCurrentWizard(visit, currentFlow) || currentFlow.petId !== operation.petId) return;
   try {
     const snapshot = await invoke<CreationResume>("pet_creation_resume", { petId: operation.petId });
-    if (!isCurrentWizard(visit, currentFlow) || !wizardRun.shouldApplyRefresh(refresh, currentFlow.petId)) return;
+    if (!isCurrentWizard(visit, currentFlow) || !wizardRun.shouldApplyRefresh(refresh, currentFlow.petId)) {
+      recoverRefreshControls(refresh, currentFlow);
+      return;
+    }
     currentFlow.restore(snapshot);
     syncWizardOperationControls(currentFlow.petId);
     await renderResumedSnapshot(snapshot, visit, currentFlow);
   } catch {
-    // The newer visit retains its existing, still actionable UI on refresh failure.
+    recoverRefreshControls(refresh, currentFlow);
   }
+}
+
+function recoverRefreshControls(refresh: { visit: number; petId: string; revision: number }, currentFlow: CreationFlow): void {
+  const currentVisitSamePet = isCurrentWizard(refresh.visit, currentFlow) && currentFlow.petId === refresh.petId;
+  const disposition = refreshFailureDisposition({
+    currentVisitSamePet,
+    revisionMatches: wizardRun.shouldApplyRefresh(refresh, currentFlow.petId),
+  });
+  if (!disposition.syncControls) return;
+  syncWizardOperationControls(currentFlow.petId);
+  if (disposition.message) wizardStatus.textContent = disposition.message;
 }
 
 function refreshAfterStaleOperation(operation: WizardOperationToken): void {

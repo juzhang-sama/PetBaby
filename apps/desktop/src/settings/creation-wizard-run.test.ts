@@ -1,5 +1,5 @@
 import { describe, expect, it } from "vitest";
-import { CreationWizardRun } from "./creation-wizard-run";
+import { CreationWizardRun, refreshFailureDisposition } from "./creation-wizard-run";
 
 describe("CreationWizardRun", () => {
   it("allows one submission for the current wizard visit", () => {
@@ -81,5 +81,24 @@ describe("CreationWizardRun", () => {
     const operation = run.beginOperation(oldVisit, "compile", "pet-1");
     run.enter();
     expect(run.shouldRefreshStaleOperation(operation!, "pet-2")).toBe(false);
+  });
+
+  it.each([
+    ["compile", "resume rejection"],
+    ["compile", "corrupt restore"],
+    ["activate", "resume rejection"],
+    ["activate", "corrupt restore"],
+  ] as const)("recovers controls after stale %s %s", (_operation, _failure) => {
+    expect(refreshFailureDisposition({ currentVisitSamePet: true, revisionMatches: true })).toEqual({
+      syncControls: true,
+      message: "恢复最新状态失败，可重试",
+    });
+  });
+
+  it("does not overwrite a newer generation's page after a stale refresh failure", () => {
+    expect(refreshFailureDisposition({ currentVisitSamePet: true, revisionMatches: false })).toEqual({
+      syncControls: true,
+      message: null,
+    });
   });
 });
