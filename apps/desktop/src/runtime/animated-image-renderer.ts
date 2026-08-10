@@ -3,6 +3,7 @@ import {
   computeMotionFrame,
   planBreathSlices,
   planHitEnvelopeTransforms,
+  planRasterSafeBreathSlice,
   type BreathSlice,
 } from "./animated-image-motion";
 import { computeContainRect, type LayoutRect } from "./geometry";
@@ -215,24 +216,24 @@ export class AnimatedImageRenderer implements PetRenderer {
     const pivotY = this.bounds.y + this.profile.swayPivot.y * this.bounds.height;
     const shiftX = this.viewport.width * frame.swayXRatio;
     this.composeContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
-    this.composeContext.drawImage(
-      this.image,
-      this.bounds.x,
-      this.bounds.y,
-      this.bounds.width,
-      this.bounds.height,
-    );
     for (const slice of slices) {
+      const rasterSlice = planRasterSafeBreathSlice(
+        slice,
+        this.image.width,
+        this.image.height,
+        this.bounds.scale,
+        this.viewport.dpr,
+      );
       this.composeContext.drawImage(
         this.image,
-        slice.sourceX,
-        slice.sourceY,
-        slice.sourceWidth,
-        slice.sourceHeight,
-        this.bounds.x + slice.destX * this.bounds.scale,
-        this.bounds.y + slice.destY * this.bounds.scale,
-        slice.destWidth * this.bounds.scale,
-        slice.destHeight * this.bounds.scale,
+        rasterSlice.sourceX,
+        rasterSlice.sourceY,
+        rasterSlice.sourceWidth,
+        rasterSlice.sourceHeight,
+        this.bounds.x + rasterSlice.destX * this.bounds.scale,
+        this.bounds.y + rasterSlice.destY * this.bounds.scale,
+        rasterSlice.destWidth * this.bounds.scale,
+        rasterSlice.destHeight * this.bounds.scale,
       );
     }
     this.displayContext.clearRect(0, 0, this.viewport.width, this.viewport.height);

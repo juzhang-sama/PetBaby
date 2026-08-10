@@ -38,6 +38,42 @@ export interface BreathSlice {
   destHeight: number;
 }
 
+export function planRasterSafeBreathSlice(
+  slice: BreathSlice,
+  imageWidth: number,
+  imageHeight: number,
+  destinationScale: number,
+  dpr: number,
+): BreathSlice {
+  const destinationBleed = 0.5 / (destinationScale * dpr);
+  const sourceBleedX = destinationBleed * slice.sourceWidth / slice.destWidth;
+  const sourceBleedY = destinationBleed * slice.sourceHeight / slice.destHeight;
+  const epsilon = Number.EPSILON * Math.max(1, imageWidth, imageHeight) * 4;
+  const bleedLeft = slice.sourceX > epsilon;
+  const bleedRight = slice.sourceX + slice.sourceWidth < imageWidth - epsilon;
+  const bleedTop = slice.sourceY > epsilon;
+  const bleedBottom = slice.sourceY + slice.sourceHeight < imageHeight - epsilon;
+
+  return {
+    sourceX: slice.sourceX - (bleedLeft ? sourceBleedX : 0),
+    sourceY: slice.sourceY - (bleedTop ? sourceBleedY : 0),
+    sourceWidth: slice.sourceWidth
+      + (bleedLeft ? sourceBleedX : 0)
+      + (bleedRight ? sourceBleedX : 0),
+    sourceHeight: slice.sourceHeight
+      + (bleedTop ? sourceBleedY : 0)
+      + (bleedBottom ? sourceBleedY : 0),
+    destX: slice.destX - (bleedLeft ? destinationBleed : 0),
+    destY: slice.destY - (bleedTop ? destinationBleed : 0),
+    destWidth: slice.destWidth
+      + (bleedLeft ? destinationBleed : 0)
+      + (bleedRight ? destinationBleed : 0),
+    destHeight: slice.destHeight
+      + (bleedTop ? destinationBleed : 0)
+      + (bleedBottom ? destinationBleed : 0),
+  };
+}
+
 export function computeMotionFrame(elapsedMs: number): MotionFrame {
   const breathPhase = 2 * Math.PI
     * (elapsedMs % LIFE_V1.breathPeriodMs)

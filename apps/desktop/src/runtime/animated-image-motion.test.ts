@@ -6,6 +6,7 @@ import {
   computeMotionFrame,
   planBreathSlices,
   planHitEnvelopeTransforms,
+  planRasterSafeBreathSlice,
 } from "./animated-image-motion";
 
 describe("animated image motion", () => {
@@ -15,6 +16,116 @@ describe("animated image motion", () => {
     bounds: { x: 0, y: 50, width: 420, height: 420 },
     pivot: { x: 210, y: 352.4 },
   };
+
+  it("adds one physical pixel of overlap across a shared internal edge", () => {
+    const destinationScale = 0.4;
+    const dpr = 2;
+    const left = {
+      sourceX: 0,
+      sourceY: 0,
+      sourceWidth: 500,
+      sourceHeight: 1000,
+      destX: 0,
+      destY: 0,
+      destWidth: 500,
+      destHeight: 1000,
+    };
+    const right = {
+      ...left,
+      sourceX: 500,
+      destX: 500,
+    };
+    const semanticOverlap = (left.destX + left.destWidth - right.destX)
+      * destinationScale
+      * dpr;
+    const safeLeft = planRasterSafeBreathSlice(
+      left,
+      1000,
+      1000,
+      destinationScale,
+      dpr,
+    );
+    const safeRight = planRasterSafeBreathSlice(
+      right,
+      1000,
+      1000,
+      destinationScale,
+      dpr,
+    );
+    const rasterOverlap = (
+      safeLeft.destX + safeLeft.destWidth - safeRight.destX
+    ) * destinationScale * dpr;
+
+    expect(semanticOverlap).toBe(0);
+    expect(rasterOverlap).toBeGreaterThanOrEqual(1);
+    expect(rasterOverlap).toBeCloseTo(1);
+  });
+
+  it("never expands the image's external source or destination edges", () => {
+    const left = planRasterSafeBreathSlice({
+      sourceX: 0,
+      sourceY: 0,
+      sourceWidth: 500,
+      sourceHeight: 1000,
+      destX: 0,
+      destY: 0,
+      destWidth: 500,
+      destHeight: 1000,
+    }, 1000, 1000, 0.4, 2);
+    const right = planRasterSafeBreathSlice({
+      sourceX: 500,
+      sourceY: 0,
+      sourceWidth: 500,
+      sourceHeight: 1000,
+      destX: 500,
+      destY: 0,
+      destWidth: 500,
+      destHeight: 1000,
+    }, 1000, 1000, 0.4, 2);
+
+    expect(left.sourceX).toBe(0);
+    expect(left.destX).toBe(0);
+    expect(left.sourceY).toBe(0);
+    expect(left.destY).toBe(0);
+    expect(right.sourceX + right.sourceWidth).toBe(1000);
+    expect(right.destX + right.destWidth).toBe(1000);
+    expect(right.sourceY + right.sourceHeight).toBe(1000);
+    expect(right.destY + right.destHeight).toBe(1000);
+  });
+
+  it("maps a half-physical-pixel bleed through deformed destination scales", () => {
+    const slice = {
+      sourceX: 300,
+      sourceY: 400,
+      sourceWidth: 400,
+      sourceHeight: 100,
+      destX: 290,
+      destY: 402,
+      destWidth: 420,
+      destHeight: 104,
+    };
+    const destinationScale = 0.4;
+    const dpr = 2;
+    const safe = planRasterSafeBreathSlice(
+      slice,
+      1000,
+      1000,
+      destinationScale,
+      dpr,
+    );
+    const destinationBleed = 0.5 / (destinationScale * dpr);
+    const sourceBleedX = destinationBleed * slice.sourceWidth / slice.destWidth;
+    const sourceBleedY = destinationBleed * slice.sourceHeight / slice.destHeight;
+
+    expect(safe.destX).toBeCloseTo(slice.destX - destinationBleed);
+    expect(safe.destY).toBeCloseTo(slice.destY - destinationBleed);
+    expect(safe.destWidth).toBeCloseTo(slice.destWidth + 2 * destinationBleed);
+    expect(safe.destHeight).toBeCloseTo(slice.destHeight + 2 * destinationBleed);
+    expect(safe.sourceX).toBeCloseTo(slice.sourceX - sourceBleedX);
+    expect(safe.sourceY).toBeCloseTo(slice.sourceY - sourceBleedY);
+    expect(safe.sourceWidth).toBeCloseTo(slice.sourceWidth + 2 * sourceBleedX);
+    expect(safe.sourceHeight).toBeCloseTo(slice.sourceHeight + 2 * sourceBleedY);
+  });
 
   it("uses the approved life-v1 periods and amplitudes", () => {
     expect(LIFE_V1).toEqual({
