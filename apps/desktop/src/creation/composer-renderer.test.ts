@@ -16,6 +16,7 @@ class FakeCanvas {
   width = 1024;
   height = 1024;
   readonly calls: string[] = [];
+  pixels = "transparent";
 
   constructor(readonly name: string) {}
 }
@@ -27,11 +28,19 @@ class FakeContext {
 
   constructor(
     readonly canvas: FakeCanvas,
-    private readonly throwOnDraw?: string,
+    private readonly failures: {
+      throwOnDraw?: string;
+      failTargetDraw?: boolean;
+      failTargetComposite?: boolean;
+      failTargetRestore?: boolean;
+    },
   ) {}
 
   get globalCompositeOperation(): GlobalCompositeOperation { return this.operation as GlobalCompositeOperation; }
   set globalCompositeOperation(value: GlobalCompositeOperation) {
+    if (this.canvas.name === "target" && value === "copy" && this.failures.failTargetComposite) {
+      throw new Error("target composite failed");
+    }
     this.operation = value;
     this.canvas.calls.push(`gco:${value}`);
   }
@@ -49,9 +58,15 @@ class FakeContext {
   }
 
   save(): void { this.canvas.calls.push("save"); }
-  restore(): void { this.canvas.calls.push("restore"); }
+  restore(): void {
+    this.canvas.calls.push("restore");
+    if (this.canvas.name === "target" && this.failures.failTargetRestore) {
+      throw new Error("target restore failed");
+    }
+  }
   clearRect(x: number, y: number, width: number, height: number): void {
     this.canvas.calls.push(`clear:${x},${y},${width},${height}`);
+    this.canvas.pixels = "transparent";
   }
   fillRect(x: number, y: number, width: number, height: number): void {
     this.canvas.calls.push(`fill:${x},${y},${width},${height}`);
@@ -63,8 +78,12 @@ class FakeContext {
     const label = source instanceof FakeCanvas
       ? `surface:${source.name}`
       : (source as unknown as FakeImage).label;
-    if (label.includes(this.throwOnDraw ?? "\0")) throw new Error(`draw failed: ${label}`);
+    if (
+      label.includes(this.failures.throwOnDraw ?? "\0")
+      || (this.canvas.name === "target" && this.failures.failTargetDraw)
+    ) throw new Error(`draw failed: ${label}`);
     this.canvas.calls.push(`draw:${label}`);
+    this.canvas.pixels = `${this.operation}:${label}`;
   }
 }
 
@@ -78,6 +97,9 @@ function fakePorts(options: {
   failLoad?: string;
   failContextAt?: number;
   throwOnDraw?: string;
+  failTargetDraw?: boolean;
+  failTargetComposite?: boolean;
+  failTargetRestore?: boolean;
   png?: Blob;
 } = {}): FakePorts {
   const surfaces: FakeCanvas[] = [];
@@ -98,7 +120,7 @@ function fakePorts(options: {
     context(surface) {
       contextCount += 1;
       if (contextCount === options.failContextAt) throw new Error("context failed");
-      return new FakeContext(surface as unknown as FakeCanvas, options.throwOnDraw) as unknown as CanvasRenderingContext2D;
+      return new FakeContext(surface as unknown as FakeCanvas, options) as unknown as CanvasRenderingContext2D;
     },
     async loadImage(url) {
       loaded.push(url);
@@ -256,7 +278,7 @@ describe("deterministic composer rendering", () => {
       "draw:asset://parts/eyes-open.png",
       "draw:asset://parts/muzzle.png",
     ]);
-    expect(ports.target.calls.filter((call) => call.startsWith("clear:"))).toEqual(["clear:0,0,1024,1024"]);
+    expect(ports.target.calls.filter((call) => call.startsWith("clear:"))).toEqual([]);
     expect(ports.target.calls.filter((call) => call.startsWith("draw:"))).toHaveLength(1);
   });
 
@@ -319,7 +341,7 @@ describe("deterministic composer rendering", () => {
     const ports = fakePorts();
     await renderComposerRecipe(packFixture(), recipe("pattern-tabby"), ports.target as unknown as HTMLCanvasElement, ports);
 
-    for (const surface of [...ports.surfaces, ports.target]) {
+    for (const surface of ports.surfaces) {
       expect(surface.calls.slice(0, 4)).toEqual([
         "save",
         "alpha:1",
@@ -328,6 +350,61 @@ describe("deterministic composer rendering", () => {
       ]);
       expect(surface.calls.at(-1)).toBe("restore");
     }
+    expect(ports.target.calls.slice(0, 4)).toEqual([
+      "save",
+      "alpha:1",
+      "transform:1,0,0,1,0,0",
+      "gco:copy",
+    ]);
+    expect(ports.target.calls.at(-1)).toBe("restore");
+  });
+
+  it("preserves old target pixels when the single final copy draw fails", async () => {
+    const ports = fakePorts({ failTargetDraw: true });
+    ports.target.pixels = "old-preview";
+
+    await expect(renderComposerRecipe(
+      packFixture(),
+      recipe(),
+      ports.target as unknown as HTMLCanvasElement,
+      ports,
+    )).rejects.toThrow(/draw failed/);
+
+    expect(ports.target.pixels).toBe("old-preview");
+    expect(ports.target.calls.some((call) => call.startsWith("clear:"))).toBe(false);
+    expect(ports.target.calls.some((call) => call.startsWith("draw:"))).toBe(false);
+  });
+
+  it("preserves old target pixels when configuring final copy compositing fails", async () => {
+    const ports = fakePorts({ failTargetComposite: true });
+    ports.target.pixels = "old-preview";
+
+    await expect(renderComposerRecipe(
+      packFixture(),
+      recipe(),
+      ports.target as unknown as HTMLCanvasElement,
+      ports,
+    )).rejects.toThrow(/composite failed/);
+
+    expect(ports.target.pixels).toBe("old-preview");
+    expect(ports.target.calls.some((call) => call.startsWith("clear:"))).toBe(false);
+    expect(ports.target.calls.some((call) => call.startsWith("draw:"))).toBe(false);
+  });
+
+  it("does not report failure when an abnormal restore throws after the final copy committed", async () => {
+    const ports = fakePorts({ failTargetRestore: true });
+    ports.target.pixels = "old-preview";
+
+    await expect(renderComposerRecipe(
+      packFixture(),
+      recipe(),
+      ports.target as unknown as HTMLCanvasElement,
+      ports,
+    )).resolves.toBeUndefined();
+
+    expect(ports.target.pixels).toMatch(/^copy:surface:/);
+    expect(ports.target.calls.filter((call) => call.startsWith("draw:"))).toHaveLength(1);
+    expect(ports.target.calls).toContain("restore");
   });
 
   it("skips all pattern loading and compositing for pattern-none", async () => {

@@ -242,6 +242,33 @@ async function renderOffscreen(
   return final;
 }
 
+function commitFinalSurface(
+  context: CanvasRenderingContext2D,
+  final: HTMLCanvasElement,
+): void {
+  context.save();
+  try {
+    context.globalAlpha = 1;
+    context.setTransform(1, 0, 0, 1, 0, 0);
+    context.globalCompositeOperation = "copy";
+    context.drawImage(final, 0, 0);
+  } catch (error) {
+    try {
+      context.restore();
+    } catch {
+      // Preserve the pre-commit failure; no target pixel operation succeeded.
+    }
+    throw error;
+  }
+
+  try {
+    context.restore();
+  } catch {
+    // Canvas restore is normally no-throw. The copy already committed, so a
+    // non-standard adapter failure cannot be reported as an uncommitted render.
+  }
+}
+
 export async function renderComposerRecipe(
   pack: ComposerPackManifest,
   recipe: ComposerRecipe,
@@ -254,11 +281,7 @@ export async function renderComposerRecipe(
   }
   const final = await renderOffscreen(pack, recipe, ports, layers);
   const context = ports.context(target);
-  drawSafely(context, () => {
-    context.clearRect(0, 0, CANVAS_SIZE, CANVAS_SIZE);
-    context.globalCompositeOperation = "source-over";
-    context.drawImage(final, 0, 0);
-  });
+  commitFinalSurface(context, final);
 }
 
 export async function exportComposerPng(
