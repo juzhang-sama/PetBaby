@@ -72,24 +72,6 @@ pub(crate) fn durable_replace_file(
     }
 }
 
-pub(crate) fn durable_directory_entry(path: &std::path::Path) -> Result<(), String> {
-    #[cfg(unix)]
-    {
-        sync_directory(
-            path.parent()
-                .ok_or_else(|| "durable directory has no parent".to_string())?,
-        )
-    }
-    #[cfg(not(unix))]
-    {
-        // Windows orders the newly-created operation directory before resource isolation by
-        // publishing journal.json inside it with MOVEFILE_WRITE_THROUGH. No isolation starts
-        // until that child publication succeeds.
-        let _ = path;
-        Ok(())
-    }
-}
-
 #[cfg(unix)]
 fn sync_directory(path: &std::path::Path) -> Result<(), String> {
     std::fs::File::open(path)

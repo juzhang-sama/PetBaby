@@ -120,7 +120,11 @@ impl PetDeletionService {
 
         let plan = self.require_deletable_pet(pet_id)?;
         let quarantine_root = self.quarantine_root();
-        prepare_quarantine_root(&self.app_data_dir, &quarantine_root)?;
+        prepare_quarantine_root(
+            &self.app_data_dir,
+            &quarantine_root,
+            self.journal_publish_ops.as_ref(),
+        )?;
         let mut journal = DeletionJournal {
             pet_id: pet_id.into(),
             job_ids: plan.job_ids.clone(),
@@ -230,7 +234,11 @@ impl PetDeletionService {
         }
 
         let quarantine_root = self.quarantine_root();
-        prepare_quarantine_root(&self.app_data_dir, &quarantine_root)?;
+        prepare_quarantine_root(
+            &self.app_data_dir,
+            &quarantine_root,
+            self.journal_publish_ops.as_ref(),
+        )?;
         let mut journal = DeletionJournal {
             pet_id: pet_id.clone(),
             job_ids: job_ids.clone(),
@@ -822,6 +830,11 @@ fn validate_owned_root(parent: &Path, root: &Path) -> Result<(), String> {
     if !root.exists() {
         std::fs::create_dir(root).map_err(|error| error.to_string())?;
     }
+    validate_existing_owned_root(parent, root)
+}
+
+fn validate_existing_owned_root(parent: &Path, root: &Path) -> Result<(), String> {
+    validate_regular_directory(parent, "deletion parent")?;
     validate_regular_directory(root, "deletion root")?;
     let canonical_parent = parent
         .canonicalize()
@@ -838,13 +851,72 @@ fn validate_owned_root(parent: &Path, root: &Path) -> Result<(), String> {
     Ok(())
 }
 
-fn prepare_quarantine_root(app_data_dir: &Path, operation: &Path) -> Result<(), String> {
+fn prepare_quarantine_root(
+    app_data_dir: &Path,
+    operation: &Path,
+    ops: &dyn JournalPublishOps,
+) -> Result<(), String> {
     let trash = app_data_dir.join("trash");
     let delete_root = trash.join("pet-delete");
-    validate_owned_root(app_data_dir, &trash)?;
-    validate_owned_root(&trash, &delete_root)?;
-    validate_owned_root(&delete_root, operation)?;
-    crate::platform::durable_directory_entry(operation)
+    ensure_owned_root_durable(app_data_dir, &trash, ops)?;
+    ensure_owned_root_durable(&trash, &delete_root, ops)?;
+    ensure_owned_root_durable(&delete_root, operation, ops)
+}
+
+fn ensure_owned_root_durable(
+    parent: &Path,
+    root: &Path,
+    ops: &dyn JournalPublishOps,
+) -> Result<(), String> {
+    validate_regular_directory(parent, "deletion parent")?;
+    match std::fs::symlink_metadata(root) {
+        Ok(_) => return validate_existing_owned_root(parent, root),
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(error.to_string()),
+    }
+
+    let root_name = root
+        .file_name()
+        .and_then(|name| name.to_str())
+        .ok_or_else(|| "durable deletion root has no standard file name".to_string())?;
+    let nonce = std::time::SystemTime::now()
+        .duration_since(std::time::UNIX_EPOCH)
+        .map(|duration| duration.as_nanos())
+        .unwrap_or_default();
+    let staging = parent.join(format!(
+        ".{root_name}-{}-{nonce}.staging",
+        std::process::id()
+    ));
+    std::fs::create_dir(&staging).map_err(|error| error.to_string())?;
+    if let Err(error) = validate_existing_owned_root(parent, &staging) {
+        cleanup_empty_staging_directory(parent, &staging);
+        return Err(error);
+    }
+
+    if let Err(error) = ops.durable_rename(&staging, root) {
+        cleanup_empty_staging_directory(parent, &staging);
+        return match std::fs::symlink_metadata(root) {
+            Ok(_) => match validate_existing_owned_root(parent, root) {
+                Ok(()) => Err(error),
+                Err(validation) => Err(format!(
+                    "{error}; published deletion root is invalid: {validation}"
+                )),
+            },
+            Err(inspect_error) if inspect_error.kind() == std::io::ErrorKind::NotFound => {
+                Err(error)
+            }
+            Err(inspect_error) => Err(format!(
+                "{error}; cannot inspect possibly published deletion root: {inspect_error}"
+            )),
+        };
+    }
+    validate_existing_owned_root(parent, root)
+}
+
+fn cleanup_empty_staging_directory(parent: &Path, staging: &Path) {
+    if validate_existing_owned_root(parent, staging).is_ok() {
+        let _ = std::fs::remove_dir(staging);
+    }
 }
 
 fn validate_path_parent(path: &Path, expected_parent: &Path) -> Result<(), String> {
@@ -1168,7 +1240,7 @@ mod tests {
 
     struct FailAfterDurableRenameOps {
         fail_call: u32,
-        calls: AtomicU32,
+        calls: Arc<AtomicU32>,
     }
 
     impl JournalPublishOps for FailAfterDurableRenameOps {
@@ -1179,6 +1251,22 @@ mod tests {
                 Err(format!("durability barrier failed after rename {call}"))
             } else {
                 Ok(())
+            }
+        }
+    }
+
+    struct FailBeforeDurableRenameOps {
+        fail_call: u32,
+        calls: Arc<AtomicU32>,
+    }
+
+    impl JournalPublishOps for FailBeforeDurableRenameOps {
+        fn durable_rename(&self, source: &Path, target: &Path) -> Result<(), String> {
+            let call = self.calls.fetch_add(1, Ordering::SeqCst) + 1;
+            if call == self.fail_call {
+                Err(format!("directory publication failed before rename {call}"))
+            } else {
+                crate::platform::durable_replace_file(source, target)
             }
         }
     }
@@ -1974,10 +2062,94 @@ mod tests {
     }
 
     #[test]
+    fn each_owned_root_publish_failure_stops_before_later_roots_journal_or_isolation() {
+        for fail_call in 1..=3 {
+            let calls = Arc::new(AtomicU32::new(0));
+            let test =
+                DeletionHarness::with_journal_publish_ops(Arc::new(FailBeforeDurableRenameOps {
+                    fail_call,
+                    calls: calls.clone(),
+                }));
+            test.bind_pet_a_job_to_creation_session();
+
+            assert!(test.service.delete("pet-a").is_err());
+
+            assert_eq!(calls.load(Ordering::SeqCst), fail_call);
+            assert!(test.pet_exists("pet-a"));
+            assert!(test.job_exists("job-a"));
+            assert!(test.session_exists("session-a"));
+            assert!(test.pet_dir("pet-a").join("assets/asset.txt").exists());
+            assert!(test.job_dir("job-a").join("result.txt").exists());
+            assert!(test.session_dir("session-a").join("draft.txt").exists());
+
+            let trash = test.root.join("trash");
+            let delete_root = trash.join("pet-delete");
+            match fail_call {
+                1 => assert!(!trash.exists()),
+                2 => {
+                    assert!(trash.exists());
+                    assert!(!delete_root.exists());
+                    assert_eq!(std::fs::read_dir(&trash).unwrap().count(), 0);
+                }
+                3 => {
+                    assert!(delete_root.exists());
+                    assert_eq!(std::fs::read_dir(&delete_root).unwrap().count(), 0);
+                }
+                _ => unreachable!(),
+            }
+        }
+    }
+
+    #[test]
+    fn each_post_move_root_barrier_failure_keeps_only_the_valid_published_prefix() {
+        for fail_call in 1..=3 {
+            let calls = Arc::new(AtomicU32::new(0));
+            let test =
+                DeletionHarness::with_journal_publish_ops(Arc::new(FailAfterDurableRenameOps {
+                    fail_call,
+                    calls: calls.clone(),
+                }));
+            test.bind_pet_a_job_to_creation_session();
+
+            assert!(test.service.delete("pet-a").is_err());
+
+            assert_eq!(calls.load(Ordering::SeqCst), fail_call);
+            assert!(test.pet_exists("pet-a"));
+            assert!(test.job_exists("job-a"));
+            assert!(test.session_exists("session-a"));
+            assert!(test.pet_dir("pet-a").join("assets/asset.txt").exists());
+            assert!(test.job_dir("job-a").join("result.txt").exists());
+            assert!(test.session_dir("session-a").join("draft.txt").exists());
+
+            let trash = test.root.join("trash");
+            let delete_root = trash.join("pet-delete");
+            validate_existing_owned_root(&test.root, &trash).unwrap();
+            if fail_call == 1 {
+                assert_eq!(std::fs::read_dir(&trash).unwrap().count(), 0);
+                continue;
+            }
+            validate_existing_owned_root(&trash, &delete_root).unwrap();
+            if fail_call == 2 {
+                assert_eq!(std::fs::read_dir(&delete_root).unwrap().count(), 0);
+                continue;
+            }
+            let operations: Vec<_> = std::fs::read_dir(&delete_root)
+                .unwrap()
+                .map(|entry| entry.unwrap().path())
+                .collect();
+            assert_eq!(operations.len(), 1);
+            validate_existing_owned_root(&delete_root, &operations[0]).unwrap();
+            assert!(!operations[0].join(JOURNAL_FILE).exists());
+            assert!(!operations[0].join(PREVIOUS_JOURNAL_FILE).exists());
+        }
+    }
+
+    #[test]
     fn resource_barrier_failure_after_os_move_restores_before_database_deletion() {
+        let calls = Arc::new(AtomicU32::new(0));
         let test = DeletionHarness::with_journal_publish_ops(Arc::new(FailAfterDurableRenameOps {
-            fail_call: 2,
-            calls: AtomicU32::new(0),
+            fail_call: 5,
+            calls,
         }));
         test.bind_pet_a_job_to_creation_session();
 
