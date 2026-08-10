@@ -8,7 +8,12 @@ mod storage;
 mod windowing;
 
 use pets::pet::{IdentityMode, Pet, PetSummary, Species};
-use pets::{ActivePetSession, SharedActivePetSession, SharedPetRepository};
+use pets::SharedPetRepository;
+use pets::{
+    active::{RuntimePetDescriptor, SharedActivePetService},
+    catalog::{CreationResume, PetCatalogEntry, PetCatalogService, SharedPetCatalogService},
+    deletion::{DeleteOutcome, PetDeletionService, SharedPetDeletionService},
+};
 use platform::{PlatformAdapter, WindowsPlatformAdapter};
 use std::sync::{Arc, Mutex};
 use tauri::Manager;
@@ -26,6 +31,48 @@ fn probe_version() -> &'static str {
 #[tauri::command]
 fn frontend_ping(message: String) {
     println!("[frontend] {message}");
+}
+
+fn pet_asset_relative_path(path: &str) -> Result<String, String> {
+    let encoded = path.strip_prefix('/').unwrap_or(path);
+    let decoded = percent_encoding::percent_decode_str(encoded)
+        .decode_utf8()
+        .map_err(|_| "pet asset path is not valid UTF-8".to_owned())?;
+    let relative = runtime_assets::manifest::normalize_relative_path(decoded.as_ref())?;
+    let segments = relative.split('/').collect::<Vec<_>>();
+    if segments.len() < 3 || segments[1] != "assets" {
+        return Err("pet asset path must match <pet_id>/assets/<file>".to_owned());
+    }
+    Ok(relative)
+}
+
+fn serve_pet_asset(file: &std::path::Path) -> tauri::http::Response<Vec<u8>> {
+    use tauri::http::{
+        header::{ACCESS_CONTROL_ALLOW_ORIGIN, CONTENT_TYPE},
+        Response, StatusCode,
+    };
+
+    match std::fs::read(file) {
+        Ok(bytes) => {
+            let builder = Response::builder()
+                .status(StatusCode::OK)
+                .header(ACCESS_CONTROL_ALLOW_ORIGIN, "*");
+            let builder = match file.extension().and_then(|extension| extension.to_str()) {
+                Some(extension) if extension.eq_ignore_ascii_case("png") => {
+                    builder.header(CONTENT_TYPE, "image/png")
+                }
+                Some(extension) if extension.eq_ignore_ascii_case("json") => {
+                    builder.header(CONTENT_TYPE, "application/json")
+                }
+                _ => builder,
+            };
+            builder.body(bytes).unwrap()
+        }
+        Err(_) => Response::builder()
+            .status(StatusCode::NOT_FOUND)
+            .body(Vec::new())
+            .unwrap(),
+    }
 }
 
 #[tauri::command]
@@ -88,9 +135,7 @@ fn probe_fullscreen(
 }
 
 #[tauri::command]
-fn parse_manifest(
-    json: String,
-) -> Result<runtime_assets::manifest::RuntimeAssetManifestV1, String> {
+fn parse_manifest(json: String) -> Result<runtime_assets::manifest::RuntimeAssetManifest, String> {
     runtime_assets::manifest::parse_manifest(&json)
 }
 
@@ -118,23 +163,147 @@ fn asset_scan(app: tauri::AppHandle) -> Result<Vec<runtime_assets::loader::Asset
 }
 
 #[tauri::command]
+fn asset_manifest(
+    app: tauri::AppHandle,
+    pet_id: String,
+) -> Result<runtime_assets::manifest::RuntimeAssetManifest, String> {
+    validate_pet_asset_id(&pet_id)?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("pets")
+        .join(&pet_id)
+        .join("assets");
+    let json =
+        std::fs::read_to_string(root.join("manifest.json")).map_err(|error| error.to_string())?;
+    runtime_assets::manifest::parse_manifest(&json)
+}
+
+#[tauri::command]
+fn asset_file_b64(
+    app: tauri::AppHandle,
+    pet_id: String,
+    relative_path: String,
+) -> Result<String, String> {
+    use base64::Engine;
+    validate_pet_asset_id(&pet_id)?;
+    let root = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?
+        .join("pets")
+        .join(&pet_id)
+        .join("assets");
+    let json =
+        std::fs::read_to_string(root.join("manifest.json")).map_err(|error| error.to_string())?;
+    let manifest = runtime_assets::manifest::parse_manifest(&json)?;
+    let files = runtime_assets::manifest::manifest_files(&manifest);
+    let normalized = runtime_assets::manifest::normalize_relative_path(&relative_path)?;
+    if !files.iter().any(|file| file.relative_path == normalized) {
+        return Err("asset file is not declared in manifest".into());
+    }
+    let bytes = std::fs::read(root.join(normalized)).map_err(|error| error.to_string())?;
+    Ok(base64::engine::general_purpose::STANDARD.encode(bytes))
+}
+
+fn validate_pet_asset_id(pet_id: &str) -> Result<(), String> {
+    if pet_id.is_empty()
+        || !pet_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("invalid petId".into());
+    }
+    Ok(())
+}
+
+#[tauri::command]
 fn asset_compile(
     app: tauri::AppHandle,
+    store: tauri::State<'_, creation::SharedCreationStore>,
+    state: tauri::State<'_, pets::state::SharedStateStore>,
     pet_id: String,
     variant_id: String,
     cutout_path: String,
 ) -> Result<runtime_assets::compiler::CompileResult, String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    let dest = data_dir.join("pets").join(&pet_id).join("assets");
-    runtime_assets::compiler::compile_single_image(
-        &pet_id,
-        &variant_id,
-        std::path::Path::new(&cutout_path),
-        &dest,
-    )
+    let compile_error_key = format!("creation:{pet_id}:compile_error");
+    let data_dir = app.path().app_data_dir().map_err(|error| error.to_string());
+    match data_dir {
+        Ok(data_dir) => asset_compile_stored_candidate(
+            &data_dir,
+            store.inner(),
+            state.inner(),
+            &pet_id,
+            &variant_id,
+            &cutout_path,
+        ),
+        Err(error) => {
+            let state = state.lock().map_err(|_| "state lock poisoned")?;
+            state.save(&compile_error_key, &error)?;
+            Err(error)
+        }
+    }
+}
+
+fn asset_compile_stored_candidate(
+    data_dir: &std::path::Path,
+    store: &creation::SharedCreationStore,
+    state: &pets::state::SharedStateStore,
+    pet_id: &str,
+    variant_id: &str,
+    supplied_cutout_path: &str,
+) -> Result<runtime_assets::compiler::CompileResult, String> {
+    let compile_error_key = format!("creation:{pet_id}:compile_error");
+    let compiled = (|| {
+        let candidate = store
+            .lock()
+            .map_err(|_| "store lock poisoned")?
+            .candidate_for_compile(pet_id, variant_id)?;
+        let canonical_cutout_path = candidate
+            .cutout_path
+            .ok_or_else(|| "candidate has no cutout path".to_string())?;
+        if supplied_cutout_path != canonical_cutout_path {
+            return Err("cutout path does not match the stored candidate".into());
+        }
+        let canonical_cutout_path = std::path::Path::new(&canonical_cutout_path);
+        let motion_profile_path = canonical_cutout_path
+            .parent()
+            .ok_or_else(|| "candidate cutout path has no parent directory".to_string())?
+            .join("motion-profile.json");
+        let dest = data_dir.join("pets").join(&pet_id).join("assets");
+        runtime_assets::compiler::compile_animated_image(
+            pet_id,
+            variant_id,
+            canonical_cutout_path,
+            &motion_profile_path,
+            &dest,
+        )
+    })();
+
+    match compiled {
+        Ok(compiled) => {
+            let persisted = (|| {
+                let store = store.lock().map_err(|_| "store lock poisoned")?;
+                store.record_runtime_variant(variant_id, pet_id, &compiled.manifest_path)?;
+                let state = state.lock().map_err(|_| "state lock poisoned")?;
+                state.remove(&compile_error_key)
+            })();
+            match persisted {
+                Ok(()) => Ok(compiled),
+                Err(error) => {
+                    let state = state.lock().map_err(|_| "state lock poisoned")?;
+                    state.save(&compile_error_key, &error)?;
+                    Err(error)
+                }
+            }
+        }
+        Err(error) => {
+            let state = state.lock().map_err(|_| "state lock poisoned")?;
+            state.save(&compile_error_key, &error)?;
+            Err(error)
+        }
+    }
 }
 
 #[tauri::command]
@@ -163,26 +332,58 @@ fn pet_get(
 }
 
 #[tauri::command]
-fn pet_delete(state: tauri::State<'_, SharedPetRepository>, pet_id: String) -> Result<(), String> {
-    let repo = state.lock().map_err(|_| "pets lock poisoned")?;
-    repo.delete(&pet_id)
-}
-
-#[tauri::command]
-fn pet_set_active(
-    state: tauri::State<'_, SharedActivePetSession>,
+fn pet_delete_full(
+    state: tauri::State<'_, SharedPetDeletionService>,
     pet_id: String,
-) -> Result<(), String> {
-    let mut session = state.lock().map_err(|_| "session lock poisoned")?;
-    session.set_active(pet_id)
+) -> Result<DeleteOutcome, String> {
+    state.delete(&pet_id)
 }
 
 #[tauri::command]
-fn pet_get_active(
-    state: tauri::State<'_, SharedActivePetSession>,
-) -> Result<Option<String>, String> {
-    let session = state.lock().map_err(|_| "session lock poisoned")?;
-    Ok(session.active().cloned())
+fn pet_get_active(state: tauri::State<'_, SharedActivePetService>) -> Result<String, String> {
+    state.active()
+}
+
+#[tauri::command]
+fn pet_catalog_list(
+    state: tauri::State<'_, SharedPetCatalogService>,
+) -> Result<Vec<PetCatalogEntry>, String> {
+    state.list()
+}
+
+#[tauri::command]
+fn pet_creation_resume(
+    state: tauri::State<'_, SharedPetCatalogService>,
+    pet_id: String,
+) -> Result<CreationResume, String> {
+    state.creation_resume(&pet_id)
+}
+
+#[tauri::command]
+fn pet_prepare_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    pet_id: String,
+) -> Result<RuntimePetDescriptor, String> {
+    state.prepare(&pet_id)
+}
+
+#[tauri::command]
+fn pet_commit_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    pet_id: String,
+    accepted_variant_id: Option<String>,
+) -> Result<(), String> {
+    state.commit(&pet_id, accepted_variant_id.as_deref())
+}
+
+#[tauri::command]
+fn pet_rollback_switch(
+    state: tauri::State<'_, SharedActivePetService>,
+    previous_pet_id: String,
+    pet_id: String,
+    accepted_variant_id: Option<String>,
+) -> Result<(), String> {
+    state.rollback_commit(&previous_pet_id, &pet_id, accepted_variant_id.as_deref())
 }
 
 #[tauri::command]
@@ -282,13 +483,31 @@ fn gen_resume(
     manager.resume()
 }
 
+fn generation_job_file(
+    data_dir: &std::path::Path,
+    job_id: &str,
+    file_name: &str,
+) -> Result<std::path::PathBuf, String> {
+    if job_id.is_empty()
+        || !job_id
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || byte == b'-' || byte == b'_')
+    {
+        return Err("invalid jobId".into());
+    }
+    if !matches!(file_name, "cutout.png" | "motion-profile.json") {
+        return Err("invalid generation file name".into());
+    }
+    Ok(data_dir.join("jobs").join(job_id).join(file_name))
+}
+
 #[tauri::command]
 fn gen_cutout_path(app: tauri::AppHandle, job_id: String) -> Result<String, String> {
     let data_dir = app
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let cutout = data_dir.join("jobs").join(&job_id).join("cutout.png");
+    let cutout = generation_job_file(&data_dir, &job_id, "cutout.png")?;
     if cutout.exists() {
         Ok(cutout.to_string_lossy().to_string())
     } else {
@@ -303,12 +522,26 @@ fn gen_cutout_b64(app: tauri::AppHandle, job_id: String) -> Result<String, Strin
         .path()
         .app_data_dir()
         .map_err(|error| error.to_string())?;
-    let cutout = data_dir.join("jobs").join(&job_id).join("cutout.png");
+    let cutout = generation_job_file(&data_dir, &job_id, "cutout.png")?;
     let bytes = std::fs::read(&cutout).map_err(|error| error.to_string())?;
     Ok(format!(
         "data:image/png;base64,{}",
         base64::engine::general_purpose::STANDARD.encode(bytes)
     ))
+}
+
+#[tauri::command]
+fn gen_motion_profile(
+    app: tauri::AppHandle,
+    job_id: String,
+) -> Result<runtime_assets::motion_profile::MotionProfileV1, String> {
+    let data_dir = app
+        .path()
+        .app_data_dir()
+        .map_err(|error| error.to_string())?;
+    let profile = generation_job_file(&data_dir, &job_id, "motion-profile.json")?;
+    let json = std::fs::read_to_string(profile).map_err(|error| error.to_string())?;
+    runtime_assets::motion_profile::parse_motion_profile(&json)
 }
 
 #[tauri::command]
@@ -324,30 +557,6 @@ fn debug_windows(app: tauri::AppHandle) -> Vec<String> {
             format!("{label} visible={visible}")
         })
         .collect()
-}
-
-#[tauri::command]
-fn gen_cleanup_pet(app: tauri::AppHandle, pet_id: String) -> Result<(), String> {
-    let data_dir = app
-        .path()
-        .app_data_dir()
-        .map_err(|error| error.to_string())?;
-    // remove the pet record and its job artifacts; jobs rows cascade on pet delete
-    let storage = app.state::<pets::SharedPetRepository>();
-    let repo = storage.lock().map_err(|_| "pets lock poisoned")?;
-    repo.delete(&pet_id)?;
-    drop(repo);
-
-    let jobs_root = data_dir.join("jobs");
-    if let Ok(entries) = std::fs::read_dir(&jobs_root) {
-        for entry in entries.flatten() {
-            if entry.file_name().to_string_lossy().starts_with("job-") {
-                // best effort: job dirs are small
-                let _ = std::fs::remove_dir_all(entry.path());
-            }
-        }
-    }
-    Ok(())
 }
 
 fn build_tray(app: &tauri::App) -> tauri::Result<()> {
@@ -433,36 +642,70 @@ fn build_tray(app: &tauri::App) -> tauri::Result<()> {
 pub fn run() {
     tauri::Builder::default()
         .register_uri_scheme_protocol("pet-asset", |ctx, request| {
-            use tauri::http::Response;
+            use tauri::http::{Response, StatusCode};
+
             let app = ctx.app_handle();
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .unwrap_or_else(|_| std::path::PathBuf::new());
-            let relative = request.uri().path().trim_start_matches('/');
-            // pet-asset://localhost/<pet_id>/assets/<file>
+            let relative = match pet_asset_relative_path(request.uri().path()) {
+                Ok(relative) => relative,
+                Err(_) => {
+                    return Response::builder()
+                        .status(StatusCode::BAD_REQUEST)
+                        .body(Vec::new())
+                        .unwrap();
+                }
+            };
+            // Tauri maps the custom protocol request path to <pet_id>/assets/<file>.
             let file = data_dir.join("pets").join(relative);
-            match std::fs::read(&file) {
-                Ok(bytes) => Response::builder().status(200).body(bytes).unwrap(),
-                Err(_) => Response::builder().status(404).body(Vec::new()).unwrap(),
-            }
+            serve_pet_asset(&file)
         })
         .setup(|app| {
             let data_dir = app
                 .path()
                 .app_data_dir()
                 .map_err(|error| error.to_string())?;
-            let storage = Arc::new(Mutex::new(storage::Storage::open(&data_dir.join("pets"))?));
+            let pets_dir = data_dir.join("pets");
+            let storage = Arc::new(Mutex::new(storage::Storage::open(&pets_dir)?));
+            let migration = runtime_assets::migration::migrate_all_v1_assets(&pets_dir);
+            for failure in &migration.failures {
+                eprintln!(
+                    "[desktop-pet] pet motion migration failed: {}: {}",
+                    failure.pet_id, failure.error
+                );
+            }
+            let session = Arc::new(Mutex::new(pets::ActivePetSession::new()));
+            let active = Arc::new(pets::active::ActivePetService::new(
+                storage.clone(),
+                session,
+                pets_dir.clone(),
+            ));
+            active.restore()?;
+            let catalog = Arc::new(PetCatalogService::new(
+                storage.clone(),
+                active.clone(),
+                pets_dir,
+            ));
+            let deletion = Arc::new(PetDeletionService::new(
+                storage.clone(),
+                active.clone(),
+                data_dir.clone(),
+            ));
+            if let Err(error) = deletion.cleanup_quarantine() {
+                eprintln!("[desktop-pet] quarantine cleanup failed: {error}");
+            }
+            app.manage(active as SharedActivePetService);
+            app.manage(catalog as SharedPetCatalogService);
+            app.manage(deletion as SharedPetDeletionService);
             app.manage(Arc::new(Mutex::new(pets::repository::PetRepository::new(
                 storage.clone(),
             ))) as SharedPetRepository);
-            app.manage(Arc::new(Mutex::new(ActivePetSession::new())) as SharedActivePetSession);
-            let state_store = Arc::new(Mutex::new(pets::state::StateStore::new(storage)));
+            let state_store = Arc::new(Mutex::new(pets::state::StateStore::new(storage.clone())));
             app.manage(state_store.clone() as pets::state::SharedStateStore);
 
-            let creation_store = Arc::new(Mutex::new(creation::CreationStore::new(Arc::new(
-                Mutex::new(storage::Storage::open(&data_dir.join("pets"))?),
-            ))));
+            let creation_store = Arc::new(Mutex::new(creation::CreationStore::new(storage)));
             app.manage(creation_store.clone() as creation::SharedCreationStore);
 
             let manager = generation::tasks::GenerationManager::new(
@@ -508,13 +751,19 @@ pub fn run() {
             parse_manifest,
             asset_import,
             asset_scan,
+            asset_manifest,
+            asset_file_b64,
             asset_compile,
             pet_list,
             pet_create,
             pet_get,
-            pet_delete,
-            pet_set_active,
+            pet_delete_full,
             pet_get_active,
+            pet_catalog_list,
+            pet_creation_resume,
+            pet_prepare_switch,
+            pet_commit_switch,
+            pet_rollback_switch,
             pet_state_load,
             pet_state_save,
             app_setting_get,
@@ -527,7 +776,7 @@ pub fn run() {
             gen_resume,
             gen_cutout_path,
             gen_cutout_b64,
-            gen_cleanup_pet,
+            gen_motion_profile,
             debug_windows
         ])
         .run(tauri::generate_context!())
@@ -536,8 +785,283 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::pets::state::StateStore;
+    use crate::storage::Storage;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn asset_compile_fixture() -> (
+        creation::SharedCreationStore,
+        pets::state::SharedStateStore,
+        std::sync::Arc<std::sync::Mutex<Storage>>,
+        std::path::PathBuf,
+        String,
+        String,
+        String,
+    ) {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-asset-command-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let storage = std::sync::Arc::new(std::sync::Mutex::new(Storage::open(&root).unwrap()));
+        let repo = pets::repository::PetRepository::new(storage.clone());
+        let pet = repo
+            .create(pets::pet::Species::Cat, pets::pet::IdentityMode::RealPet)
+            .unwrap();
+        let other_pet = repo
+            .create(pets::pet::Species::Dog, pets::pet::IdentityMode::Adopted)
+            .unwrap();
+        let store = std::sync::Arc::new(std::sync::Mutex::new(creation::CreationStore::new(
+            storage.clone(),
+        )));
+        store
+            .lock()
+            .unwrap()
+            .create_job("job-1", &pet.pet_id, "p", "h", Some("task-1"))
+            .unwrap();
+        let canonical_cutout = root.join("jobs").join("job-1").join("cutout.png");
+        store
+            .lock()
+            .unwrap()
+            .record_candidate(
+                "job-1",
+                &pet.pet_id,
+                "raw.png",
+                &canonical_cutout.to_string_lossy(),
+                "acceptable",
+            )
+            .unwrap();
+        let state = std::sync::Arc::new(std::sync::Mutex::new(StateStore::new(storage.clone())));
+        (
+            store,
+            state,
+            storage,
+            root,
+            pet.pet_id,
+            other_pet.pet_id,
+            canonical_cutout.to_string_lossy().to_string(),
+        )
+    }
+
     #[test]
     fn probe_version_is_m0() {
         assert_eq!(super::probe_version(), "m0");
+    }
+
+    #[test]
+    fn pet_catalog_commands_are_available() {
+        let _list = super::pet_catalog_list;
+        let _resume = super::pet_creation_resume;
+    }
+
+    #[test]
+    fn pet_asset_png_response_is_decodable_media_with_its_original_bytes() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-uri-response-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("body.PNG");
+        let png = vec![0x89, b'P', b'N', b'G', b'\r', b'\n', 0x1a, b'\n'];
+        std::fs::write(&file, &png).unwrap();
+
+        let response = serve_pet_asset(&file);
+
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "image/png"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "*"
+        );
+        assert_eq!(response.body(), &png);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pet_asset_json_response_preserves_cors_with_json_content_type() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-uri-json-response-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let file = root.join("motion-profile.JSON");
+        let json = br#"{"profileVersion":1}"#.to_vec();
+        std::fs::write(&file, &json).unwrap();
+
+        let response = serve_pet_asset(&file);
+
+        assert_eq!(response.status(), tauri::http::StatusCode::OK);
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::CONTENT_TYPE)
+                .unwrap(),
+            "application/json"
+        );
+        assert_eq!(
+            response
+                .headers()
+                .get(tauri::http::header::ACCESS_CONTROL_ALLOW_ORIGIN)
+                .unwrap(),
+            "*"
+        );
+        assert_eq!(response.body(), &json);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn pet_asset_path_decodes_the_separator_encoded_by_convert_file_src() {
+        assert_eq!(
+            pet_asset_relative_path("/pet-user-1%2Fassets%2Fbody.png").unwrap(),
+            "pet-user-1/assets/body.png"
+        );
+    }
+
+    #[test]
+    fn pet_asset_path_rejects_encoded_traversal() {
+        assert!(pet_asset_relative_path("/pet-user-1%2Fassets%2F..%2Fsecret.png").is_err());
+        assert!(pet_asset_relative_path("/pet-user-1%2Fassets%2F..%5Csecret.png").is_err());
+    }
+
+    #[test]
+    fn pet_asset_path_cannot_read_files_outside_a_pet_assets_directory() {
+        assert!(pet_asset_relative_path("/desktop-pet.db").is_err());
+        assert!(pet_asset_relative_path("/pet-user-1%2Fmanifest.json").is_err());
+        assert!(pet_asset_relative_path("/pet-user-1%2Fassets").is_err());
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_mismatched_cutout_path() {
+        let (store, state, _storage, root, pet_id, _other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        let result = asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &pet_id,
+            "job-1",
+            &root.join("untrusted.png").to_string_lossy(),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .load(&format!("creation:{pet_id}:compile_error"))
+                .unwrap()
+                .is_some(),
+            true
+        );
+        assert!(canonical_cutout.ends_with("cutout.png"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_variant_owned_by_another_pet() {
+        let (store, state, _storage, root, _pet_id, other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        assert!(asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &other_pet_id,
+            "job-1",
+            &canonical_cutout,
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_variant_with_a_different_job() {
+        let (store, state, storage, root, pet_id, _other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        {
+            let db = &storage.lock().unwrap().db;
+            db.execute(
+                "INSERT INTO appearance_variants
+                 (variant_id, pet_id, job_id, image_path, cutout_path, quality, accepted, created_at)
+                 VALUES ('job-2', ?1, 'job-1', 'raw.png', ?2, 'acceptable', 0, ?3)",
+                rusqlite::params![&pet_id, &canonical_cutout, creation::profiles::now_iso()],
+            )
+            .unwrap();
+        }
+        assert!(asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &pet_id,
+            "job-2",
+            &canonical_cutout,
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_missing_motion_profile_without_recording_runtime() {
+        let (store, state, storage, root, pet_id, _other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        let profile = std::path::Path::new(&canonical_cutout)
+            .parent()
+            .unwrap()
+            .join("motion-profile.json");
+        std::fs::create_dir_all(profile.parent().unwrap()).unwrap();
+        let rgba = image::RgbaImage::from_pixel(64, 64, image::Rgba([80, 90, 100, 255]));
+        rgba.save(&canonical_cutout).unwrap();
+        let value = runtime_assets::motion_profile::generate_motion_profile(&rgba).unwrap();
+        runtime_assets::motion_profile::write_motion_profile_atomic(&profile, &value).unwrap();
+        std::fs::remove_file(profile).unwrap();
+
+        assert!(asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &pet_id,
+            "job-1",
+            &canonical_cutout,
+        )
+        .is_err());
+        let runtime_count: i64 = storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM variants WHERE pet_id = ?1",
+                rusqlite::params![pet_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(runtime_count, 0);
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn generation_candidate_files_reject_path_like_job_ids() {
+        let root = std::path::Path::new("C:/app-data");
+        for job_id in ["../outside", "a/b", r"a\b", "", "."] {
+            assert!(generation_job_file(root, job_id, "cutout.png").is_err());
+            assert!(generation_job_file(root, job_id, "motion-profile.json").is_err());
+        }
+        let cutout = generation_job_file(root, "job-1_ok", "cutout.png").unwrap();
+        let profile = generation_job_file(root, "job-1_ok", "motion-profile.json").unwrap();
+        assert_eq!(cutout.parent(), profile.parent());
+        assert!(cutout.ends_with("jobs/job-1_ok/cutout.png"));
+        assert!(generation_job_file(root, "job-1_ok", "../secret").is_err());
     }
 }

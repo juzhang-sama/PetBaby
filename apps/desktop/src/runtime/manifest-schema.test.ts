@@ -1,5 +1,6 @@
 import { describe, expect, it } from "vitest";
-import { parseManifestV1, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
+import { parseManifestV1, parseRuntimeAssetManifest, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
+import { validAnimatedManifest } from "./animated-image-test-fixtures";
 
 describe("parseManifestV1", () => {
   it("accepts a valid manifest", () => {
@@ -50,5 +51,42 @@ describe("parseManifestV1", () => {
 
   it("pins the schema version constant", () => {
     expect(MANIFEST_SCHEMA_VERSION).toBe(1);
+  });
+
+  it("keeps v1 limited to static PNG fallback", () => {
+    expect(() => parseManifestV1({
+      schemaVersion: 1, assetType: "single-image", petId: "p", variantId: "v", styleId: "s", view: "front", pose: "sitting",
+      files: [{ role: "main", relativePath: "pet.model3.json", sha256: "ab".repeat(32) }], animation: { idleFps: 1, blinkMsMin: 1, blinkMsMax: 2 },
+    })).toThrow(/PNG/i);
+  });
+
+  it("rejects unsafe v1 asset paths", () => {
+    expect(() => parseManifestV1({
+      schemaVersion: 1, assetType: "single-image", petId: "p", variantId: "v", styleId: "s", view: "front", pose: "sitting",
+      files: [{ role: "main", relativePath: "../pet.png", sha256: "ab".repeat(32) }], animation: { idleFps: 1, blinkMsMin: 1, blinkMsMax: 2 },
+    })).toThrow(/asset path/i);
+  });
+
+  it("dispatches schema v2 manifests", () => {
+    expect(parseRuntimeAssetManifest({
+      schemaVersion: 2, renderer: "live2d-v1", petId: "p", variantId: "v",
+      modelEntry: "model.model3.json", previewImage: "preview.png",
+      files: [
+        { role: "model", relativePath: "model.model3.json", sha256: "ab".repeat(32) },
+        { role: "preview", relativePath: "preview.png", sha256: "ab".repeat(32) },
+      ], semantics: { motions: {}, expressions: {}, hitAreas: {}, parameters: {} },
+      license: { id: "test", author: "test", source: "test", commercialUse: true, redistributable: false },
+    }).schemaVersion).toBe(2);
+  });
+
+  it("dispatches schema v3 animated image manifests", () => {
+    expect(parseRuntimeAssetManifest(validAnimatedManifest())).toMatchObject({
+      schemaVersion: 3,
+      renderer: "animated-image-v1",
+    });
+  });
+
+  it("rejects unsupported schema versions instead of treating them as v1", () => {
+    expect(() => parseRuntimeAssetManifest({ schemaVersion: 4 })).toThrow(/schemaVersion/i);
   });
 });

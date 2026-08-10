@@ -36,6 +36,13 @@ impl StateStore {
         .map_err(|error| error.to_string())?;
         Ok(())
     }
+
+    pub fn remove(&self, key: &str) -> Result<(), String> {
+        let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
+        db.execute("DELETE FROM state WHERE key = ?1", rusqlite::params![key])
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
 }
 
 #[cfg(test)]
@@ -74,6 +81,17 @@ mod tests {
         store.save("k", "v1").unwrap();
         store.save("k", "v2").unwrap();
         assert_eq!(store.load("k").unwrap().as_deref(), Some("v2"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn remove_deletes_existing_value() {
+        let (store, root) = temp_store();
+        store
+            .save("creation:pet-1:compile_error", "failed")
+            .unwrap();
+        store.remove("creation:pet-1:compile_error").unwrap();
+        assert_eq!(store.load("creation:pet-1:compile_error").unwrap(), None);
         let _ = std::fs::remove_dir_all(root);
     }
 }
