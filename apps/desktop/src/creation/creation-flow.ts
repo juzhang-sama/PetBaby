@@ -38,6 +38,7 @@ class TauriStore implements CreationStore {
 
 export class CreationFlow {
   step: CreationStep = "upload";
+  activationWarning: string | null = null;
   private species: "cat" | "dog" = "cat";
   private currentPetId: string | null = null;
   private photoBytes: Uint8Array | null = null;
@@ -134,11 +135,13 @@ export class CreationFlow {
     }
   }
 
-  async activateCandidate(): Promise<void> {
+  async activateCandidate(): Promise<string | undefined> {
     if (!this.currentPetId || !this.currentVariantId) throw new Error("candidate required");
     const result = await this.store.switchPet(this.currentPetId, this.currentVariantId);
     if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    this.activationWarning = result.warning ?? null;
     this.step = "complete";
+    return result.warning;
   }
 }
 

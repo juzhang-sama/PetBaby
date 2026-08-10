@@ -24,7 +24,7 @@ import {
 } from "./runtime/pet-switch-protocol";
 import { assertVisibleFrame } from "./runtime/render-surface-probe";
 import { loadRuntimePet } from "./runtime/runtime-pet-loader";
-import { loadStartupRuntime } from "./runtime/startup-runtime-recovery";
+import { finalizeStartupRecovery, loadStartupRuntime } from "./runtime/startup-runtime-recovery";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
@@ -113,23 +113,25 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
         },
       },
     ),
-    commit: async (petId) => {
-      const requestId = crypto.randomUUID();
-      await invoke("pet_prepare_switch", { requestId, petId });
-      try {
-        await invoke("pet_commit_switch", { requestId, petId });
-        await invoke("pet_finish_switch", { requestId });
-      } catch (error) {
-        await invoke("pet_cancel_switch", { requestId }).catch(() => undefined);
-        throw error;
-      }
-    },
+    commit: (petId) => finalizeStartupRecovery(activePetId, petId, {
+      prepareSwitch: async (requestId, targetPetId) => {
+        await invoke("pet_prepare_switch", { requestId, petId: targetPetId });
+      },
+      commit: (request) => invoke("pet_commit_switch", { ...request }),
+      reconcileCommit: (previousPetId, request) => invoke("pet_reconcile_switch_commit", {
+        previousPetId,
+        ...request,
+      }),
+      cancel: (requestId) => invoke("pet_cancel_switch", { requestId }),
+      finish: (requestId) => invoke("pet_finish_switch", { requestId }),
+    }),
     onRecovery: (petId, error) => {
       tracePetRuntime(`recovering-to-builtin: ${petId}: ${errorMessage(error)}`);
     },
   });
   initialRuntime = startup.runtime;
   if (startup.recoveredToBuiltin) tracePetRuntime("recovered-to-builtin");
+  if (startup.warning) tracePetRuntime(`startup-finalization-warning: ${startup.warning}`);
   tracePetRuntime(`runtime-loaded: ${initialRuntime.kind()}`);
   slot = new PetRuntimeSlot(rendererRoot, initialRuntime);
 

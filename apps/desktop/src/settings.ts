@@ -3,7 +3,11 @@ import { CreationFlow, type CreationStep } from "./creation/creation-flow";
 import type { CreationResume, PetCatalogEntry } from "./pets/pet-catalog-contract";
 import type { MotionProfileV1 } from "./runtime/animated-image-manifest";
 import { CandidatePreviewController } from "./settings/candidate-dynamic-preview";
-import { deleteCurrentCatalogPet } from "./settings/pet-catalog-delete-flow";
+import {
+  catalogSwitchStatus,
+  deleteCurrentCatalogPet,
+  mergeCatalogWarnings,
+} from "./settings/pet-catalog-delete-flow";
 import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-view-model";
 import { requestPetSwitch } from "./settings/pet-switch-client";
 import {
@@ -120,7 +124,10 @@ async function switchCatalogPet(petId: string): Promise<void> {
       setCatalogStatus(`切换失败。请确认宠物窗口可用后重试：${result.message}`, "error");
       return;
     }
-    if (await renderList()) setCatalogStatus("已设为当前桌面宠物。");
+    if (await renderList()) {
+      const status = catalogSwitchStatus(result.warning);
+      setCatalogStatus(status.message, status.tone);
+    }
   } catch (error) {
     setCatalogStatus(`切换失败。请稍后重试：${String(error)}`, "error");
   } finally {
@@ -136,11 +143,14 @@ async function deleteCatalogPet(petId: string): Promise<void> {
   renderCatalogRows();
   try {
     let outcome: DeleteOutcome;
+    let switchWarning: string | undefined;
     if (entry.isCurrent) {
       const result = await deleteCurrentCatalogPet({
         switchToBuiltin: async () => {
           const switched = await requestPetSwitch("pet-live2d-v1");
-          return switched.ok ? { ok: true } : { ok: false, message: switched.message };
+          return switched.ok
+            ? { ok: true, ...(switched.warning ? { warning: switched.warning } : {}) }
+            : { ok: false, message: switched.message };
         },
         remove: () => invoke<DeleteOutcome>("pet_delete_full", { petId }),
         refresh: async () => { await renderList(); },
@@ -151,10 +161,14 @@ async function deleteCatalogPet(petId: string): Promise<void> {
       }
       if (result.kind === "deleteFailed") throw result.error;
       outcome = result.outcome;
+      switchWarning = result.switchWarning;
     } else {
       outcome = await invoke<DeleteOutcome>("pet_delete_full", { petId });
     }
-    if (await renderList()) setCatalogStatus(outcome.warning ?? "宠物已删除。", outcome.warning ? "warning" : "info");
+    if (await renderList()) {
+      const warning = mergeCatalogWarnings(switchWarning, outcome.warning);
+      setCatalogStatus(warning ?? "宠物已删除。", warning ? "warning" : "info");
+    }
   } catch (error) {
     setCatalogStatus(`删除失败。请稍后重试：${String(error)}`, "error");
   } finally {
@@ -605,11 +619,11 @@ async function activatePreparedCandidate(visit: number, expectedFlow: CreationFl
   if (!operation) return;
   syncWizardOperationControls(petId);
   try {
-    await expectedFlow.activateCandidate();
+    const warning = await expectedFlow.activateCandidate();
     clearCreationPet(petId);
     if (!isCurrentWizard(visit, expectedFlow)) return;
     showStep("complete");
-    wizardStatus.textContent = "宠物已出现在桌面。";
+    wizardStatus.textContent = warning ?? "宠物已出现在桌面。";
   } catch (error) {
     if (!isCurrentWizard(visit, expectedFlow)) return;
     showStep("confirm");

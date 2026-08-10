@@ -114,6 +114,20 @@ describe("CreationFlow", () => {
     expect(flow.step).toBe("complete");
   });
 
+  it("returns and stores a successful switch finalization warning", async () => {
+    const store = new FakeStore({ switchResult: {
+      ok: true,
+      requestId: "request-warning",
+      petId: "pet-1",
+      warning: "变更门释放未确认",
+    } });
+    const flow = restoredAwaitingActivation(store);
+
+    await expect(flow.activateCandidate()).resolves.toBe("变更门释放未确认");
+    expect(flow.activationWarning).toBe("变更门释放未确认");
+    expect(flow.step).toBe("complete");
+  });
+
   it("compiles and activates the accepted candidate with its original pet and variant ids", async () => {
     const store = new FakeStore();
     const flow = new CreationFlow(store);

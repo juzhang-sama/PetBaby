@@ -67,9 +67,12 @@ pub struct ActivePetService {
     session: SharedActivePetSession,
     pets_dir: PathBuf,
     mutation_gate: SharedPetMutationGate,
+    reconciliation_transaction: Mutex<()>,
     reconciliation_cache: Mutex<Option<CachedReconciliation>>,
     #[cfg(test)]
     after_owner_pin_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
+    #[cfg(test)]
+    before_reconciliation_cache_hook: Mutex<Option<Arc<dyn Fn() + Send + Sync>>>,
 }
 
 impl ActivePetService {
@@ -84,9 +87,12 @@ impl ActivePetService {
             session,
             pets_dir,
             mutation_gate,
+            reconciliation_transaction: Mutex::new(()),
             reconciliation_cache: Mutex::new(None),
             #[cfg(test)]
             after_owner_pin_hook: Mutex::new(None),
+            #[cfg(test)]
+            before_reconciliation_cache_hook: Mutex::new(None),
         }
     }
 
@@ -275,6 +281,10 @@ impl ActivePetService {
         let owner_pin =
             self.mutation_gate
                 .assert_owner(request_id, MutationKind::Switch, pet_id)?;
+        let _reconciliation_transaction = self
+            .reconciliation_transaction
+            .lock()
+            .map_err(|_| "reconciliation transaction lock poisoned")?;
         #[cfg(test)]
         self.run_after_owner_pin_hook();
 
@@ -350,6 +360,8 @@ impl ActivePetService {
         owner_token: u64,
         result: CommitReconciliation,
     ) -> Result<CommitReconciliation, String> {
+        #[cfg(test)]
+        self.run_before_reconciliation_cache_hook();
         *self
             .reconciliation_cache
             .lock()
@@ -461,6 +473,23 @@ impl ActivePetService {
     #[cfg(test)]
     fn run_after_owner_pin_hook(&self) {
         if let Some(hook) = self.after_owner_pin_hook.lock().unwrap().clone() {
+            hook();
+        }
+    }
+
+    #[cfg(test)]
+    fn set_before_reconciliation_cache_hook(&self, hook: impl Fn() + Send + Sync + 'static) {
+        *self.before_reconciliation_cache_hook.lock().unwrap() = Some(Arc::new(hook));
+    }
+
+    #[cfg(test)]
+    fn run_before_reconciliation_cache_hook(&self) {
+        if let Some(hook) = self
+            .before_reconciliation_cache_hook
+            .lock()
+            .unwrap()
+            .clone()
+        {
             hook();
         }
     }
@@ -1131,6 +1160,80 @@ mod tests {
             CommitReconciliationStatus::NotCommitted
         );
         test.service.cancel("switch-retry").unwrap();
+    }
+
+    #[test]
+    fn concurrent_reconcile_waits_for_the_first_stable_result() {
+        let test = ActiveHarness::with_current_pet("pet-user", "variant-1");
+        test.save_active(BUILTIN_PET_ID);
+        test.service
+            .prepare(Some("switch-concurrent-reconcile"), "pet-user")
+            .unwrap();
+        test.service
+            .commit(
+                Some("switch-concurrent-reconcile"),
+                "pet-user",
+                Some("variant-1"),
+            )
+            .unwrap();
+        let session = test.session.clone();
+        assert!(std::thread::spawn(move || {
+            let _session = session.lock().unwrap();
+            panic!("poison active session");
+        })
+        .join()
+        .is_err());
+
+        let first_hook = Arc::new(std::sync::atomic::AtomicBool::new(true));
+        let (hook_entered_tx, hook_entered_rx) = std::sync::mpsc::channel();
+        let (hook_release_tx, hook_release_rx) = std::sync::mpsc::channel();
+        let hook_release_rx = Arc::new(Mutex::new(hook_release_rx));
+        test.service.set_before_reconciliation_cache_hook({
+            let first_hook = first_hook.clone();
+            let hook_release_rx = hook_release_rx.clone();
+            move || {
+                if first_hook.swap(false, std::sync::atomic::Ordering::SeqCst) {
+                    hook_entered_tx.send(()).unwrap();
+                    hook_release_rx.lock().unwrap().recv().unwrap();
+                }
+            }
+        });
+
+        std::thread::scope(|scope| {
+            let first = scope.spawn(|| {
+                test.service.reconcile_commit(
+                    "switch-concurrent-reconcile",
+                    BUILTIN_PET_ID,
+                    "pet-user",
+                    Some("variant-1"),
+                )
+            });
+            hook_entered_rx.recv().unwrap();
+
+            let (retry_tx, retry_rx) = std::sync::mpsc::channel();
+            let service = &test.service;
+            let retry = scope.spawn(move || {
+                let result = service.reconcile_commit(
+                    "switch-concurrent-reconcile",
+                    BUILTIN_PET_ID,
+                    "pet-user",
+                    Some("variant-1"),
+                );
+                retry_tx.send(result.clone()).unwrap();
+                result
+            });
+            assert!(retry_rx
+                .recv_timeout(std::time::Duration::from_millis(50))
+                .is_err());
+
+            hook_release_tx.send(()).unwrap();
+            let first = first.join().unwrap().unwrap();
+            let retry = retry.join().unwrap().unwrap();
+            assert_eq!(first.status, CommitReconciliationStatus::Compensated);
+            assert!(first.warning.is_some());
+            assert_eq!(retry, first);
+        });
+        test.service.finish("switch-concurrent-reconcile").unwrap();
     }
 
     #[test]

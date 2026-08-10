@@ -4,7 +4,11 @@ import type { PetRendererRuntime } from "./pet-renderer-bootstrap";
 import type { MountedPetRuntime } from "./pet-runtime-slot";
 import type { RuntimePetDescriptor } from "./pet-switch-protocol";
 import { loadRuntimePet, type RuntimePetLoaderPorts } from "./runtime-pet-loader";
-import { loadStartupRuntime } from "./startup-runtime-recovery";
+import {
+  BUILTIN_PET_ID,
+  finalizeStartupRecovery,
+  loadStartupRuntime,
+} from "./startup-runtime-recovery";
 
 function runtime(petId: string): MountedPetRuntime {
   return {
@@ -150,5 +154,102 @@ describe("loadStartupRuntime", () => {
       "database unavailable",
     );
     expect(builtinRuntime.host.destroy).toHaveBeenCalledOnce();
+  });
+});
+
+describe("finalizeStartupRecovery", () => {
+  afterEach(() => {
+    vi.useRealTimers();
+    vi.unstubAllGlobals();
+  });
+
+  function finalizationPorts(options: {
+    commitError?: Error;
+    reconcileStatus?: "notCommitted" | "compensated" | "unknown";
+    finishError?: Error;
+    holdFinish?: boolean;
+  } = {}) {
+    const prepareSwitch = vi.fn(async () => undefined);
+    const commit = vi.fn(async () => {
+      if (options.commitError) throw options.commitError;
+    });
+    const reconcileCommit = vi.fn(async () => ({
+      status: options.reconcileStatus ?? "notCommitted" as const,
+    }));
+    const cancel = vi.fn(async () => undefined);
+    const finish = vi.fn(async () => {
+      if (options.holdFinish) await new Promise<never>(() => undefined);
+      if (options.finishError) throw options.finishError;
+    });
+    return { prepareSwitch, commit, reconcileCommit, cancel, finish };
+  }
+
+  it("reconciles a lost commit response and finishes only after DB compensation", async () => {
+    const ports = finalizationPorts({
+      commitError: new Error("commit response lost"),
+      reconcileStatus: "compensated",
+    });
+    vi.stubGlobal("crypto", { randomUUID: () => "startup-response-lost" });
+
+    await expect(finalizeStartupRecovery("pet-damaged", BUILTIN_PET_ID, ports, 50)).rejects.toThrow(
+      "commit response lost",
+    );
+
+    expect(ports.reconcileCommit).toHaveBeenCalledOnce();
+    expect(ports.finish).toHaveBeenCalledWith("startup-response-lost");
+    expect(ports.cancel).not.toHaveBeenCalled();
+  });
+
+  it("leaves an unknown commit owner to TTL", async () => {
+    const ports = finalizationPorts({
+      commitError: new Error("commit response lost"),
+      reconcileStatus: "unknown",
+    });
+    vi.stubGlobal("crypto", { randomUUID: () => "startup-unknown" });
+
+    await expect(finalizeStartupRecovery("pet-damaged", BUILTIN_PET_ID, ports, 50)).rejects.toThrow(
+      "commit response lost",
+    );
+    expect(ports.cancel).not.toHaveBeenCalled();
+    expect(ports.finish).not.toHaveBeenCalled();
+  });
+
+  it("cancels only when reconciliation proves the startup commit did not land", async () => {
+    const ports = finalizationPorts({
+      commitError: new Error("commit rejected"),
+      reconcileStatus: "notCommitted",
+    });
+    vi.stubGlobal("crypto", { randomUUID: () => "startup-not-committed" });
+
+    await expect(finalizeStartupRecovery("pet-damaged", BUILTIN_PET_ID, ports, 50)).rejects.toThrow(
+      "commit rejected",
+    );
+    expect(ports.cancel).toHaveBeenCalledWith("startup-not-committed");
+    expect(ports.finish).not.toHaveBeenCalled();
+  });
+
+  it("keeps the confirmed builtin commit and returns a warning when finish rejects", async () => {
+    const ports = finalizationPorts({ finishError: new Error("finish busy") });
+    vi.stubGlobal("crypto", { randomUUID: () => "startup-finish-reject" });
+
+    await expect(finalizeStartupRecovery("pet-damaged", BUILTIN_PET_ID, ports, 50)).resolves.toEqual({
+      warning: expect.stringContaining("finish busy"),
+    });
+    expect(ports.cancel).not.toHaveBeenCalled();
+    expect(ports.reconcileCommit).not.toHaveBeenCalled();
+  });
+
+  it("bounds a never-settling finish without cancelling the confirmed commit", async () => {
+    vi.useFakeTimers();
+    const ports = finalizationPorts({ holdFinish: true });
+    vi.stubGlobal("crypto", { randomUUID: () => "startup-finish-timeout" });
+
+    const finalizing = finalizeStartupRecovery("pet-damaged", BUILTIN_PET_ID, ports, 50);
+    await vi.advanceTimersByTimeAsync(50);
+
+    await expect(finalizing).resolves.toEqual({
+      warning: expect.stringContaining("超时"),
+    });
+    expect(ports.cancel).not.toHaveBeenCalled();
   });
 });

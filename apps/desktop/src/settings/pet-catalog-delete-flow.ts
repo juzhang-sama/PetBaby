@@ -1,5 +1,5 @@
 export type BuiltinSwitchResult =
-  | { ok: true }
+  | { ok: true; warning?: string }
   | { ok: false; message: string };
 
 export interface CurrentCatalogPetDeletionPorts<T> {
@@ -10,7 +10,7 @@ export interface CurrentCatalogPetDeletionPorts<T> {
 
 export type CurrentCatalogPetDeletionResult<T> =
   | { kind: "switchFailed"; message: string }
-  | { kind: "deleted"; outcome: T }
+  | { kind: "deleted"; outcome: T; switchWarning?: string }
   | { kind: "deleteFailed"; error: unknown };
 
 export async function deleteCurrentCatalogPet<T>(
@@ -21,9 +21,28 @@ export async function deleteCurrentCatalogPet<T>(
 
   await ports.refresh();
   try {
-    return { kind: "deleted", outcome: await ports.remove() };
+    const outcome = await ports.remove();
+    return {
+      kind: "deleted",
+      outcome,
+      ...(switched.warning ? { switchWarning: switched.warning } : {}),
+    };
   } catch (error) {
     await ports.refresh();
     return { kind: "deleteFailed", error };
   }
+}
+
+export function catalogSwitchStatus(warning?: string): {
+  message: string;
+  tone: "info" | "warning";
+} {
+  return warning
+    ? { message: warning, tone: "warning" }
+    : { message: "已设为当前桌面宠物。", tone: "info" };
+}
+
+export function mergeCatalogWarnings(...warnings: Array<string | null | undefined>): string | undefined {
+  const present = warnings.filter((warning): warning is string => Boolean(warning));
+  return present.length > 0 ? present.join("；") : undefined;
 }

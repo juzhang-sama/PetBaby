@@ -18,7 +18,7 @@ describe("desktop hit-region routing", () => {
     const source = readFileSync(new URL("./main.ts", import.meta.url), "utf8");
 
     expect(source).toContain('invoke<RuntimePetDescriptor>("pet_prepare_startup", { petId })');
-    expect(source).toContain('const requestId = crypto.randomUUID();');
+    expect(source).toContain('finalizeStartupRecovery(activePetId, petId, {');
     expect(source).not.toContain('invoke("pet_commit_switch", { petId })');
     expect(source).toContain('prepare: (requestId, petId) => invoke("pet_prepare_switch", { requestId, petId })');
     expect(source).toContain('commit: (request) => invoke("pet_commit_switch", { ...request })');

@@ -198,4 +198,64 @@ describe("requestPetSwitch", () => {
     expect(test.unlisten).toHaveBeenCalledOnce();
     expect(test.cancel).toHaveBeenCalledOnce();
   });
+
+  it("times out from function entry when listener registration never settles", async () => {
+    vi.useFakeTimers();
+    const test = clientPorts();
+    test.listen.mockImplementation(() => new Promise<never>(() => undefined));
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-listen-never" });
+
+    const pending = requestPetSwitch("pet-b", undefined, test.ports);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      requestId: "request-listen-never",
+      code: "pet-window-unavailable",
+    });
+    expect(test.emit).not.toHaveBeenCalled();
+    expect(test.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("times out while emit never settles", async () => {
+    vi.useFakeTimers();
+    const test = clientPorts();
+    test.emit.mockImplementation(() => new Promise<never>(() => undefined));
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-emit-never" });
+
+    const pending = requestPetSwitch("pet-b", undefined, test.ports);
+    await vi.advanceTimersByTimeAsync(10_000);
+
+    await expect(pending).resolves.toMatchObject({
+      ok: false,
+      requestId: "request-emit-never",
+      code: "pet-window-unavailable",
+    });
+    expect(test.unlisten).toHaveBeenCalledOnce();
+    expect(test.cancel).toHaveBeenCalledOnce();
+  });
+
+  it("unlistens a late listener after timeout and never emits", async () => {
+    vi.useFakeTimers();
+    const test = clientPorts();
+    let resolveListen!: (unlisten: typeof test.unlisten) => void;
+    test.listen.mockImplementation(() => new Promise<typeof test.unlisten>((resolve) => {
+      resolveListen = resolve;
+    }));
+    vi.stubGlobal("window", globalThis);
+    vi.stubGlobal("crypto", { randomUUID: () => "request-listen-late" });
+
+    const pending = requestPetSwitch("pet-b", undefined, test.ports);
+    await vi.advanceTimersByTimeAsync(10_000);
+    await expect(pending).resolves.toMatchObject({ ok: false, requestId: "request-listen-late" });
+
+    resolveListen(test.unlisten);
+    await Promise.resolve();
+    await Promise.resolve();
+
+    expect(test.unlisten).toHaveBeenCalledOnce();
+    expect(test.emit).not.toHaveBeenCalled();
+  });
 });

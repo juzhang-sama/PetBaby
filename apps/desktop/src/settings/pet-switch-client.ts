@@ -20,7 +20,7 @@ const tauriSwitchPorts: SwitchClientPorts = {
   cancel: (requestId) => invoke("pet_cancel_switch", { requestId }),
 };
 
-export async function requestPetSwitch(
+export function requestPetSwitch(
   petId: string,
   options: PetSwitchOptions = {},
   ports: SwitchClientPorts = tauriSwitchPorts,
@@ -81,20 +81,27 @@ export async function requestPetSwitch(
       ? { creationSessionId: options.creationSessionId }
       : {}),
   };
-  try {
-    unlisten = await ports.listen((result) => {
-      if (result.requestId === requestId) finish(result);
-    });
-    if (settled) {
-      cleanup();
-      return resultPromise;
+  timer = window.setTimeout(() => {
+    failUnavailable(new Error("桌面宠物窗口没有响应"));
+  }, 10_000);
+  void (async () => {
+    try {
+      const dispose = await ports.listen((result) => {
+        if (result.requestId === requestId) finish(result);
+      });
+      if (settled) {
+        try {
+          dispose();
+        } catch {
+          // Late listener cleanup must not reopen a settled request.
+        }
+        return;
+      }
+      unlisten = dispose;
+      await ports.emit(request);
+    } catch (error) {
+      failUnavailable(error);
     }
-    timer = window.setTimeout(() => {
-      failUnavailable(new Error("桌面宠物窗口没有响应"));
-    }, 10_000);
-    await ports.emit(request);
-  } catch (error) {
-    failUnavailable(error);
-  }
+  })();
   return resultPromise;
 }
