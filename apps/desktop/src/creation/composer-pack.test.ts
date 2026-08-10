@@ -119,6 +119,14 @@ describe("parseComposerPack", () => {
   it("requires the explicit no-pattern recipe value", () => {
     expect(() => parseComposerPack(changed("patterns", [{ id: "pattern-tabby", image: "patterns/tabby.png" }]))).toThrow(/pattern-none/);
   });
+
+  it("requires pattern.image while preserving explicit null semantics", () => {
+    const missing = structuredClone(validPack()) as { patterns: Array<Record<string, unknown>> };
+    delete missing.patterns[0]!.image;
+    expect(() => parseComposerPack(missing)).toThrow(/image is required/);
+    const pack = parseComposerPack(validPack());
+    expect(pack.patterns.map((pattern) => pattern.image)).toEqual([null, "patterns/tabby.png"]);
+  });
 });
 
 describe("validateRecipe", () => {

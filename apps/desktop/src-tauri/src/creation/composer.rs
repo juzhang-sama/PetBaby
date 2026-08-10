@@ -14,6 +14,13 @@ where
     String::deserialize(deserializer).map(Some)
 }
 
+fn deserialize_required_nullable_string<'de, D>(deserializer: D) -> Result<Option<String>, D::Error>
+where
+    D: serde::Deserializer<'de>,
+{
+    Option::<String>::deserialize(deserializer)
+}
+
 #[derive(Debug, Clone, PartialEq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComposerPoint {
@@ -124,6 +131,7 @@ pub struct ComposerColor {
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct ComposerPattern {
     pub id: String,
+    #[serde(deserialize_with = "deserialize_required_nullable_string")]
     pub image: Option<String>,
 }
 
@@ -854,6 +862,24 @@ mod tests {
             mutate(&mut value);
             assert!(parse_pack(&value.to_string()).is_err());
         }
+    }
+
+    #[test]
+    fn pattern_image_is_required_but_explicit_null_means_no_pattern() {
+        let mut missing = valid_pack_value();
+        missing["patterns"][0]
+            .as_object_mut()
+            .unwrap()
+            .remove("image");
+        assert!(parse_pack(&missing.to_string()).is_err());
+
+        let pack = parse_pack(&valid_pack_value().to_string()).unwrap();
+        assert_eq!(pack.patterns[0].id, "pattern-none");
+        assert_eq!(pack.patterns[0].image, None);
+        assert_eq!(
+            pack.patterns[1].image.as_deref(),
+            Some("patterns/tabby.png")
+        );
     }
 
     #[test]
