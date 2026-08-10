@@ -1,85 +1,112 @@
 import { describe, expect, it } from "vitest";
-import { CreationFlow } from "./creation-flow";
-import type { JobUpdate } from "./creation-flow";
+import { CreationFlow, type CreationStore } from "./creation-flow";
+import type { CreationResume } from "../pets/pet-catalog-contract";
+import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 
-class FakeStore {
+class FakeStore implements CreationStore {
   started: Array<{ petId: string; prompt: string; refPngB64: string }> = [];
-  jobs: JobUpdate[] = [];
+  snapshot: CreationResume = {
+    petId: "pet-1", status: "generating", jobId: "job-1", variantId: "job-1", error: null,
+  };
+  switchResult: PetSwitchResult = { ok: true, requestId: "request-1", petId: "pet-1" };
+  compiled: Array<{ petId: string; variantId: string }> = [];
+  switched: Array<{ petId: string; variantId: string }> = [];
+
+  constructor(options?: { switchResult?: PetSwitchResult }) {
+    if (options?.switchResult) this.switchResult = options.switchResult;
+  }
 
   async genStart(petId: string, prompt: string, refPngB64: string): Promise<string> {
     this.started.push({ petId, prompt, refPngB64 });
-    const jobId = `job-${this.started.length}`;
-    this.jobs.push({ jobId, status: "pending", error: null });
-    return jobId;
+    return `job-${this.started.length}`;
   }
 
-  async genList(): Promise<JobUpdate[]> {
-    return this.jobs;
+  async resume(): Promise<CreationResume> {
+    return this.snapshot;
   }
 
-  async accept(_variantId: string): Promise<void> {}
-  async compile(): Promise<{ manifestPath: string; degraded: boolean }> {
+  async compile(petId: string, variantId: string): Promise<{ manifestPath: string; degraded: boolean }> {
+    this.compiled.push({ petId, variantId });
     return { manifestPath: "/tmp/manifest.json", degraded: false };
+  }
+
+  async switchPet(petId: string, acceptedVariantId: string): Promise<PetSwitchResult> {
+    this.switched.push({ petId, variantId: acceptedVariantId });
+    return this.switchResult;
   }
 }
 
+function restoredAwaitingActivation(store = new FakeStore()): CreationFlow {
+  const flow = new CreationFlow(store);
+  flow.restore({
+    petId: "pet-1", status: "awaitingActivation", jobId: "job-1", variantId: "job-1", error: null,
+  });
+  return flow;
+}
+
 describe("CreationFlow", () => {
-  it("tracks steps through the creation wizard", () => {
-    const flow = new CreationFlow(new FakeStore());
-    expect(flow.step).toBe("upload");
-    flow.setSpecies("cat");
-    flow.advance();
-    expect(flow.step).toBe("traits");
-    flow.advance();
-    expect(flow.step).toBe("generating");
-  });
-
-  it("starts four jobs for a batch", async () => {
+  it("submits exactly one candidate job", async () => {
     const store = new FakeStore();
     const flow = new CreationFlow(store);
-    flow.setSpecies("cat");
-    flow.setPhotoBytes(new Uint8Array([0x89, 0x50, 0x4e, 0x47]));
-    await flow.submitBatch(4);
-    expect(store.started.length).toBe(4);
-    expect(store.started[0]!.petId).toBe("pet-1");
-    expect(flow.step).toBe("generating");
-  });
-
-  it("moves to review when all jobs finish", async () => {
-    const store = new FakeStore();
-    const flow = new CreationFlow(store);
-    flow.setSpecies("dog");
+    flow.setPetId("pet-1");
     flow.setPhotoBytes(new Uint8Array([1, 2, 3]));
-    await flow.submitBatch(2);
-    store.jobs = store.jobs.map((job) => ({ ...job, status: "success" }));
-    const done = await flow.poll();
-    expect(done).toBe(true);
+    await flow.submitSingle();
+    expect(store.started).toHaveLength(1);
+    expect(flow.step).toBe("generating");
+    expect(flow.variantId).toBe("job-1");
+  });
+
+  it("requires a pet created or restored by the caller before submission", async () => {
+    const flow = new CreationFlow(new FakeStore());
+    flow.setPhotoBytes(new Uint8Array([1, 2, 3]));
+    await expect(flow.submitSingle()).rejects.toThrow("pet id required");
+  });
+
+  it.each([
+    ["generating", "generating"],
+    ["generationFailed", "upload"],
+    ["awaitingConfirm", "review"],
+    ["compileRetryable", "review"],
+    ["awaitingActivation", "confirm"],
+  ] as const)("restores %s to %s", (status, step) => {
+    const flow = new CreationFlow(new FakeStore());
+    flow.restore({ petId: "pet-1", status, jobId: "job-1", variantId: "job-1", error: null });
+    expect(flow.step).toBe(step);
+    expect(flow.petId).toBe("pet-1");
+  });
+
+  it("uses the latest resume snapshot when polling", async () => {
+    const store = new FakeStore();
+    store.snapshot = { petId: "pet-1", status: "awaitingConfirm", jobId: "job-1", variantId: "job-1", error: null };
+    const flow = new CreationFlow(store);
+    flow.restore({ petId: "pet-1", status: "generating", jobId: "job-1", variantId: "job-1", error: null });
+    await flow.poll();
     expect(flow.step).toBe("review");
   });
 
-  it("keeps generating while jobs are pending", async () => {
+  it("keeps review available when compilation fails", async () => {
     const store = new FakeStore();
+    store.compile = async () => { throw new Error("compiler unavailable"); };
     const flow = new CreationFlow(store);
-    flow.setSpecies("cat");
-    flow.setPhotoBytes(new Uint8Array([1, 2, 3]));
-    await flow.submitBatch(2);
-    store.jobs[0] = { ...store.jobs[0]!, status: "running" };
-    const done = await flow.poll();
-    expect(done).toBe(false);
-    expect(flow.step).toBe("generating");
+    flow.restore({ petId: "pet-1", status: "awaitingConfirm", jobId: "job-1", variantId: "job-1", error: null });
+    await expect(flow.compileCandidate()).rejects.toThrow("compiler unavailable");
+    expect(flow.step).toBe("review");
   });
 
-  it("accepts a candidate and compiles", async () => {
+  it("only completes after a successful desktop switch", async () => {
     const store = new FakeStore();
-    const flow = new CreationFlow(store);
-    flow.setSpecies("cat");
-    flow.setPhotoBytes(new Uint8Array([1, 2, 3]));
-    await flow.submitBatch(1);
-    store.jobs[0] = { ...store.jobs[0]!, status: "success" };
-    await flow.poll();
-    flow.accept("variant-1");
-    const result = await flow.compile();
-    expect(result.manifestPath).toContain("manifest.json");
+    const flow = restoredAwaitingActivation(store);
+    await flow.activateCandidate();
+    expect(store.switched).toEqual([{ petId: "pet-1", variantId: "job-1" }]);
+    expect(flow.step).toBe("complete");
+  });
+
+  it("does not finish when desktop switching fails", async () => {
+    const store = new FakeStore({ switchResult: {
+      ok: false, requestId: "request-1", petId: "pet-1", code: "blank-frame", message: "first frame empty",
+    } });
+    const flow = restoredAwaitingActivation(store);
+    await expect(flow.activateCandidate()).rejects.toThrow("blank-frame");
     expect(flow.step).toBe("confirm");
   });
 });

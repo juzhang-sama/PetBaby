@@ -1,26 +1,14 @@
 import { invoke } from "@tauri-apps/api/core";
-import { CreationFlow } from "./creation/creation-flow";
-import type { PetCatalogEntry } from "./pets/pet-catalog-contract";
+import { CreationFlow, type CreationStep } from "./creation/creation-flow";
+import type { CreationResume, PetCatalogEntry } from "./pets/pet-catalog-contract";
 import { deleteCurrentCatalogPet } from "./settings/pet-catalog-delete-flow";
 import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-view-model";
 import { requestPetSwitch } from "./settings/pet-switch-client";
+import { CreationWizardRun } from "./settings/creation-wizard-run";
 
-interface PetSummary {
-  petId: string;
-  species: "cat" | "dog";
-  identityMode: string;
-  createdAt: string;
-}
-
-interface JobInfo {
-  jobId: string;
-  status: string;
-  error: string | null;
-}
-
-interface DeleteOutcome {
-  warning: string | null;
-}
+interface PetSummary { petId: string; }
+interface JobInfo { jobId: string; status: string; error: string | null; }
+interface DeleteOutcome { warning: string | null; }
 
 const $ = <T extends HTMLElement>(id: string): T => {
   const el = document.getElementById(id);
@@ -34,11 +22,6 @@ const tabList = $<HTMLButtonElement>("tab-list");
 const tabCreate = $<HTMLButtonElement>("tab-create");
 const viewList = $<HTMLDivElement>("view-list");
 const viewCreate = $<HTMLDivElement>("view-create");
-
-const petSetActive = (petId: string): Promise<void> => invoke("pet_set_active", { petId });
-const genList = (petId: string): Promise<JobInfo[]> => invoke("gen_list", { petId });
-const assetCompile = (petId: string, variantId: string, cutoutPath: string): Promise<{ manifestPath: string; degraded: boolean }> =>
-  invoke("asset_compile", { petId, variantId, cutoutPath });
 
 let catalogEntries: PetCatalogEntry[] = [];
 let catalogBusy: "switch" | "delete" | null = null;
@@ -58,7 +41,6 @@ function renderCatalogRows(): void {
     listEl.append(empty);
     return;
   }
-
   for (const row of buildPetListRows(catalogEntries)) {
     const entry = catalogEntries.find((item) => item.petId === row.petId);
     const item = document.createElement("div");
@@ -143,7 +125,6 @@ async function switchCatalogPet(petId: string): Promise<void> {
 async function deleteCatalogPet(petId: string): Promise<void> {
   const entry = catalogEntries.find((item) => item.petId === petId);
   if (!entry || !window.confirm("确定删除这只宠物吗？此操作会移除它的本地资料和生成任务。")) return;
-
   catalogBusy = "delete";
   renderCatalogRows();
   try {
@@ -166,9 +147,7 @@ async function deleteCatalogPet(petId: string): Promise<void> {
     } else {
       outcome = await invoke<DeleteOutcome>("pet_delete_full", { petId });
     }
-    if (await renderList()) {
-      setCatalogStatus(outcome.warning ?? "宠物已删除。", outcome.warning ? "warning" : "info");
-    }
+    if (await renderList()) setCatalogStatus(outcome.warning ?? "宠物已删除。", outcome.warning ? "warning" : "info");
   } catch (error) {
     setCatalogStatus(`删除失败。请稍后重试：${String(error)}`, "error");
   } finally {
@@ -177,7 +156,7 @@ async function deleteCatalogPet(petId: string): Promise<void> {
   }
 }
 
-// --- creation wizard ---
+// --- resumable, single-candidate creation wizard ---
 const wSpecies = $<HTMLSelectElement>("w-species");
 const photoInput = $<HTMLInputElement>("photo-input");
 const photoPreview = $<HTMLImageElement>("photo-preview");
@@ -190,41 +169,73 @@ const candidateGrid = $<HTMLDivElement>("candidate-grid");
 const stepUpload = $<HTMLDivElement>("step-upload");
 const stepGenerating = $<HTMLDivElement>("step-generating");
 const stepReview = $<HTMLDivElement>("step-review");
-const btnBack = $<HTMLButtonElement>("wizard-back");
+const stepConfirm = $<HTMLDivElement>("step-confirm");
+const stepComplete = $<HTMLDivElement>("step-complete");
 const btnNext = $<HTMLButtonElement>("wizard-next");
 const btnCancel = $<HTMLButtonElement>("wizard-cancel");
+const reviewActions = $<HTMLDivElement>("review-actions");
+const reviewAccept = $<HTMLButtonElement>("review-accept");
+const reviewRetry = $<HTMLButtonElement>("review-retry");
+const reviewAbandon = $<HTMLButtonElement>("review-abandon");
+const confirmRetry = $<HTMLButtonElement>("confirm-retry");
 
-let flow: CreationFlow;
-let photoBytes: Uint8Array | null = null;
-let petId = "";
-let pollTimer: number | undefined;
-let selectedVariant: string | null = null;
-let wizardPhase: "idle" | "generating" | "review" = "idle";
 const creationResumeStorageKey = "desktop-pet.creation.resumePetId";
-let pendingCreationResumePetId = window.sessionStorage.getItem(creationResumeStorageKey);
+let flow = new CreationFlow();
+let photoBytes: Uint8Array | null = null;
+let pollTimer: number | undefined;
+let generationRefreshVisit: number | null = null;
+let activationFlow: CreationFlow | null = null;
+let wizardVisit = 0;
+const wizardRun = new CreationWizardRun();
 
-function enterCreationResume(petId: string): void {
-  pendingCreationResumePetId = petId;
+function persistCreationPet(petId: string): void {
   window.sessionStorage.setItem(creationResumeStorageKey, petId);
-  switchView("create");
 }
 
-function showStep(step: "upload" | "generating" | "review"): void {
+function clearCreationPet(petId?: string): void {
+  if (!petId || window.sessionStorage.getItem(creationResumeStorageKey) === petId) {
+    window.sessionStorage.removeItem(creationResumeStorageKey);
+  }
+}
+
+function stopPolling(): void {
+  if (pollTimer !== undefined) window.clearInterval(pollTimer);
+  pollTimer = undefined;
+}
+
+function resetPhoto(): void {
+  photoBytes = null;
+  flow.clearPhoto();
+  photoInput.value = "";
+  photoPreview.removeAttribute("src");
+  photoPreview.style.display = "none";
+}
+
+function isCurrentWizard(visit: number, expectedFlow: CreationFlow): boolean {
+  return wizardRun.isCurrent(visit) && flow === expectedFlow;
+}
+
+function persistCreationPetForVisit(petId: string, visit: number, expectedFlow: CreationFlow): void {
+  if (isCurrentWizard(visit, expectedFlow) || !window.sessionStorage.getItem(creationResumeStorageKey)) {
+    persistCreationPet(petId);
+  }
+}
+
+function showStep(step: CreationStep): void {
   stepUpload.style.display = step === "upload" ? "" : "none";
   stepGenerating.style.display = step === "generating" ? "" : "none";
   stepReview.style.display = step === "review" ? "" : "none";
-  btnBack.style.display = step === "review" ? "" : "none";
+  stepConfirm.style.display = step === "confirm" ? "" : "none";
+  stepComplete.style.display = step === "complete" ? "" : "none";
+  btnNext.style.display = step === "upload" ? "" : "none";
   btnCancel.style.display = step === "generating" ? "" : "none";
-  btnNext.style.display = step === "review" ? "none" : "";
 }
 
 async function loadApiKey(): Promise<void> {
   try {
     const key = await invoke<string | null>("app_setting_get", { key: "lk888_api_key" });
     if (key) apiKeyInput.value = key;
-  } catch {
-    /* ignore */
-  }
+  } catch { /* optional convenience only */ }
 }
 
 saveKeyBtn.addEventListener("click", async () => {
@@ -242,250 +253,318 @@ saveKeyBtn.addEventListener("click", async () => {
 });
 
 function startWizard(): void {
+  stopPolling();
+  wizardVisit = wizardRun.enter();
   void loadApiKey();
   flow = new CreationFlow();
   flow.setSpecies(wSpecies.value as "cat" | "dog");
-  photoBytes = null;
-  selectedVariant = null;
-  lastJobId = null;
-  photoInput.value = "";
-  photoPreview.style.display = "none";
+  resetPhoto();
   wizardStatus.textContent = "";
   jobGrid.replaceChildren();
   candidateGrid.replaceChildren();
   reviewActions.style.display = "none";
-  btnNext.onclick = null;
-  btnNext.textContent = "下一步";
+  activationFlow = null;
   btnNext.disabled = false;
-  wizardPhase = "idle";
   showStep("upload");
 }
 
-/** Restore the wizard view from memory when switching back to the tab. */
-function restoreWizardView(): void {
-  if (pendingCreationResumePetId) {
-    wizardStatus.textContent = "已选择继续创建，正在准备恢复…";
-    viewCreate.dataset.resumePetId = pendingCreationResumePetId;
-    window.dispatchEvent(new CustomEvent("pet-creation-resume-requested", {
-      detail: { petId: pendingCreationResumePetId },
-    }));
+function enterCreationResume(petId: string): void {
+  persistCreationPet(petId);
+  switchView("create");
+}
+
+async function restoreWizardView(): Promise<void> {
+  wizardVisit = wizardRun.enter();
+  const visit = wizardVisit;
+  const petId = window.sessionStorage.getItem(creationResumeStorageKey);
+  if (!petId) {
+    startWizard();
     return;
   }
-  if (wizardPhase === "generating") {
-    showStep("generating");
-    void pollJobs();
-  } else if (wizardPhase === "review") {
-    showStep("review");
-    void genList(petId).then(renderCandidates);
-  } else {
-    startWizard();
+  stopPolling();
+  wizardStatus.textContent = "正在恢复创建进度…";
+  try {
+    const restoredFlow = new CreationFlow();
+    flow = restoredFlow;
+    const snapshot = await invoke<CreationResume>("pet_creation_resume", { petId });
+    if (!isCurrentWizard(visit, restoredFlow)) return;
+    restoredFlow.restore(snapshot);
+    persistCreationPet(snapshot.petId);
+    resetPhoto();
+    await renderResumedSnapshot(snapshot, visit, restoredFlow);
+  } catch (error) {
+    if (!isCurrentWizard(visit, flow)) return;
+    wizardStatus.textContent = `无法恢复创建进度：${String(error)}`;
+    showStep("upload");
   }
+}
+
+async function renderResumedSnapshot(snapshot: CreationResume, visit: number, expectedFlow: CreationFlow): Promise<void> {
+  if (!isCurrentWizard(visit, expectedFlow)) return;
+  showStep(expectedFlow.step);
+  if (expectedFlow.step === "generating") {
+    await refreshGenerating(visit, expectedFlow);
+    if (isCurrentWizard(visit, expectedFlow) && expectedFlow.step === "generating") startPolling(visit, expectedFlow);
+    return;
+  }
+  if (expectedFlow.step === "upload") {
+    wizardStatus.textContent = `上次生成失败：${snapshot.error ?? "未知原因"}。请重新选择照片后重试。`;
+    return;
+  }
+  if (expectedFlow.step === "review") {
+    await renderCandidate(snapshot.jobId, visit, expectedFlow);
+    return;
+  }
+  if (expectedFlow.step === "confirm") {
+    wizardStatus.textContent = "资产已准备，正在设为当前宠物…";
+    void activatePreparedCandidate(visit, expectedFlow);
+    return;
+  }
+  wizardStatus.textContent = "宠物已出现在桌面。";
+  clearCreationPet(snapshot.petId);
 }
 
 photoInput.addEventListener("change", async () => {
   const file = photoInput.files?.[0];
   if (!file) return;
-  const buffer = await file.arrayBuffer();
-  photoBytes = new Uint8Array(buffer);
+  photoBytes = new Uint8Array(await file.arrayBuffer());
   photoPreview.src = URL.createObjectURL(file);
   photoPreview.style.display = "block";
 });
 
-btnNext.addEventListener("click", async () => {
-  const trace = async (message: string) => {
-    void invoke("frontend_ping", { message: `settings: ${message}` });
-  };
-  void trace("next clicked");
-  if (!photoBytes) {
-    wizardStatus.textContent = "请先选择宠物照片";
-    void trace("no photo");
-    return;
+async function saveApiKeyForGeneration(visit: number, expectedFlow: CreationFlow): Promise<boolean> {
+  const key = apiKeyInput.value.trim();
+  if (!key) {
+    if (isCurrentWizard(visit, expectedFlow)) wizardStatus.textContent = "请先在上方填写并保存 API Key";
+    return false;
   }
-  const typedKey = apiKeyInput.value.trim();
-  if (!typedKey) {
-    wizardStatus.textContent = "请先在上方填写并保存 API Key";
-    void trace("no key");
-    return;
-  }
-  wizardStatus.textContent = "准备中…";
   try {
-    // auto-save the key so the backend can use it
-    await invoke("app_setting_set", { key: "lk888_api_key", value: typedKey });
+    await invoke("app_setting_set", { key: "lk888_api_key", value: key });
+    if (!isCurrentWizard(visit, expectedFlow)) return false;
     keyStatus.textContent = "Key 已自动保存";
-    void trace("key saved");
+    return true;
   } catch (error) {
-    wizardStatus.textContent = `保存 Key 失败: ${String(error)}`;
-    void trace(`key save failed: ${String(error)}`);
-    return;
+    if (isCurrentWizard(visit, expectedFlow)) wizardStatus.textContent = `保存 Key 失败: ${String(error)}`;
+    return false;
   }
-  try {
-    flow.setPhotoBytes(photoBytes);
-    flow.setPetId(await createPetForWizard());
-    void trace("pet created");
-  } catch (error) {
-    wizardStatus.textContent = `创建宠物失败: ${String(error)}`;
-    void trace(`pet create failed: ${String(error)}`);
-    return;
-  }
-  try {
-    await flow.submitBatch(1);
-    void trace("1 job submitted");
-  } catch (error) {
-    wizardStatus.textContent = `提交生成任务失败: ${String(error)}`;
-    void trace(`submit failed: ${String(error)}`);
-    return;
-  }
-  wizardStatus.textContent = "";
-  wizardPhase = "generating";
-  showStep("generating");
-  void pollJobs();
-});
+}
 
-async function createPetForWizard(): Promise<string> {
+async function ensurePetForSubmission(targetFlow: CreationFlow, visit: number): Promise<void> {
+  if (targetFlow.petId) return;
   const pet = await invoke<PetSummary>("pet_create", {
     species: wSpecies.value,
     identityMode: "realPet",
   });
-  petId = pet.petId;
-  return pet.petId;
+  targetFlow.setPetId(pet.petId);
+  persistCreationPetForVisit(pet.petId, visit, targetFlow);
 }
 
-async function pollJobs(): Promise<void> {
-  if (pollTimer) window.clearInterval(pollTimer);
-  pollTimer = window.setInterval(async () => {
-    try {
-      const jobs = await genList(petId);
-      renderJobs(jobs);
-      const done = jobs.length >= 1 && jobs.every((job) => job.status !== "pending" && job.status !== "running");
-      if (done) {
-        if (pollTimer) window.clearInterval(pollTimer);
-        pollTimer = undefined;
-        wizardPhase = "review";
-        renderCandidates(jobs);
-        showStep("review");
-      }
-    } catch (error) {
-      wizardStatus.textContent = `查询任务失败: ${String(error)}`;
-    }
-  }, 4000);
-}
-
-function renderJobs(jobs: JobInfo[]): void {
-  jobGrid.replaceChildren();
-  for (const job of jobs) {
-    const card = document.createElement("div");
-    card.className = `job-card ${job.status === "success" ? "success" : job.status === "failed" ? "failed" : ""}`;
-    const stateLabel: Record<string, string> = {
-      pending: "排队中",
-      running: "生成中…",
-      success: "完成",
-      failed: "失败",
-      cancelled: "已取消",
-    };
-    card.textContent = `${card.textContent ?? ""}${stateLabel[job.status] ?? job.status}${job.error ? `（${job.error}）` : ""}`;
-    jobGrid.append(card);
-  }
-}
-
-async function renderCandidates(jobs: JobInfo[]): Promise<void> {
-  candidateGrid.replaceChildren();
-  const successful = jobs.filter((job) => job.status === "success");
-  const failed = jobs.filter((job) => job.status === "failed");
-  if (successful.length === 0) {
-    wizardStatus.textContent = failed.length > 0
-      ? `生成失败：${failed[0]?.error ?? "未知原因"}。可点击下方"重新生成"重试。`
-      : "生成失败，可点击下方「重新生成」重试。";
-    reviewActions.style.display = "";
+btnNext.addEventListener("click", async () => {
+  if (!photoBytes) {
+    wizardStatus.textContent = "请先选择宠物照片";
     return;
   }
-  const job = successful[0]!;
-  const card = document.createElement("div");
-  card.className = "candidate selected";
-  const img = document.createElement("img");
-  img.src = await invoke<string>("gen_cutout_b64", { jobId: job.jobId });
-  img.alt = "候选";
-  const label = document.createElement("div");
-  label.style.fontSize = "12px";
-  label.style.color = "#666";
-  label.textContent = job.jobId;
-  card.append(img, label);
-  candidateGrid.append(card);
-  reviewActions.style.display = "";
-  lastJobId = job.jobId;
-}
-
-async function getCutoutPath(jobId: string): Promise<string> {
-  return invoke<string>("gen_cutout_path", { jobId });
-}
-
-// --- single-candidate review actions ---
-const reviewActions = $<HTMLDivElement>("review-actions");
-const reviewAccept = $<HTMLButtonElement>("review-accept");
-const reviewRetry = $<HTMLButtonElement>("review-retry");
-const reviewAbandon = $<HTMLButtonElement>("review-abandon");
-let lastJobId: string | null = null;
-
-reviewAccept.addEventListener("click", async () => {
-  if (!lastJobId) return;
-  wizardStatus.textContent = "正在编译资产…";
+  const visit = wizardVisit;
+  const submittingFlow = flow;
+  if (!wizardRun.beginSubmission(visit)) return;
+  btnNext.disabled = true;
   try {
-    const cutoutPath = await getCutoutPath(lastJobId);
-    const result = await assetCompile(petId, lastJobId, cutoutPath);
-    await petSetActive(petId);
-    wizardStatus.textContent = `完成！${result.degraded ? "（资产为降级模式）" : ""}宠物已出现在桌面`;
-    wizardPhase = "idle";
-    window.setTimeout(() => switchView("list"), 1500);
+    if (!await saveApiKeyForGeneration(visit, submittingFlow) || !isCurrentWizard(visit, submittingFlow)) return;
+    wizardStatus.textContent = "准备生成…";
+    submittingFlow.setSpecies(wSpecies.value as "cat" | "dog");
+    await ensurePetForSubmission(submittingFlow, visit);
+    if (!isCurrentWizard(visit, submittingFlow)) return;
+    submittingFlow.setPhotoBytes(photoBytes);
+    await submittingFlow.submitSingle();
+    persistCreationPetForVisit(submittingFlow.petId!, visit, submittingFlow);
+    if (!isCurrentWizard(visit, submittingFlow)) return;
+    wizardStatus.textContent = "";
+    showStep("generating");
+    await refreshGenerating(visit, submittingFlow);
+    if (isCurrentWizard(visit, submittingFlow) && submittingFlow.step === "generating") startPolling(visit, submittingFlow);
   } catch (error) {
-    wizardStatus.textContent = `编译失败: ${String(error)}`;
+    if (isCurrentWizard(visit, submittingFlow)) wizardStatus.textContent = `提交生成任务失败: ${String(error)}`;
+  } finally {
+    wizardRun.endSubmission(visit);
+    if (isCurrentWizard(visit, submittingFlow)) btnNext.disabled = false;
   }
 });
 
-reviewRetry.addEventListener("click", async () => {
-  wizardStatus.textContent = "重新生成中…";
-  reviewActions.style.display = "none";
-  candidateGrid.replaceChildren();
-  wizardPhase = "generating";
-  showStep("generating");
+function startPolling(visit: number, expectedFlow: CreationFlow): void {
+  stopPolling();
+  pollTimer = window.setInterval(() => { void refreshGenerating(visit, expectedFlow); }, 4000);
+}
+
+async function refreshGenerating(visit: number, expectedFlow: CreationFlow): Promise<void> {
+  if (!isCurrentWizard(visit, expectedFlow) || expectedFlow.step !== "generating" || !expectedFlow.petId) return;
+  if (generationRefreshVisit === visit) return;
+  generationRefreshVisit = visit;
+  const petId = expectedFlow.petId;
   try {
-    await flow.submitBatch(1);
+    const [jobs, snapshot] = await Promise.all([
+      invoke<JobInfo[]>("gen_list", { petId }),
+      expectedFlow.poll(),
+    ]);
+    if (!isCurrentWizard(visit, expectedFlow) || expectedFlow.petId !== petId) return;
+    const job = jobs.find((item) => item.jobId === snapshot.jobId);
+    renderJob(job, snapshot);
+    if (expectedFlow.step === "generating") return;
+    stopPolling();
+    await renderResumedSnapshot(snapshot, visit, expectedFlow);
   } catch (error) {
-    wizardStatus.textContent = `重新生成失败: ${String(error)}`;
+    if (isCurrentWizard(visit, expectedFlow)) wizardStatus.textContent = `查询生成进度失败: ${String(error)}`;
+  } finally {
+    if (generationRefreshVisit === visit) generationRefreshVisit = null;
+  }
+}
+
+function renderJob(job: JobInfo | undefined, snapshot: CreationResume): void {
+  jobGrid.replaceChildren();
+  const card = document.createElement("div");
+  const status = job?.status ?? snapshot.status;
+  card.className = `job-card ${status === "success" ? "success" : status === "failed" ? "failed" : ""}`;
+  const labels: Record<string, string> = {
+    pending: "排队中", running: "生成中…", success: "生成完成", failed: "生成失败", generationFailed: "生成失败",
+  };
+  card.textContent = `${labels[status] ?? status}${job?.error || snapshot.error ? `（${job?.error ?? snapshot.error}）` : ""}`;
+  jobGrid.append(card);
+}
+
+async function renderCandidate(jobId: string | null, visit: number, expectedFlow: CreationFlow): Promise<void> {
+  if (!isCurrentWizard(visit, expectedFlow)) return;
+  candidateGrid.replaceChildren();
+  reviewActions.style.display = "";
+  if (!jobId) {
+    wizardStatus.textContent = "候选记录不完整。请重新选择照片后重试。";
     return;
   }
-  void pollJobs();
+  try {
+    const card = document.createElement("div");
+    card.className = "candidate selected";
+    const image = document.createElement("img");
+    image.src = await invoke<string>("gen_cutout_b64", { jobId });
+    if (!isCurrentWizard(visit, expectedFlow)) return;
+    image.alt = "生成的宠物候选";
+    const label = document.createElement("div");
+    label.className = "candidate-id";
+    label.textContent = jobId;
+    card.append(image, label);
+    candidateGrid.append(card);
+    wizardStatus.textContent = "";
+  } catch (error) {
+    if (isCurrentWizard(visit, expectedFlow)) wizardStatus.textContent = `候选图片暂不可用：${String(error)}`;
+  }
+}
+
+reviewAccept.addEventListener("click", async () => {
+  const visit = wizardVisit;
+  const reviewFlow = flow;
+  if (!isCurrentWizard(visit, reviewFlow)) return;
+  reviewAccept.disabled = true;
+  reviewRetry.disabled = true;
+  reviewAbandon.disabled = true;
+  wizardStatus.textContent = "正在编译资产…";
+  try {
+    const result = await reviewFlow.compileCandidate();
+    if (!isCurrentWizard(visit, reviewFlow)) return;
+    showStep("confirm");
+    wizardStatus.textContent = result.degraded ? "资产已准备（降级模式），正在设为当前宠物…" : "资产已准备，正在设为当前宠物…";
+    await activatePreparedCandidate(visit, reviewFlow);
+  } catch (error) {
+    if (isCurrentWizard(visit, reviewFlow)) {
+      wizardStatus.textContent = `编译失败，可重试：${String(error)}`;
+      showStep("review");
+    }
+  } finally {
+    if (isCurrentWizard(visit, reviewFlow)) {
+      reviewAccept.disabled = false;
+      reviewRetry.disabled = false;
+      reviewAbandon.disabled = false;
+    }
+  }
+});
+
+async function activatePreparedCandidate(visit: number, expectedFlow: CreationFlow): Promise<void> {
+  if (activationFlow || !isCurrentWizard(visit, expectedFlow) || expectedFlow.step !== "confirm") return;
+  activationFlow = expectedFlow;
+  confirmRetry.disabled = true;
+  try {
+    await expectedFlow.activateCandidate();
+    if (!isCurrentWizard(visit, expectedFlow)) return;
+    clearCreationPet(expectedFlow.petId ?? undefined);
+    showStep("complete");
+    wizardStatus.textContent = "宠物已出现在桌面。";
+  } catch (error) {
+    if (!isCurrentWizard(visit, expectedFlow)) return;
+    showStep("confirm");
+    wizardStatus.textContent = `资产已准备，可重试设为当前宠物：${String(error)}`;
+  } finally {
+    if (activationFlow === expectedFlow) activationFlow = null;
+    if (isCurrentWizard(visit, expectedFlow)) confirmRetry.disabled = false;
+  }
+}
+
+confirmRetry.addEventListener("click", () => { void activatePreparedCandidate(wizardVisit, flow); });
+
+reviewRetry.addEventListener("click", () => {
+  if (!isCurrentWizard(wizardVisit, flow)) return;
+  resetPhoto();
+  reviewActions.style.display = "none";
+  candidateGrid.replaceChildren();
+  showStep("upload");
+  wizardStatus.textContent = "请重新选择照片，再重新生成。";
 });
 
 reviewAbandon.addEventListener("click", async () => {
-  wizardStatus.textContent = "已放弃，正在清理…";
+  const petId = flow.petId;
+  if (!petId || !window.confirm("确定放弃创建吗？这会删除这只宠物的本地资料和生成任务。")) return;
+  const visit = wizardVisit;
+  const reviewFlow = flow;
+  if (!isCurrentWizard(visit, reviewFlow)) return;
+  reviewAbandon.disabled = true;
+  reviewAccept.disabled = true;
+  reviewRetry.disabled = true;
+  wizardStatus.textContent = "正在删除创建记录…";
   try {
-    await invoke("gen_cleanup_pet", { petId });
+    const outcome = await invoke<DeleteOutcome>("pet_delete_full", { petId });
+    if (!isCurrentWizard(visit, reviewFlow)) {
+      clearCreationPet(petId);
+      return;
+    }
+    clearCreationPet(petId);
+    if (outcome.warning) setCatalogStatus(outcome.warning, "warning");
+    switchView("list");
+    if (!outcome.warning) setCatalogStatus("已放弃创建并删除本地资料。");
   } catch (error) {
-    wizardStatus.textContent = `清理失败: ${String(error)}`;
+    if (isCurrentWizard(visit, reviewFlow)) {
+      wizardStatus.textContent = `删除失败，仍可继续创建或重试删除：${String(error)}`;
+      reviewAbandon.disabled = false;
+      reviewAccept.disabled = false;
+      reviewRetry.disabled = false;
+    }
   }
-  wizardPhase = "idle";
-  switchView("list");
 });
 
-btnBack.addEventListener("click", () => {
-  if (pollTimer) window.clearInterval(pollTimer);
-  pollTimer = undefined;
-  startWizard();
-});
-
-btnCancel.addEventListener("click", () => {
-  if (pollTimer) window.clearInterval(pollTimer);
-  pollTimer = undefined;
-  switchView("list");
-});
+btnCancel.addEventListener("click", () => switchView("list"));
 
 function switchView(view: "list" | "create"): void {
+  if (view === "list") {
+    stopPolling();
+    wizardRun.leave();
+    wizardVisit = 0;
+  }
   viewList.style.display = view === "list" ? "" : "none";
   viewCreate.style.display = view === "create" ? "" : "none";
   tabList.classList.toggle("active", view === "list");
   tabCreate.classList.toggle("active", view === "create");
   if (view === "list") void renderList();
-  if (view === "create") restoreWizardView();
+  if (view === "create") void restoreWizardView();
 }
+
+window.addEventListener("pet-creation-resume-requested", (event) => {
+  const petId = (event as CustomEvent<{ petId?: string }>).detail?.petId;
+  if (petId) enterCreationResume(petId);
+});
 
 tabList.addEventListener("click", () => switchView("list"));
 tabCreate.addEventListener("click", () => switchView("create"));

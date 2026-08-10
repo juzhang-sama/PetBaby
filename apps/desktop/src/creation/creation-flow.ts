@@ -1,18 +1,15 @@
 import { invoke } from "@tauri-apps/api/core";
+import type { CreationResume } from "../pets/pet-catalog-contract";
+import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
+import { requestPetSwitch } from "../settings/pet-switch-client";
 
-export type CreationStep = "upload" | "traits" | "generating" | "review" | "confirm";
-
-export interface JobUpdate {
-  jobId: string;
-  status: string;
-  error: string | null;
-}
+export type CreationStep = "upload" | "generating" | "review" | "confirm" | "complete";
 
 export interface CreationStore {
   genStart(petId: string, prompt: string, refPngB64: string): Promise<string>;
-  genList(petId: string): Promise<JobUpdate[]>;
-  accept(variantId: string): Promise<void>;
-  compile(petId: string): Promise<{ manifestPath: string; degraded: boolean }>;
+  resume(petId: string): Promise<CreationResume>;
+  compile(petId: string, variantId: string): Promise<{ manifestPath: string; degraded: boolean }>;
+  switchPet(petId: string, acceptedVariantId: string): Promise<PetSwitchResult>;
 }
 
 class TauriStore implements CreationStore {
@@ -25,42 +22,47 @@ class TauriStore implements CreationStore {
     });
   }
 
-  async genList(petId: string): Promise<JobUpdate[]> {
-    const jobs = await invoke<Array<Record<string, unknown>>>("gen_list", {
-      petId,
-    });
-    return jobs.map((job) => ({
-      jobId: String(job.jobId),
-      status: String(job.status),
-      error: job.error ? String(job.error) : null,
-    }));
+  async resume(petId: string): Promise<CreationResume> {
+    return invoke("pet_creation_resume", { petId });
   }
 
-  async accept(_variantId: string): Promise<void> {
-    // variant acceptance is recorded during compile in M4 Task 6
+  async compile(petId: string, variantId: string): Promise<{ manifestPath: string; degraded: boolean }> {
+    const cutoutPath = await invoke<string>("gen_cutout_path", { jobId: variantId });
+    return invoke("asset_compile", { petId, variantId, cutoutPath });
   }
 
-  async compile(petId: string): Promise<{ manifestPath: string; degraded: boolean }> {
-    return invoke("asset_compile", { petId });
+  switchPet(petId: string, acceptedVariantId: string): Promise<PetSwitchResult> {
+    return requestPetSwitch(petId, acceptedVariantId);
   }
 }
 
 export class CreationFlow {
   step: CreationStep = "upload";
-  private species = "cat";
-  private petId = "pet-1";
+  private species: "cat" | "dog" = "cat";
+  private currentPetId: string | null = null;
   private photoBytes: Uint8Array | null = null;
-  private jobIds: string[] = [];
-  private selectedVariant: string | null = null;
-  private compiled = false;
+  private currentJobId: string | null = null;
+  private currentVariantId: string | null = null;
   private readonly store: CreationStore;
 
   constructor(store?: CreationStore) {
     this.store = store ?? new TauriStore();
   }
 
+  get petId(): string | null {
+    return this.currentPetId;
+  }
+
+  get jobId(): string | null {
+    return this.currentJobId;
+  }
+
+  get variantId(): string | null {
+    return this.currentVariantId;
+  }
+
   setPetId(petId: string): void {
-    this.petId = petId;
+    this.currentPetId = petId;
   }
 
   setSpecies(species: "cat" | "dog"): void {
@@ -71,50 +73,72 @@ export class CreationFlow {
     this.photoBytes = bytes;
   }
 
-  advance(): void {
-    const order: CreationStep[] = ["upload", "traits", "generating", "review", "confirm"];
-    const index = order.indexOf(this.step);
-    if (index >= 0 && index < order.length - 1) {
-      this.step = order[index + 1]!;
+  clearPhoto(): void {
+    this.photoBytes = null;
+  }
+
+  restore(snapshot: CreationResume): void {
+    this.currentPetId = snapshot.petId;
+    this.currentJobId = snapshot.jobId;
+    this.currentVariantId = snapshot.variantId;
+    switch (snapshot.status) {
+      case "generating":
+        this.step = "generating";
+        break;
+      case "generationFailed":
+        this.step = "upload";
+        break;
+      case "awaitingConfirm":
+      case "compileRetryable":
+        this.step = "review";
+        break;
+      case "awaitingActivation":
+        this.step = "confirm";
+        break;
+      case "ready":
+        this.step = "complete";
+        break;
+      case "corrupt":
+        throw new Error("corrupt pet is not resumable");
     }
   }
 
-  async submitBatch(count: number): Promise<void> {
+  async submitSingle(): Promise<void> {
     if (!this.photoBytes) throw new Error("photo required");
-    const b64 = bytesToBase64(this.photoBytes);
-    const prompt = buildPrompt(this.species);
-    for (let i = 0; i < count; i += 1) {
-      const jobId = await this.store.genStart(this.petId, prompt, b64);
-      this.jobIds.push(jobId);
-    }
+    if (!this.currentPetId) throw new Error("pet id required");
+    this.currentJobId = await this.store.genStart(
+      this.currentPetId,
+      buildPrompt(this.species),
+      bytesToBase64(this.photoBytes),
+    );
+    this.currentVariantId = this.currentJobId;
     this.step = "generating";
   }
 
-  async poll(): Promise<boolean> {
-    const jobs = await this.store.genList(this.petId);
-    const pending = jobs.filter((job) => job.status === "pending" || job.status === "running");
-    if (pending.length === 0 && jobs.length > 0) {
+  async poll(): Promise<CreationResume> {
+    if (!this.currentPetId) throw new Error("pet id required");
+    const snapshot = await this.store.resume(this.currentPetId);
+    this.restore(snapshot);
+    return snapshot;
+  }
+
+  async compileCandidate(): Promise<{ manifestPath: string; degraded: boolean }> {
+    if (!this.currentPetId || !this.currentVariantId) throw new Error("candidate required");
+    try {
+      const result = await this.store.compile(this.currentPetId, this.currentVariantId);
+      this.step = "confirm";
+      return result;
+    } catch (error) {
       this.step = "review";
-      return true;
+      throw error;
     }
-    return false;
   }
 
-  accept(variantId: string): void {
-    this.selectedVariant = variantId;
-    void this.store.accept(variantId);
-  }
-
-  async compile(): Promise<{ manifestPath: string; degraded: boolean }> {
-    if (!this.selectedVariant) throw new Error("no variant selected");
-    const result = await this.store.compile(this.petId);
-    this.compiled = true;
-    this.step = "confirm";
-    return result;
-  }
-
-  get isCompiled(): boolean {
-    return this.compiled;
+  async activateCandidate(): Promise<void> {
+    if (!this.currentPetId || !this.currentVariantId) throw new Error("candidate required");
+    const result = await this.store.switchPet(this.currentPetId, this.currentVariantId);
+    if (!result.ok) throw new Error(`${result.code}: ${result.message}`);
+    this.step = "complete";
   }
 }
 
@@ -133,8 +157,6 @@ export function buildPrompt(species: string): string {
 
 function bytesToBase64(bytes: Uint8Array): string {
   let binary = "";
-  for (const byte of bytes) {
-    binary += String.fromCharCode(byte);
-  }
+  for (const byte of bytes) binary += String.fromCharCode(byte);
   return btoa(binary);
 }
