@@ -152,6 +152,65 @@ describe("createPetRendererRuntime", () => {
     expect(test.options.createLive2DRenderer).not.toHaveBeenCalled();
   });
 
+  it("provides the real animated renderer with an offscreen compose surface", async () => {
+    const contexts = Array.from({ length: 3 }, () => ({
+      clearRect: vi.fn(),
+      drawImage: vi.fn(),
+      setTransform: vi.fn(),
+      save: vi.fn(),
+      restore: vi.fn(),
+      translate: vi.fn(),
+      rotate: vi.fn(),
+    }));
+    const surfaces = contexts.map((context) => ({
+      className: "",
+      width: 0,
+      height: 0,
+      style: {} as CSSStyleDeclaration,
+      getContext: vi.fn(() => context),
+      remove: vi.fn(),
+    } as unknown as HTMLCanvasElement));
+    const [displaySurface, hitSurface, composeSurface] = surfaces;
+    const availableSurfaces = [...surfaces];
+    const createCanvas = vi.fn(() => availableSurfaces.shift()!);
+    const replaceChildren = vi.fn();
+    const root = { replaceChildren } as unknown as HTMLElement;
+    vi.stubGlobal("Image", class {
+      readonly width = 1000;
+      readonly height = 1000;
+      crossOrigin = "";
+      src = "";
+      async decode(): Promise<void> {}
+    });
+
+    try {
+      const runtime = await createPetRendererRuntime(
+        "pet-user-1",
+        validAnimatedManifest(),
+        {
+          root,
+          createCanvas,
+          loadAnimatedImageAsset: vi.fn(async () => ({
+            kind: "animated-image" as const,
+            imageUrl: "asset://pet-user-1/body.png",
+            motionProfile: validMotionProfile(),
+          })),
+        },
+      );
+
+      expect(runtime.kind()).toBe("animated-image");
+      expect(runtime.getSurface()).toBe(displaySurface);
+      expect(runtime.getHitSurface()).toBe(hitSurface);
+      expect(createCanvas).toHaveBeenCalledTimes(3);
+      expect(replaceChildren).toHaveBeenCalledWith(displaySurface, hitSurface);
+      expect(replaceChildren.mock.calls.every((children) =>
+        !children.includes(composeSurface)
+      )).toBe(true);
+    } finally {
+      vi.unstubAllGlobals();
+    }
+  });
+
   it("falls back to the manifest preview when initial Live2D loading fails", async () => {
     const test = harness({ liveLoadError: new Error("webgl unavailable") });
 

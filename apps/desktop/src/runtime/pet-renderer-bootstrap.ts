@@ -50,6 +50,7 @@ export interface PetRendererBootstrapOptions {
     root: HTMLElement,
     displaySurface: HTMLCanvasElement,
     hitSurface: HTMLCanvasElement,
+    composeSurface: HTMLCanvasElement,
   ) => AnimatedPetRenderer;
   loadLive2DAsset?: typeof loadLive2DAsset;
   loadAnimatedImageAsset?: typeof loadAnimatedImageAsset;
@@ -107,8 +108,8 @@ export async function createPetRendererRuntime(
   const createLive2DRenderer = options.createLive2DRenderer
     ?? ((canvas, onReloadFailure) => new Live2DRenderer(canvas, { onReloadFailure }));
   const createAnimatedRenderer = options.createAnimatedRenderer
-    ?? ((root, displaySurface, hitSurface) => {
-      const surfaces = [displaySurface, hitSurface];
+    ?? ((root, displaySurface, hitSurface, composeSurface) => {
+      const surfaces = [displaySurface, hitSurface, composeSurface];
       let surfaceIndex = 0;
       return new AnimatedImageRenderer(root, {
         createCanvas: () => surfaces[surfaceIndex++]!,
@@ -126,7 +127,13 @@ export async function createPetRendererRuntime(
     const displaySurface = createCanvas();
     displaySurface.className = "pet-render-surface";
     const hitSurface = createCanvas();
-    const animatedRenderer = createAnimatedRenderer(options.root, displaySurface, hitSurface);
+    const composeSurface = createCanvas();
+    const animatedRenderer = createAnimatedRenderer(
+      options.root,
+      displaySurface,
+      hitSurface,
+      composeSurface,
+    );
     const host = new PetRendererHost(animatedRenderer);
     try {
       const asset = await (options.loadAnimatedImageAsset ?? loadAnimatedImageAsset)(
