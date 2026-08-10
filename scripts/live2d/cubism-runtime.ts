@@ -11,6 +11,11 @@ import {
   WebViewCubismFrameworkLifetime,
   type CubismFrameworkLease,
 } from "../../apps/desktop/src/runtime-live2d/cubism-framework-lifetime";
+import {
+  WebViewCubismShaderContextLifetime,
+  type CubismShaderContextLease,
+  type CubismShaderContextManager,
+} from "../../apps/desktop/src/runtime-live2d/cubism-shader-context-lifetime";
 import type {
   CubismControlAdapter,
   CubismMotionOptions,
@@ -20,6 +25,26 @@ const frameworkLifetime = new WebViewCubismFrameworkLifetime(CubismFramework, {
   logFunction: (message: string) => console.info(`[Cubism] ${message}`),
   loggingLevel: LogLevel.LogLevel_Verbose,
 });
+
+type CubismGlContext = WebGLRenderingContext | WebGL2RenderingContext;
+
+function getPinnedShaderManager(): CubismShaderContextManager<CubismGlContext> {
+  const manager = CubismShaderManager_WebGL.getInstance();
+  // The pinned Cubism SDK has no public per-context delete API. Keep this
+  // version-specific cast at the integration boundary and expose a narrow port.
+  const shaderMap = (manager as unknown as {
+    _shaderMap: Map<CubismGlContext, { release(): void }>;
+  })._shaderMap;
+  return {
+    getShader: (gl) => manager.getShader(gl),
+    deleteShader: (gl) => shaderMap.delete(gl),
+  };
+}
+
+const shaderContextLifetime = new WebViewCubismShaderContextLifetime(
+  getPinnedShaderManager,
+  (error) => console.error("Cubism shader context 释放失败", error),
+);
 
 class ProbeModel extends CubismUserModel {
   private readonly textures: WebGLTexture[] = [];
@@ -221,6 +246,7 @@ class OfficialCubismAdapter implements CubismControlAdapter {
   private width = 1;
   private height = 1;
   private frameworkLease: CubismFrameworkLease | null = null;
+  private shaderContextLease: CubismShaderContextLease | null = null;
   private pendingParameters = new Map<string, number>();
 
   async initialize(canvas: HTMLCanvasElement): Promise<void> {
@@ -228,7 +254,16 @@ class OfficialCubismAdapter implements CubismControlAdapter {
     this.gl = canvas.getContext("webgl2", { alpha: true, premultipliedAlpha: false })
       ?? canvas.getContext("webgl", { alpha: true, premultipliedAlpha: false });
     if (!this.gl) throw new Error("WebGL 不可用");
-    this.frameworkLease ??= frameworkLifetime.acquire();
+    if (!this.frameworkLease && !this.shaderContextLease) {
+      const frameworkLease = frameworkLifetime.acquire();
+      try {
+        this.shaderContextLease = shaderContextLifetime.acquire(this.gl);
+        this.frameworkLease = frameworkLease;
+      } catch (error) {
+        frameworkLease.release();
+        throw error;
+      }
+    }
   }
 
   async loadModel(modelUrl: string): Promise<void> {
@@ -295,13 +330,26 @@ class OfficialCubismAdapter implements CubismControlAdapter {
       if (this.model && this.gl) this.model.releaseWithTextures(this.gl);
     } catch (error) {
       console.error("Cubism 模型释放失败", error);
+    } finally {
+      this.model = null;
+      this.pendingParameters.clear();
+      try {
+        this.shaderContextLease?.release();
+      } catch (error) {
+        console.error("Cubism shader context lease 释放失败", error);
+      } finally {
+        this.shaderContextLease = null;
+        try {
+          this.frameworkLease?.release();
+        } catch (error) {
+          console.error("Cubism Framework 释放失败", error);
+        } finally {
+          this.frameworkLease = null;
+          this.gl = null;
+          this.canvas = null;
+        }
+      }
     }
-    this.model = null;
-    this.pendingParameters.clear();
-    this.frameworkLease?.release();
-    this.frameworkLease = null;
-    this.gl = null;
-    this.canvas = null;
   }
 }
 
