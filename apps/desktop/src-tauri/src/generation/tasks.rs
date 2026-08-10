@@ -99,7 +99,7 @@ impl GenerationManager {
             if !state.is_final {
                 continue;
             }
-            let result = if state.state == "success" {
+            let error = if state.state == "success" {
                 let Some(url) = state.result_url.clone() else {
                     let store = self.store.lock().map_err(|_| "store lock poisoned")?;
                     store.update_job_status(&job.job_id, "failed", None, Some("no result url"))?;
@@ -107,19 +107,18 @@ impl GenerationManager {
                     continue;
                 };
                 match tauri::async_runtime::block_on(client.download(&url)) {
-                    Ok(bytes) => self
-                        .persist_result(&job.job_id, &job.pet_id, &bytes)
-                        .map(|_| url),
-                    Err(error) => Err(error.to_string()),
+                    Ok(bytes) => {
+                        let _ = self.complete_download(&job.job_id, &job.pet_id, &url, &bytes);
+                        finished.push(job.job_id);
+                        continue;
+                    }
+                    Err(error) => error.to_string(),
                 }
             } else {
-                Err(state.error.unwrap_or_else(|| "generation failed".into()))
+                state.error.unwrap_or_else(|| "generation failed".into())
             };
             let store = self.store.lock().map_err(|_| "store lock poisoned")?;
-            match result {
-                Ok(url) => store.update_job_status(&job.job_id, "success", Some(&url), None)?,
-                Err(error) => store.update_job_status(&job.job_id, "failed", None, Some(&error))?,
-            }
+            store.update_job_status(&job.job_id, "failed", None, Some(&error))?;
             finished.push(job.job_id);
         }
         Ok(finished)
@@ -165,5 +164,98 @@ impl GenerationManager {
             cutout_path,
             quality: quality.into(),
         })
+    }
+
+    fn complete_download(
+        &self,
+        job_id: &str,
+        pet_id: &str,
+        result_url: &str,
+        bytes: &[u8],
+    ) -> Result<(), String> {
+        let persisted = self.persist_result(job_id, pet_id, bytes);
+        let store = self.store.lock().map_err(|_| "store lock poisoned")?;
+        match persisted {
+            Ok(_) => store.update_job_status(job_id, "success", Some(result_url), None),
+            Err(error) => {
+                store.update_job_status(job_id, "failed", None, Some(&error))?;
+                Err(error)
+            }
+        }
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::*;
+    use crate::pets::pet::{IdentityMode, Species};
+    use crate::pets::repository::PetRepository;
+    use crate::pets::state::StateStore;
+    use crate::storage::Storage;
+    use image::{DynamicImage, ImageFormat, RgbaImage};
+    use std::io::Cursor;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn png_bytes() -> Vec<u8> {
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(RgbaImage::from_pixel(
+            64,
+            64,
+            image::Rgba([80, 90, 100, 255]),
+        ))
+        .write_to(&mut bytes, ImageFormat::Png)
+        .unwrap();
+        bytes.into_inner()
+    }
+
+    #[test]
+    fn candidate_persistence_conflict_marks_generation_job_failed() {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("desktop-pet-task-{}-{n}", std::process::id()));
+        std::fs::create_dir_all(&root).unwrap();
+        let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+        let repo = PetRepository::new(storage.clone());
+        let pet = repo.create(Species::Cat, IdentityMode::RealPet).unwrap();
+        let other_pet = repo.create(Species::Dog, IdentityMode::Adopted).unwrap();
+        let store = Arc::new(Mutex::new(CreationStore::new(storage.clone())));
+        store
+            .lock()
+            .unwrap()
+            .create_job("job-1", &pet.pet_id, "p", "h", Some("task-1"))
+            .unwrap();
+        {
+            let db = &storage.lock().unwrap().db;
+            db.execute(
+                "INSERT INTO appearance_variants
+                 (variant_id, pet_id, job_id, image_path, cutout_path, quality, accepted, created_at)
+                 VALUES ('job-1', ?1, 'job-1', 'existing.png', 'existing-cutout.png', 'acceptable', 0, ?2)",
+                rusqlite::params![other_pet.pet_id, now_iso()],
+            )
+            .unwrap();
+        }
+        let state = Arc::new(Mutex::new(StateStore::new(storage)));
+        let manager =
+            GenerationManager::new(store.clone(), state, Arc::from(root.join("jobs").as_path()));
+
+        assert!(manager
+            .complete_download(
+                "job-1",
+                &pet.pet_id,
+                "https://example.invalid/out.png",
+                &png_bytes()
+            )
+            .is_err());
+        let job = store
+            .lock()
+            .unwrap()
+            .job_list(&pet.pet_id)
+            .unwrap()
+            .remove(0);
+        assert_eq!(job.status, "failed");
+        assert!(job.error.is_some());
+        let _ = std::fs::remove_dir_all(root);
     }
 }

@@ -185,16 +185,49 @@ fn asset_compile(
     cutout_path: String,
 ) -> Result<runtime_assets::compiler::CompileResult, String> {
     let compile_error_key = format!("creation:{pet_id}:compile_error");
-    let compiled = (|| {
-        let data_dir = app
-            .path()
-            .app_data_dir()
-            .map_err(|error| error.to_string())?;
-        let dest = data_dir.join("pets").join(&pet_id).join("assets");
-        runtime_assets::compiler::compile_single_image(
+    let data_dir = app.path().app_data_dir().map_err(|error| error.to_string());
+    match data_dir {
+        Ok(data_dir) => asset_compile_stored_candidate(
+            &data_dir,
+            store.inner(),
+            state.inner(),
             &pet_id,
             &variant_id,
-            std::path::Path::new(&cutout_path),
+            &cutout_path,
+        ),
+        Err(error) => {
+            let state = state.lock().map_err(|_| "state lock poisoned")?;
+            state.save(&compile_error_key, &error)?;
+            Err(error)
+        }
+    }
+}
+
+fn asset_compile_stored_candidate(
+    data_dir: &std::path::Path,
+    store: &creation::SharedCreationStore,
+    state: &pets::state::SharedStateStore,
+    pet_id: &str,
+    variant_id: &str,
+    supplied_cutout_path: &str,
+) -> Result<runtime_assets::compiler::CompileResult, String> {
+    let compile_error_key = format!("creation:{pet_id}:compile_error");
+    let compiled = (|| {
+        let candidate = store
+            .lock()
+            .map_err(|_| "store lock poisoned")?
+            .candidate_for_compile(pet_id, variant_id)?;
+        let canonical_cutout_path = candidate
+            .cutout_path
+            .ok_or_else(|| "candidate has no cutout path".to_string())?;
+        if supplied_cutout_path != canonical_cutout_path {
+            return Err("cutout path does not match the stored candidate".into());
+        }
+        let dest = data_dir.join("pets").join(&pet_id).join("assets");
+        runtime_assets::compiler::compile_single_image(
+            pet_id,
+            variant_id,
+            std::path::Path::new(&canonical_cutout_path),
             &dest,
         )
     })();
@@ -203,7 +236,7 @@ fn asset_compile(
         Ok(compiled) => {
             let persisted = (|| {
                 let store = store.lock().map_err(|_| "store lock poisoned")?;
-                store.record_runtime_variant(&variant_id, &pet_id, &compiled.manifest_path)?;
+                store.record_runtime_variant(variant_id, pet_id, &compiled.manifest_path)?;
                 let state = state.lock().map_err(|_| "state lock poisoned")?;
                 state.remove(&compile_error_key)
             })();
@@ -645,6 +678,68 @@ pub fn run() {
 
 #[cfg(test)]
 mod tests {
+    use super::*;
+    use crate::pets::state::StateStore;
+    use crate::storage::Storage;
+    use std::sync::atomic::{AtomicU32, Ordering};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    fn asset_compile_fixture() -> (
+        creation::SharedCreationStore,
+        pets::state::SharedStateStore,
+        std::sync::Arc<std::sync::Mutex<Storage>>,
+        std::path::PathBuf,
+        String,
+        String,
+        String,
+    ) {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-asset-command-{}-{n}",
+            std::process::id()
+        ));
+        std::fs::create_dir_all(&root).unwrap();
+        let storage = std::sync::Arc::new(std::sync::Mutex::new(Storage::open(&root).unwrap()));
+        let repo = pets::repository::PetRepository::new(storage.clone());
+        let pet = repo
+            .create(pets::pet::Species::Cat, pets::pet::IdentityMode::RealPet)
+            .unwrap();
+        let other_pet = repo
+            .create(pets::pet::Species::Dog, pets::pet::IdentityMode::Adopted)
+            .unwrap();
+        let store = std::sync::Arc::new(std::sync::Mutex::new(creation::CreationStore::new(
+            storage.clone(),
+        )));
+        store
+            .lock()
+            .unwrap()
+            .create_job("job-1", &pet.pet_id, "p", "h", Some("task-1"))
+            .unwrap();
+        let canonical_cutout = root.join("jobs").join("job-1").join("cutout.png");
+        store
+            .lock()
+            .unwrap()
+            .record_candidate(
+                "job-1",
+                &pet.pet_id,
+                "raw.png",
+                &canonical_cutout.to_string_lossy(),
+                "acceptable",
+            )
+            .unwrap();
+        let state = std::sync::Arc::new(std::sync::Mutex::new(StateStore::new(storage.clone())));
+        (
+            store,
+            state,
+            storage,
+            root,
+            pet.pet_id,
+            other_pet.pet_id,
+            canonical_cutout.to_string_lossy().to_string(),
+        )
+    }
+
     #[test]
     fn probe_version_is_m0() {
         assert_eq!(super::probe_version(), "m0");
@@ -653,5 +748,73 @@ mod tests {
     #[test]
     fn legacy_pet_set_active_command_remains_available() {
         let _command = super::pet_set_active;
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_mismatched_cutout_path() {
+        let (store, state, _storage, root, pet_id, _other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        let result = asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &pet_id,
+            "job-1",
+            &root.join("untrusted.png").to_string_lossy(),
+        );
+        assert!(result.is_err());
+        assert_eq!(
+            state
+                .lock()
+                .unwrap()
+                .load(&format!("creation:{pet_id}:compile_error"))
+                .unwrap()
+                .is_some(),
+            true
+        );
+        assert!(canonical_cutout.ends_with("cutout.png"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_variant_owned_by_another_pet() {
+        let (store, state, _storage, root, _pet_id, other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        assert!(asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &other_pet_id,
+            "job-1",
+            &canonical_cutout,
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn asset_compile_rejects_a_variant_with_a_different_job() {
+        let (store, state, storage, root, pet_id, _other_pet_id, canonical_cutout) =
+            asset_compile_fixture();
+        {
+            let db = &storage.lock().unwrap().db;
+            db.execute(
+                "INSERT INTO appearance_variants
+                 (variant_id, pet_id, job_id, image_path, cutout_path, quality, accepted, created_at)
+                 VALUES ('job-2', ?1, 'job-1', 'raw.png', ?2, 'acceptable', 0, ?3)",
+                rusqlite::params![&pet_id, &canonical_cutout, creation::profiles::now_iso()],
+            )
+            .unwrap();
+        }
+        assert!(asset_compile_stored_candidate(
+            &root,
+            &store,
+            &state,
+            &pet_id,
+            "job-2",
+            &canonical_cutout,
+        )
+        .is_err());
+        let _ = std::fs::remove_dir_all(root);
     }
 }
