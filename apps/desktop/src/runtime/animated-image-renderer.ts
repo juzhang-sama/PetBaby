@@ -215,6 +215,13 @@ export class AnimatedImageRenderer implements PetRenderer {
     const pivotY = this.bounds.y + this.profile.swayPivot.y * this.bounds.height;
     const shiftX = this.viewport.width * frame.swayXRatio;
     this.composeContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
+    this.composeContext.drawImage(
+      this.image,
+      this.bounds.x,
+      this.bounds.y,
+      this.bounds.width,
+      this.bounds.height,
+    );
     for (const slice of slices) {
       this.composeContext.drawImage(
         this.image,

@@ -23,10 +23,11 @@ function rendererHarness() {
   let canvasIndex = 0;
   let lastPlans: BreathSlice[] = [];
   const root = { replaceChildren: vi.fn() } as unknown as HTMLElement;
-  const loadImage = vi.fn(async () => ({
+  const loadedImage = {
     width: 1000,
     height: 1000,
-  } as CanvasImageSource & { width: number; height: number }));
+  } as CanvasImageSource & { width: number; height: number };
+  const loadImage = vi.fn(async () => loadedImage);
   const renderer = new AnimatedImageRenderer(root, {
     createCanvas: () => canvases[canvasIndex++]!,
     loadImage,
@@ -42,13 +43,14 @@ function rendererHarness() {
     displayCanvas: canvases[0]!,
     hitCanvas: canvases[1]!,
     composeCanvas: canvases[2]!,
+    loadedImage,
     faceSafeY: 500,
     localPlans: () => lastPlans,
   };
 }
 
 describe("AnimatedImageRenderer", () => {
-  it("precomposes every breath slice before drawing one texture through the sway transform", async () => {
+  it("precomposes an alpha underlay before every breath slice and sways one texture", async () => {
     const test = rendererHarness();
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
     await test.renderer.load({
@@ -62,7 +64,21 @@ describe("AnimatedImageRenderer", () => {
     test.renderer.playMotion("idle");
     test.renderer.update(1300);
 
-    expect(test.composeContext.drawImage).toHaveBeenCalledTimes(test.localPlans().length);
+    const expectedComposeDraws = [
+      [test.loadedImage, 0, 50, 400, 400],
+      ...test.localPlans().map((slice) => [
+        test.loadedImage,
+        slice.sourceX,
+        slice.sourceY,
+        slice.sourceWidth,
+        slice.sourceHeight,
+        slice.destX * 0.4,
+        50 + slice.destY * 0.4,
+        slice.destWidth * 0.4,
+        slice.destHeight * 0.4,
+      ]),
+    ];
+    expect(test.composeContext.drawImage.mock.calls).toEqual(expectedComposeDraws);
     expect(test.context.drawImage).toHaveBeenCalledOnce();
     expect(test.context.drawImage).toHaveBeenCalledWith(
       test.composeCanvas,
