@@ -806,6 +806,51 @@ mod tests {
     }
 
     #[test]
+    fn validates_repository_production_cat_pack_and_body_defaults() {
+        let content = PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/creation-content");
+        let manifest = content
+            .join("composer")
+            .join("cat-cute-v1")
+            .join("manifest.json");
+        let pack = parse_pack(&std::fs::read_to_string(manifest).unwrap()).unwrap();
+        let root = crate::creation::content::test_content_root(&content).unwrap();
+
+        validate_pack(&pack, &root).unwrap();
+        assert_eq!(pack.pack_id, "cat-cute-v1");
+        assert_eq!(pack.pack_version, 1);
+        assert_eq!(
+            pack.bodies
+                .iter()
+                .map(|part| part.id.as_str())
+                .collect::<Vec<_>>(),
+            ["body-round", "body-slim", "body-fluffy"]
+        );
+        assert_eq!(pack.ears.len(), 4);
+        assert_eq!(pack.eyes.len(), 5);
+        assert_eq!(pack.muzzles.len(), 4);
+        assert_eq!(pack.tails.len(), 4);
+        assert_eq!(pack.colors.len(), 6);
+        assert_eq!(pack.patterns.len(), 5);
+
+        for body in &pack.bodies {
+            let recipe = ComposerRecipe {
+                recipe_version: 1,
+                pack_id: pack.pack_id.clone(),
+                pack_version: pack.pack_version,
+                layer_contract_version: pack.layer_contract_version,
+                body_id: body.id.clone(),
+                ears_id: body.defaults.ears_id.clone(),
+                eyes_id: body.defaults.eyes_id.clone(),
+                muzzle_id: body.defaults.muzzle_id.clone(),
+                tail_id: body.defaults.tail_id.clone(),
+                color_id: body.defaults.color_id.clone(),
+                pattern_id: body.defaults.pattern_id.clone(),
+            };
+            validate_recipe(&pack, &recipe).unwrap();
+        }
+    }
+
+    #[test]
     fn rejects_unknown_fields_and_invalid_fixed_contract_values() {
         for (path, invalid) in [
             ("extra", json!(true)),

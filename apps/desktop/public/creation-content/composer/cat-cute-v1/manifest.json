@@ -1,0 +1,92 @@
+{
+  "schemaVersion": 1,
+  "packId": "cat-cute-v1",
+  "packVersion": 1,
+  "species": "cat",
+  "canvas": { "width": 1024, "height": 1024 },
+  "layerContractVersion": 1,
+  "bodies": [
+    {
+      "id": "body-round",
+      "image": "parts/bodies/body-round.png",
+      "colorMask": "parts/bodies/body-round-color-mask.png",
+      "patternMask": "parts/bodies/body-round-pattern-mask.png",
+      "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"],
+      "anchor": { "x": 512, "y": 512 },
+      "zIndex": 10,
+      "defaults": { "earsId": "ears-round", "eyesId": "eyes-amber", "muzzleId": "muzzle-gentle", "tailId": "tail-curl", "colorId": "color-cream", "patternId": "pattern-none" },
+      "alphaBounds": { "left": 176, "top": 48, "right": 849, "bottom": 975 },
+      "faceSafeZone": { "left": 280, "top": 100, "right": 744, "bottom": 470 },
+      "breathZone": { "left": 360, "top": 530, "right": 664, "bottom": 810 },
+      "swayPivot": { "x": 512, "y": 760 }
+    },
+    {
+      "id": "body-slim",
+      "image": "parts/bodies/body-slim.png",
+      "colorMask": "parts/bodies/body-slim-color-mask.png",
+      "patternMask": "parts/bodies/body-slim-pattern-mask.png",
+      "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"],
+      "anchor": { "x": 512, "y": 512 },
+      "zIndex": 10,
+      "defaults": { "earsId": "ears-pointed", "eyesId": "eyes-green", "muzzleId": "muzzle-curious", "tailId": "tail-straight", "colorId": "color-gray", "patternId": "pattern-tabby" },
+      "alphaBounds": { "left": 226, "top": 45, "right": 795, "bottom": 981 },
+      "faceSafeZone": { "left": 290, "top": 95, "right": 734, "bottom": 470 },
+      "breathZone": { "left": 370, "top": 530, "right": 654, "bottom": 820 },
+      "swayPivot": { "x": 512, "y": 770 }
+    },
+    {
+      "id": "body-fluffy",
+      "image": "parts/bodies/body-fluffy.png",
+      "colorMask": "parts/bodies/body-fluffy-color-mask.png",
+      "patternMask": "parts/bodies/body-fluffy-pattern-mask.png",
+      "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"],
+      "anchor": { "x": 512, "y": 512 },
+      "zIndex": 10,
+      "defaults": { "earsId": "ears-tufted", "eyesId": "eyes-gold", "muzzleId": "muzzle-smile", "tailId": "tail-plume", "colorId": "color-orange", "patternId": "pattern-calico" },
+      "alphaBounds": { "left": 176, "top": 47, "right": 848, "bottom": 975 },
+      "faceSafeZone": { "left": 275, "top": 95, "right": 749, "bottom": 470 },
+      "breathZone": { "left": 350, "top": 530, "right": 674, "bottom": 815 },
+      "swayPivot": { "x": 512, "y": 760 }
+    }
+  ],
+  "ears": [
+    { "id": "ears-round", "image": "parts/ears/ears-round.png", "colorMask": "parts/ears/ears-round-color-mask.png", "patternMask": "parts/ears/ears-round-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 205 }, "zIndex": 20 },
+    { "id": "ears-pointed", "image": "parts/ears/ears-pointed.png", "colorMask": "parts/ears/ears-pointed-color-mask.png", "patternMask": "parts/ears/ears-pointed-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 195 }, "zIndex": 20 },
+    { "id": "ears-folded", "image": "parts/ears/ears-folded.png", "colorMask": "parts/ears/ears-folded-color-mask.png", "patternMask": "parts/ears/ears-folded-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 205 }, "zIndex": 20 },
+    { "id": "ears-tufted", "image": "parts/ears/ears-tufted.png", "colorMask": "parts/ears/ears-tufted-color-mask.png", "patternMask": "parts/ears/ears-tufted-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 195 }, "zIndex": 20 }
+  ],
+  "eyes": [
+    { "id": "eyes-amber", "openImage": "parts/eyes/eyes-amber-open.png", "closedImage": "parts/eyes/eyes-amber-closed.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 350 }, "zIndex": 30 },
+    { "id": "eyes-blue", "openImage": "parts/eyes/eyes-blue-open.png", "closedImage": "parts/eyes/eyes-blue-closed.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 350 }, "zIndex": 30 },
+    { "id": "eyes-green", "openImage": "parts/eyes/eyes-green-open.png", "closedImage": "parts/eyes/eyes-green-closed.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 350 }, "zIndex": 30 },
+    { "id": "eyes-gold", "openImage": "parts/eyes/eyes-gold-open.png", "closedImage": "parts/eyes/eyes-gold-closed.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 350 }, "zIndex": 30 },
+    { "id": "eyes-violet", "openImage": "parts/eyes/eyes-violet-open.png", "closedImage": "parts/eyes/eyes-violet-closed.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 350 }, "zIndex": 30 }
+  ],
+  "muzzles": [
+    { "id": "muzzle-gentle", "image": "parts/muzzles/muzzle-gentle.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 440 }, "zIndex": 40 },
+    { "id": "muzzle-smile", "image": "parts/muzzles/muzzle-smile.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 440 }, "zIndex": 40 },
+    { "id": "muzzle-curious", "image": "parts/muzzles/muzzle-curious.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 440 }, "zIndex": 40 },
+    { "id": "muzzle-sleepy", "image": "parts/muzzles/muzzle-sleepy.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 512, "y": 440 }, "zIndex": 40 }
+  ],
+  "tails": [
+    { "id": "tail-curl", "image": "parts/tails/tail-curl.png", "colorMask": "parts/tails/tail-curl-color-mask.png", "patternMask": "parts/tails/tail-curl-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 700, "y": 650 }, "zIndex": 0 },
+    { "id": "tail-straight", "image": "parts/tails/tail-straight.png", "colorMask": "parts/tails/tail-straight-color-mask.png", "patternMask": "parts/tails/tail-straight-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 300, "y": 700 }, "zIndex": 0 },
+    { "id": "tail-plume", "image": "parts/tails/tail-plume.png", "colorMask": "parts/tails/tail-plume-color-mask.png", "patternMask": "parts/tails/tail-plume-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 700, "y": 650 }, "zIndex": 0 },
+    { "id": "tail-short", "image": "parts/tails/tail-short.png", "colorMask": "parts/tails/tail-short-color-mask.png", "patternMask": "parts/tails/tail-short-pattern-mask.png", "compatibleBodyIds": ["body-round", "body-slim", "body-fluffy"], "anchor": { "x": 300, "y": 700 }, "zIndex": 0 }
+  ],
+  "colors": [
+    { "id": "color-cream", "value": "#E8D6C0" },
+    { "id": "color-orange", "value": "#C9793E" },
+    { "id": "color-gray", "value": "#85888D" },
+    { "id": "color-black", "value": "#343238" },
+    { "id": "color-white", "value": "#F1ECE4" },
+    { "id": "color-brown", "value": "#76513F" }
+  ],
+  "patterns": [
+    { "id": "pattern-none", "image": null },
+    { "id": "pattern-tabby", "image": "patterns/pattern-tabby.png" },
+    { "id": "pattern-tuxedo", "image": "patterns/pattern-tuxedo.png" },
+    { "id": "pattern-calico", "image": "patterns/pattern-calico.png" },
+    { "id": "pattern-spots", "image": "patterns/pattern-spots.png" }
+  ]
+}
