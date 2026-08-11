@@ -131,6 +131,8 @@ pub struct PublishedComposerCandidate {
     candidate_guard: Option<OwnedDirectoryGuard>,
     file_guards: Vec<std::fs::File>,
     intent_files: Vec<OwnedIntentFile>,
+    #[cfg(test)]
+    intent_cleanup_failure: Option<ComposerPublishPhase>,
 }
 
 struct OwnedIntentFile {
@@ -301,12 +303,33 @@ impl PublishedComposerCandidate {
     }
 
     fn remove_intents(&mut self) -> Result<(), String> {
-        delete_locked_intent_files(std::mem::take(&mut self.intent_files))
+        let intent_files = std::mem::take(&mut self.intent_files);
+        #[cfg(test)]
+        {
+            let failure = self.intent_cleanup_failure.take();
+            return delete_locked_intent_files_with_hook(intent_files, move |intent| {
+                if failure == intent_phase_for_path(&intent.path) {
+                    Err(format!(
+                        "injected {:?} intent cleanup failure",
+                        failure.expect("matched cleanup phase")
+                    ))
+                } else {
+                    Ok(())
+                }
+            });
+        }
+        #[cfg(not(test))]
+        delete_locked_intent_files(intent_files)
     }
 
     #[cfg(test)]
     fn simulate_process_exit_before_database_commit(&mut self) {
         self.committed = true;
+    }
+
+    #[cfg(test)]
+    fn simulate_intent_cleanup_failure_at(&mut self, phase: ComposerPublishPhase) {
+        self.intent_cleanup_failure = Some(phase);
     }
 }
 
@@ -692,6 +715,8 @@ fn candidate_projection(
         candidate_guard: Some(candidate_guard),
         file_guards,
         intent_files,
+        #[cfg(test)]
+        intent_cleanup_failure: None,
     }
 }
 
@@ -1023,9 +1048,6 @@ pub fn clear_committed_composer_publish_intent(
     };
     let intent = &chain.highest;
     let phase = intent.phase.expect("validated intent chain has a phase");
-    if phase != ComposerPublishPhase::Complete {
-        return Err("committed composer candidate lacks a complete durable intent".into());
-    }
     let candidate_guard = OwnedDirectoryGuard::open(
         &session_guard.path.join("candidate"),
         "stored composer candidate",
@@ -1033,13 +1055,17 @@ pub fn clear_committed_composer_publish_intent(
     if candidate_guard.path.parent() != Some(session_guard.path.as_path()) {
         return Err("stored composer candidate escapes its creation session".into());
     }
-    verify_owned_directory_identity(&candidate_guard, &intent)?;
+    if phase != ComposerPublishPhase::Reserved {
+        verify_owned_directory_identity(&candidate_guard, intent)?;
+    }
     let (candidate_files, bytes) = lock_exact_candidate_file_set(&candidate_guard)?;
-    verify_partial_file_identities(
-        &candidate_guard,
-        &candidate_files,
-        intent.file_identities.as_deref().unwrap_or_default(),
-    )?;
+    if phase == ComposerPublishPhase::Complete {
+        verify_partial_file_identities(
+            &candidate_guard,
+            &candidate_files,
+            intent.file_identities.as_deref().unwrap_or_default(),
+        )?;
+    }
     validate_exact_candidate_bytes(&bytes, expected_profile, expected_recipe)?;
     if sha256_hex(&bytes[0]) != intent.body_sha256
         || sha256_hex(&bytes[1]) != intent.profile_sha256
@@ -1047,10 +1073,10 @@ pub fn clear_committed_composer_publish_intent(
     {
         return Err("committed composer candidate does not match its publish intent".into());
     }
-    // A completed MoveFileEx transfers the one intent-owned directory FileId to
-    // `candidate`. Any object later appearing at the old random stage name has a
-    // different identity and is deliberately preserved as unknown while the stale
-    // intent can still be retired.
+    // The caller has already established DB ownership, and the exact candidate
+    // bytes above match this validated intent prefix. Any object later appearing
+    // at the old random stage name is deliberately preserved as unknown while
+    // only the stale marker prefix is retired.
     delete_locked_intent_files(chain.files)?;
     Ok(true)
 }
@@ -1347,6 +1373,28 @@ fn publish_durable_intent(
     intent_path: &Path,
     intent: &ComposerPublishIntent,
 ) -> Result<std::fs::File, String> {
+    publish_durable_intent_with_io_hooks(
+        session_dir,
+        intent_path,
+        intent,
+        |file, bytes| {
+            file.write_all(bytes)
+                .map_err(|error| format!("write staged composer candidate file: {error}"))
+        },
+        |file| {
+            file.sync_all()
+                .map_err(|error| format!("sync staged composer candidate file: {error}"))
+        },
+    )
+}
+
+fn publish_durable_intent_with_io_hooks(
+    session_dir: &Path,
+    intent_path: &Path,
+    intent: &ComposerPublishIntent,
+    write: impl FnOnce(&mut std::fs::File, &[u8]) -> Result<(), String>,
+    sync: impl FnOnce(&std::fs::File) -> Result<(), String>,
+) -> Result<std::fs::File, String> {
     let bytes = serde_json::to_vec_pretty(intent).map_err(|error| error.to_string())?;
     if bytes.len() > 32 * 1024 {
         return Err("composer publish intent exceeds its bounded size".into());
@@ -1355,8 +1403,17 @@ fn publish_durable_intent(
         ".candidate-intent-temp-{}",
         new_entity_id("intent")
     ));
-    let temp_guard = write_new_synced_file(&temp_path, &bytes)?;
-    let temp_identity = file_identity(&temp_guard)?;
+    let mut temp_guard = create_new_composer_file(&temp_path)?;
+    if let Err(error) = write(&mut temp_guard, &bytes) {
+        return Err(intent_temp_failure(error, temp_guard, &temp_path));
+    }
+    if let Err(error) = sync(&temp_guard) {
+        return Err(intent_temp_failure(error, temp_guard, &temp_path));
+    }
+    let temp_identity = match file_identity(&temp_guard) {
+        Ok(identity) => identity,
+        Err(error) => return Err(intent_temp_failure(error, temp_guard, &temp_path)),
+    };
     let moved = crate::platform::durable_move_file(&temp_path, intent_path);
     if let Err(error) = moved {
         let cleanup = delete_locked_file(temp_guard, &temp_path);
@@ -1380,24 +1437,39 @@ fn publish_durable_intent(
     Ok(intent_guard)
 }
 
+fn intent_temp_failure(error: String, temp_guard: std::fs::File, temp_path: &Path) -> String {
+    match delete_locked_file(temp_guard, temp_path) {
+        Ok(()) => error,
+        Err(cleanup) => format!("{error}; exact intent temp cleanup failed: {cleanup}"),
+    }
+}
+
+#[cfg(windows)]
+fn create_new_composer_file(path: &Path) -> Result<std::fs::File, String> {
+    use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
+    use windows_sys::Win32::Storage::FileSystem::{
+        DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_DELETE,
+        FILE_SHARE_READ,
+    };
+    std::fs::OpenOptions::new()
+        .read(true)
+        .write(true)
+        .create_new(true)
+        .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
+        .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
+        .open(path)
+        .map_err(|error| format!("create staged composer candidate file: {error}"))
+}
+
+#[cfg(not(windows))]
+fn create_new_composer_file(_path: &Path) -> Result<std::fs::File, String> {
+    Err("secure composer file creation currently requires Windows handle I/O".into())
+}
+
 #[cfg(windows)]
 fn write_new_synced_file(path: &Path, bytes: &[u8]) -> Result<std::fs::File, String> {
-    let mut file = {
-        use windows_sys::Win32::Foundation::{GENERIC_READ, GENERIC_WRITE};
-        use windows_sys::Win32::Storage::FileSystem::{
-            DELETE, FILE_FLAG_OPEN_REPARSE_POINT, FILE_FLAG_WRITE_THROUGH, FILE_SHARE_DELETE,
-            FILE_SHARE_READ,
-        };
-        std::fs::OpenOptions::new()
-            .read(true)
-            .write(true)
-            .create_new(true)
-            .access_mode(GENERIC_READ | GENERIC_WRITE | DELETE)
-            .share_mode(FILE_SHARE_READ | FILE_SHARE_DELETE)
-            .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_WRITE_THROUGH)
-            .open(path)
-            .map_err(|error| format!("create staged composer candidate file: {error}"))?
-    };
+    let mut file = create_new_composer_file(path)?;
     file.write_all(bytes)
         .map_err(|error| format!("write staged composer candidate file: {error}"))?;
     file.sync_all()
@@ -1548,7 +1620,18 @@ fn delete_published_directory(
 }
 
 fn delete_locked_intent_files(intent_files: Vec<OwnedIntentFile>) -> Result<(), String> {
-    for intent in &intent_files {
+    delete_locked_intent_files_with_hook(intent_files, |_| Ok(()))
+}
+
+fn delete_locked_intent_files_with_hook(
+    intent_files: Vec<OwnedIntentFile>,
+    mut before_delete: impl FnMut(&OwnedIntentFile) -> Result<(), String>,
+) -> Result<(), String> {
+    // Delete newest-to-oldest. Stopping at the first failure can then leave only
+    // a valid immutable prefix; deleting an older phase first could create a gap
+    // that exact startup recovery must preserve forever.
+    for intent in intent_files.iter().rev() {
+        before_delete(intent)?;
         mark_file_delete(&intent.guard)?;
     }
     let paths = intent_files
@@ -1565,6 +1648,16 @@ fn delete_locked_intent_files(intent_files: Vec<OwnedIntentFile>) -> Result<(), 
         }
     }
     Ok(())
+}
+
+#[cfg(test)]
+fn intent_phase_for_path(path: &Path) -> Option<ComposerPublishPhase> {
+    match path.file_name().and_then(|name| name.to_str()) {
+        Some(RESERVED_COMPOSER_INTENT_FILE) => Some(ComposerPublishPhase::Reserved),
+        Some(OWNED_COMPOSER_INTENT_FILE) => Some(ComposerPublishPhase::Owned),
+        Some(COMPLETE_COMPOSER_INTENT_FILE) => Some(ComposerPublishPhase::Complete),
+        _ => None,
+    }
 }
 
 fn delete_locked_directory(
@@ -1661,6 +1754,25 @@ mod tests {
                 !session_dir.join(name).exists(),
                 "immutable intent phase remained: {name}"
             );
+        }
+    }
+
+    fn assert_intent_prefix(session_dir: &Path, highest: ComposerPublishPhase) {
+        let expected = match highest {
+            ComposerPublishPhase::Reserved => [true, false, false],
+            ComposerPublishPhase::Owned => [true, true, false],
+            ComposerPublishPhase::Complete => [true, true, true],
+        };
+        for ((name, exists), expected) in [
+            RESERVED_COMPOSER_INTENT_FILE,
+            OWNED_COMPOSER_INTENT_FILE,
+            COMPLETE_COMPOSER_INTENT_FILE,
+        ]
+        .into_iter()
+        .map(|name| (name, session_dir.join(name).exists()))
+        .zip(expected)
+        {
+            assert_eq!(exists, expected, "unexpected phase presence for {name}");
         }
     }
 
@@ -1802,6 +1914,37 @@ mod tests {
         let root = crate::creation::content::test_content_root(&content).unwrap();
         let pack = crate::creation::composer::load_production_pack_manifest(&root).unwrap();
         crate::creation::composer::motion_profile_for_recipe(&pack, recipe).unwrap()
+    }
+
+    fn reserved_intent_fixture(
+        session_id: &str,
+        body: &[u8],
+        profile: &MotionProfileV1,
+        recipe: &ComposerRecipe,
+    ) -> ComposerPublishIntent {
+        ComposerPublishIntent {
+            version: 2,
+            phase: Some(ComposerPublishPhase::Reserved),
+            session_id: session_id.to_owned(),
+            stage_name: ".candidate-stage-intent-io-test".into(),
+            body_sha256: sha256_hex(body),
+            profile_sha256: sha256_hex(&serde_json::to_vec_pretty(profile).unwrap()),
+            recipe_sha256: sha256_hex(&serde_json::to_vec_pretty(recipe).unwrap()),
+            directory_identity: None,
+            file_identities: None,
+        }
+    }
+
+    fn assert_no_intent_temps(session_dir: &Path) {
+        let temps = std::fs::read_dir(session_dir)
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name())
+            .filter(|name| {
+                name.to_string_lossy()
+                    .starts_with(".candidate-intent-temp-")
+            })
+            .collect::<Vec<_>>();
+        assert!(temps.is_empty(), "leaked intent temps: {temps:?}");
     }
 
     fn write_v2_owned_intent(
@@ -2094,6 +2237,103 @@ mod tests {
                 .join("creation-sessions")
                 .join(&failing.session_id),
         );
+    }
+
+    #[test]
+    fn interrupted_commit_cleanup_leaves_a_recoverable_intent_prefix_for_every_phase() {
+        for failure_phase in [
+            ComposerPublishPhase::Complete,
+            ComposerPublishPhase::Owned,
+            ComposerPublishPhase::Reserved,
+        ] {
+            let test = ComposerCandidateHarness::new();
+            let body = decode_composer_png(&valid_candidate_b64()).unwrap().bytes;
+            let profile = production_profile(&test.recipe);
+            let mut published = publish_composer_candidate(
+                &test.root,
+                &test.session_id,
+                &body,
+                &profile,
+                &test.recipe,
+            )
+            .unwrap();
+            CreationStore::new(test.storage.clone())
+                .record_local_candidate(
+                    &test.session_id,
+                    &published.body_path,
+                    &published.motion_profile_path,
+                )
+                .unwrap();
+            published.simulate_intent_cleanup_failure_at(failure_phase);
+
+            published.commit();
+            drop(published);
+
+            let session = test.root.join("creation-sessions").join(&test.session_id);
+            assert_intent_prefix(&session, failure_phase);
+            let first = test.service.recover_composer_orphans().unwrap();
+            let second = test.service.recover_composer_orphans().unwrap();
+            assert_eq!(first.recovered_count, 0, "{failure_phase:?}");
+            assert!(
+                first.warnings.is_empty(),
+                "{failure_phase:?}: {:?}",
+                first.warnings
+            );
+            assert_eq!(second.recovered_count, 0, "{failure_phase:?}");
+            assert!(second.warnings.is_empty(), "{failure_phase:?}");
+            assert_no_phase_intents(&session);
+            assert!(session.join("candidate/body.png").is_file());
+            assert_eq!(test.candidate_count(), 1);
+            assert_eq!(
+                test.service.snapshot(&test.session_id).unwrap().status,
+                CreationSessionStatus::CandidateReady
+            );
+        }
+    }
+
+    #[test]
+    fn interrupted_rollback_cleanup_leaves_a_recoverable_intent_prefix_for_every_phase() {
+        for failure_phase in [
+            ComposerPublishPhase::Complete,
+            ComposerPublishPhase::Owned,
+            ComposerPublishPhase::Reserved,
+        ] {
+            let test = ComposerCandidateHarness::new();
+            let body = decode_composer_png(&valid_candidate_b64()).unwrap().bytes;
+            let profile = production_profile(&test.recipe);
+            let mut published = publish_composer_candidate(
+                &test.root,
+                &test.session_id,
+                &body,
+                &profile,
+                &test.recipe,
+            )
+            .unwrap();
+            published.simulate_intent_cleanup_failure_at(failure_phase);
+
+            assert!(published.rollback().is_err(), "{failure_phase:?}");
+            drop(published);
+
+            let session = test.root.join("creation-sessions").join(&test.session_id);
+            assert!(!session.join("candidate").exists(), "{failure_phase:?}");
+            assert_intent_prefix(&session, failure_phase);
+            let first = test.service.recover_composer_orphans().unwrap();
+            let second = test.service.recover_composer_orphans().unwrap();
+            assert_eq!(first.recovered_count, 1, "{failure_phase:?}");
+            assert!(
+                first.warnings.is_empty(),
+                "{failure_phase:?}: {:?}",
+                first.warnings
+            );
+            assert_eq!(second.recovered_count, 0, "{failure_phase:?}");
+            assert!(second.warnings.is_empty(), "{failure_phase:?}");
+            assert_no_phase_intents(&session);
+            assert_eq!(test.candidate_count(), 0);
+            assert_eq!(
+                test.service.snapshot(&test.session_id).unwrap().status,
+                CreationSessionStatus::Draft
+            );
+        }
     }
 
     #[test]
@@ -3008,6 +3248,55 @@ mod tests {
         );
         let path = observed.lock().unwrap().clone().unwrap();
         assert_eq!(std::fs::read(path).unwrap(), b"unknown-complete-sentinel");
+    }
+
+    #[test]
+    fn intent_temp_is_exactly_removed_after_an_injected_write_failure() {
+        let test = ComposerCandidateHarness::new();
+        let body = decode_composer_png(&valid_candidate_b64()).unwrap().bytes;
+        let profile = production_profile(&test.recipe);
+        let intent = reserved_intent_fixture(&test.session_id, &body, &profile, &test.recipe);
+        let session = test.root.join("creation-sessions").join(&test.session_id);
+        std::fs::create_dir_all(&session).unwrap();
+        let target = session.join(RESERVED_COMPOSER_INTENT_FILE);
+
+        let result = publish_durable_intent_with_io_hooks(
+            &session,
+            &target,
+            &intent,
+            |_: &mut std::fs::File, _: &[u8]| Err("injected intent write failure".into()),
+            |_: &std::fs::File| Ok(()),
+        );
+
+        assert!(result.is_err());
+        assert!(!target.exists());
+        assert_no_intent_temps(&session);
+    }
+
+    #[test]
+    fn intent_temp_is_exactly_removed_after_an_injected_sync_failure() {
+        let test = ComposerCandidateHarness::new();
+        let body = decode_composer_png(&valid_candidate_b64()).unwrap().bytes;
+        let profile = production_profile(&test.recipe);
+        let intent = reserved_intent_fixture(&test.session_id, &body, &profile, &test.recipe);
+        let session = test.root.join("creation-sessions").join(&test.session_id);
+        std::fs::create_dir_all(&session).unwrap();
+        let target = session.join(RESERVED_COMPOSER_INTENT_FILE);
+
+        let result = publish_durable_intent_with_io_hooks(
+            &session,
+            &target,
+            &intent,
+            |file: &mut std::fs::File, bytes: &[u8]| {
+                file.write_all(bytes)
+                    .map_err(|error| format!("write intent temp: {error}"))
+            },
+            |_: &std::fs::File| Err("injected intent sync failure".into()),
+        );
+
+        assert!(result.is_err());
+        assert!(!target.exists());
+        assert_no_intent_temps(&session);
     }
 
     #[test]
