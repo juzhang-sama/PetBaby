@@ -6,6 +6,7 @@ import { ComposerState, type ComposerSelectionKind, type ComposerStep } from "..
 import { parseMotionProfile } from "../runtime/animated-image-manifest";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 import type { CandidatePreviewController } from "./candidate-dynamic-preview";
+import type { CreationPageActivityPort } from "./creation-page-run";
 
 type SaveState = "idle" | "saving" | "saved" | "unsaved";
 
@@ -38,6 +39,7 @@ export interface ComposerCreationPorts {
   preview: Pick<CandidatePreviewController, "show" | "clear">;
   finalize(sessionId: string): Promise<PetSwitchResult>;
   confirm(message: string): boolean;
+  activity?: CreationPageActivityPort;
 }
 
 export interface ComposerCreationElements {
@@ -182,25 +184,25 @@ export class ComposerCreationView {
     this.unmount();
     this.elements = elements;
     this.listen(elements.previousButton, "click", () => {
-      this.runDomAction(this.goRelative(-1), "保存上一步失败：");
+      this.runDomAction(this.runPageAction("save", () => this.goRelative(-1)), "保存上一步失败：");
     });
     this.listen(elements.nextButton, "click", () => {
-      this.runDomAction(this.goRelative(1), "保存下一步失败：");
+      this.runDomAction(this.runPageAction("save", () => this.goRelative(1)), "保存下一步失败：");
     });
     this.listen(elements.candidateButton, "click", () => {
-      void this.createCandidate(elements.candidatePreview).catch((error) => {
+      void this.runPageAction("candidate", () => this.createCandidate(elements.candidatePreview)).catch((error) => {
         this.message = `动态预览未准备好：${errorMessage(error)}`;
         this.renderDom();
       });
     });
     this.listen(elements.finishButton, "click", () => {
-      void this.finish(elements.nameInput.value).catch((error) => {
+      void this.runPageAction("finalize", () => this.finish(elements.nameInput.value)).catch((error) => {
         this.message = `完成失败：${errorMessage(error)}`;
         this.renderDom();
       });
     });
     this.listen(elements.abandonButton, "click", () => {
-      this.runDomAction(this.abandon(), "放弃失败，可以重试：");
+      this.runDomAction(this.runPageAction("abandon", () => this.abandon()), "放弃失败，可以重试：");
     });
     this.renderDom();
   }
@@ -788,9 +790,9 @@ export class ComposerCreationView {
     button.append(label);
     button.addEventListener("click", () => {
       if (option.disabled) return;
-      const action = option.kind === "body"
+      const action = this.runPageAction("save", () => option.kind === "body"
         ? this.selectBody(option.id)
-        : this.select(option.kind, option.id);
+        : this.select(option.kind, option.id));
       void action.catch((error) => {
         this.message = errorMessage(error);
         this.renderDom();
@@ -809,6 +811,16 @@ export class ComposerCreationView {
       this.message = `${prefix}${errorMessage(error)}`;
       this.renderDom();
     });
+  }
+
+  private runPageAction<T>(kind: string, operation: () => Promise<T>): Promise<T> {
+    return this.ports.activity
+      ? this.ports.activity.run({
+        route: "composer",
+        kind,
+        sessionId: this.snapshotValue?.sessionId ?? null,
+      }, operation)
+      : operation();
   }
 
   private unmount(): void {

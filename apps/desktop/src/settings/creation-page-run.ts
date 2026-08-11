@@ -3,6 +3,81 @@ import type { CreationMethod } from "../creation/contracts";
 export type CreationRoute = "upload" | "composer" | "adoption";
 export type DraftChoice = "continue" | "abandon" | "cancel";
 
+export interface CreationActivityOwner {
+  route: CreationRoute;
+  kind: string;
+  sessionId: string | null;
+}
+
+export interface CreationPageActivityPort {
+  run<T>(owner: CreationActivityOwner, operation: () => Promise<T>): Promise<T>;
+}
+
+export class CreationPageActivity {
+  private tail: Promise<void> = Promise.resolve();
+  private pending = 0;
+
+  constructor(private readonly onBusy: (busy: boolean) => void) {}
+
+  run<T>(_owner: CreationActivityOwner, operation: () => Promise<T>): Promise<T> {
+    this.pending += 1;
+    if (this.pending === 1) this.onBusy(true);
+    const result = this.tail.then(operation);
+    this.tail = result.then(() => undefined, () => undefined);
+    return result.finally(() => {
+      this.pending -= 1;
+      if (this.pending === 0) this.onBusy(false);
+    });
+  }
+
+  isBusy(): boolean {
+    return this.pending > 0;
+  }
+
+  async waitForIdle(): Promise<void> {
+    const tail = this.tail;
+    await tail;
+    if (tail !== this.tail) await this.waitForIdle();
+  }
+}
+
+export class CreationPageFocusManager {
+  private readonly triggers = new Map<CreationRoute, HTMLElement>();
+  private revision = 0;
+
+  constructor(
+    private readonly schedule: (callback: () => void) => void = (callback) => {
+      window.requestAnimationFrame(() => callback());
+    },
+  ) {}
+
+  remember(route: CreationRoute, trigger: HTMLElement): void {
+    this.triggers.set(route, trigger);
+  }
+
+  enter(_route: CreationRoute, workspace: HTMLElement): void {
+    const revision = ++this.revision;
+    this.schedule(() => {
+      if (revision !== this.revision) return;
+      workspace.querySelector<HTMLElement>(
+        "[data-creation-entry-focus], button:not([disabled]), [tabindex]:not([tabindex='-1'])",
+      )?.focus();
+    });
+  }
+
+  returnToTrigger(route: CreationRoute): void {
+    const revision = ++this.revision;
+    const trigger = this.triggers.get(route);
+    this.schedule(() => {
+      if (revision === this.revision) trigger?.focus();
+    });
+  }
+
+  cancel(): void {
+    this.revision += 1;
+  }
+}
+
 export interface CreationRouteViewPort {
   open(sessionId: string | null): Promise<void>;
   leave(): void;
@@ -17,6 +92,7 @@ export interface CreationPageRouterPorts {
   dialog: { showDraftChoice(method: "upload" | "composer"): Promise<DraftChoice> };
   onRoute(route: CreationRoute): void;
   onBusy(busy: boolean): void;
+  activity?: CreationPageActivityPort & { waitForIdle(): Promise<void> };
 }
 
 export type CreationPageOperation = "open" | "submit" | "poll" | "preview" | "finalize" | "retry" | "abandon";
@@ -57,6 +133,7 @@ export class CreationPageRun {
 
   async open(requestedRoute: CreationRoute): Promise<CreationRoute | null> {
     const router = this.requireRouter();
+    await router.activity?.waitForIdle();
     const visit = this.enter(requestedRoute);
     this.leaveActiveRoute();
     this.setRouterBusy(true);
@@ -81,7 +158,7 @@ export class CreationPageRun {
       if (choice === "continue") {
         return await this.openRoute(draft.method, draft.sessionId, visit);
       }
-      await this.abandonDraft(draft.sessionId);
+      await this.abandonDraft(draft.sessionId, requestedRoute);
       if (!this.isCurrent(visit)) return null;
       return await this.openRoute(requestedRoute, null, visit);
     } finally {
@@ -186,10 +263,14 @@ export class CreationPageRun {
     this.activeRoute = null;
   }
 
-  private abandonDraft(sessionId: string): Promise<void> {
+  private abandonDraft(sessionId: string, route: CreationRoute): Promise<void> {
     const existing = this.abandoningDrafts.get(sessionId);
     if (existing) return existing;
-    const operation = this.requireRouter().creation.abandon(sessionId);
+    const router = this.requireRouter();
+    const execute = () => router.creation.abandon(sessionId);
+    const operation = router.activity
+      ? router.activity.run({ route, kind: "abandon-conflicting-draft", sessionId }, execute)
+      : execute();
     const tracked = operation.finally(() => {
       if (this.abandoningDrafts.get(sessionId) === tracked) this.abandoningDrafts.delete(sessionId);
     });

@@ -7,6 +7,7 @@ import type { RecoveryReport } from "../creation/api";
 import { parseMotionProfile } from "../runtime/animated-image-manifest";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 import type { CandidatePreviewController } from "./candidate-dynamic-preview";
+import type { CreationPageActivityPort } from "./creation-page-run";
 
 export interface AdoptionCreationPorts {
   creation: {
@@ -23,6 +24,7 @@ export interface AdoptionCreationPorts {
   switchPet(petId: string): Promise<PetSwitchResult>;
   refreshPets(): Promise<void>;
   onBusyChange(busy: boolean): void;
+  activity?: CreationPageActivityPort;
   onBack?(): void;
 }
 
@@ -41,7 +43,9 @@ export interface AdoptionCreationElements {
 export class AdoptionCreationView {
   private catalogValue: AdoptionCatalogEntry[] = [];
   private selectedId: string | null = null;
+  private focusTemplateId: string | null = null;
   private nameValue = "";
+  private nameLockedValue = false;
   private status = "选择一只猫，先看看它呼吸微动的样子。";
   private active = false;
   private destroyed = false;
@@ -82,6 +86,14 @@ export class AdoptionCreationView {
     return this.status;
   }
 
+  displayName(): string {
+    return this.nameValue;
+  }
+
+  nameLocked(): boolean {
+    return this.nameLockedValue;
+  }
+
   async open(): Promise<void> {
     const pendingActivation = this.activationFlight;
     const visit = this.beginVisit();
@@ -114,11 +126,18 @@ export class AdoptionCreationView {
     const revision = ++this.selectionRevision;
     this.selectedId = templateId;
     this.nameValue = selected.template.defaultName;
+    this.nameLockedValue = selected.retrySessionId !== null || selected.adoptedPetId !== null;
     this.previewReady = false;
     this.clearPreview();
     this.status = `正在加载${selected.template.defaultName}的动态预览…`;
     this.render();
     try {
+      if (selected.retrySessionId) {
+        const snapshot = await this.ports.creation.snapshot(selected.retrySessionId);
+        if (!this.isSelectionCurrent(visit, revision, templateId)) return;
+        this.nameValue = snapshot.displayName ?? selected.template.defaultName;
+        this.render();
+      }
       const profileUrl = this.assetUrl(selected.template, selected.template.motionProfilePath);
       const rawProfile = await this.ports.loadMotionProfile(profileUrl);
       if (!this.isSelectionCurrent(visit, revision, templateId)) return;
@@ -143,7 +162,15 @@ export class AdoptionCreationView {
   activate(templateId: string, displayName?: string): Promise<void> {
     if (this.activationFlight) return this.activationFlight;
     const visit = this.visit;
-    const operation = this.activateOnce(templateId, displayName, visit);
+    const entry = this.requireEntry(templateId);
+    const execute = () => this.activateOnce(templateId, displayName, visit);
+    const operation = this.ports.activity
+      ? this.ports.activity.run({
+        route: "adoption",
+        kind: entry.adoptedPetId ? "switch" : "finalize",
+        sessionId: entry.retrySessionId,
+      }, execute)
+      : execute();
     const tracked = operation.finally(() => {
       if (this.activationFlight === tracked) this.activationFlight = null;
       this.setBusy(false);
@@ -181,8 +208,10 @@ export class AdoptionCreationView {
       const button = target.closest<HTMLButtonElement>("[data-adoption-template]");
       const templateId = button?.dataset.adoptionTemplate;
       if (!templateId || this.busyValue) return;
+      this.focusTemplateId = templateId;
       void this.select(templateId).catch(() => undefined);
     });
+    this.listen(elements.catalog, "keydown", (event) => this.moveCatalogFocus(event));
     this.listen(elements.nameInput, "input", () => {
       this.nameValue = elements.nameInput.value;
     });
@@ -219,7 +248,10 @@ export class AdoptionCreationView {
     const selected = this.requireEntry(templateId);
     if (selected.adoptedPetId) {
       const result = await this.ports.switchPet(selected.adoptedPetId);
-      if (!result.ok) throw new Error(result.message);
+      if (!result.ok) {
+        await this.refreshCatalog(visit);
+        throw new Error(result.message);
+      }
       await this.ports.refreshPets();
       if (this.isCurrent(visit)) {
         this.status = `已切换到${selected.template.defaultName}。`;
@@ -228,7 +260,6 @@ export class AdoptionCreationView {
       return;
     }
 
-    const name = normalizeDisplayName(displayName ?? (this.nameValue || selected.template.defaultName));
     let sessionId = selected.retrySessionId;
     if (sessionId) {
       const snapshot = await this.ports.creation.snapshot(sessionId);
@@ -241,6 +272,7 @@ export class AdoptionCreationView {
     }
 
     if (!sessionId) {
+      const name = normalizeDisplayName(displayName ?? (this.nameValue || selected.template.defaultName));
       try {
         const snapshot = await this.ports.creation.adoptionStart(templateId, name);
         sessionId = snapshot.sessionId;
@@ -274,6 +306,9 @@ export class AdoptionCreationView {
       await this.ports.creation.recoverFinalization();
       const recovered = await this.ports.creation.snapshot(snapshot.sessionId);
       if (recovered.status === "completed") return "completed";
+      if (recovered.status === "finalizing") {
+        throw new Error("认领仍在完成，请稍后重试，系统不会重复创建");
+      }
       if (isFinalizable(recovered)) return "finalizable";
       return "needsStart";
     }
@@ -326,8 +361,13 @@ export class AdoptionCreationView {
     if (this.selectedId && !this.catalogValue.some((item) => item.template.templateId === this.selectedId)) {
       this.selectedId = null;
       this.nameValue = "";
+      this.nameLockedValue = false;
       this.previewReady = false;
       this.clearPreviewOnce();
+    } else if (this.selectedId) {
+      const selected = this.catalogValue.find((item) => item.template.templateId === this.selectedId)!;
+      this.nameLockedValue = selected.retrySessionId !== null || selected.adoptedPetId !== null;
+      if (!this.nameLockedValue) this.nameValue = selected.template.defaultName;
     }
     this.render();
   }
@@ -339,6 +379,7 @@ export class AdoptionCreationView {
     this.selectionRevision += 1;
     this.selectedId = null;
     this.nameValue = "";
+    this.nameLockedValue = false;
     this.previewReady = false;
     this.clearPreviewOnce();
     return this.visit;
@@ -393,7 +434,8 @@ export class AdoptionCreationView {
     dom.selectedPersonality.textContent = selected?.template.personality
       ?? "从左侧目录选择一张卡片，动态预览会出现在这里。";
     if (dom.nameInput.value !== this.nameValue) dom.nameInput.value = this.nameValue;
-    dom.nameInput.disabled = this.busyValue || !selected || selected.adoptedPetId !== null;
+    dom.nameInput.disabled = this.busyValue || !selected || this.nameLockedValue;
+    dom.nameInput.setAttribute("aria-disabled", String(dom.nameInput.disabled));
     dom.actionButton.textContent = selected ? actionLabel(selected) : "先选择一只猫";
     dom.actionButton.disabled = this.busyValue || !selected || !this.previewReady;
     dom.actionButton.setAttribute("aria-disabled", String(dom.actionButton.disabled));
@@ -402,32 +444,77 @@ export class AdoptionCreationView {
 
   private renderCatalog(root: HTMLElement): void {
     const document = root.ownerDocument;
-    root.replaceChildren(...this.catalogValue.map((entry) => {
-      const button = document.createElement("button");
+    const existing = new Map(Array.from(root.children, (child) => {
+      const button = child as HTMLButtonElement;
+      return [button.dataset.adoptionTemplate ?? "", button] as const;
+    }));
+    const buttons = this.catalogValue.map((entry) => {
+      const templateId = entry.template.templateId;
+      const button = existing.get(templateId) ?? document.createElement("button");
       button.type = "button";
       button.className = "adoption-card";
-      button.dataset.adoptionTemplate = entry.template.templateId;
+      button.dataset.adoptionTemplate = templateId;
       button.setAttribute("role", "option");
-      button.setAttribute("aria-selected", String(entry.template.templateId === this.selectedId));
+      button.setAttribute("aria-selected", String(templateId === this.selectedId));
       button.disabled = this.busyValue;
       button.setAttribute("aria-disabled", String(button.disabled));
-      const image = document.createElement("img");
+      const image = (button.children[0] as HTMLImageElement | undefined) ?? document.createElement("img");
       image.src = this.assetUrl(entry.template, entry.template.thumbnailPath);
       image.alt = `${entry.template.defaultName}缩略图`;
       image.loading = "lazy";
-      const copy = document.createElement("span");
+      const copy = (button.children[1] as HTMLElement | undefined) ?? document.createElement("span");
       copy.className = "adoption-card-copy";
-      const name = document.createElement("strong");
+      const name = (copy.children[0] as HTMLElement | undefined) ?? document.createElement("strong");
       name.textContent = entry.template.defaultName;
-      const personality = document.createElement("span");
+      const personality = (copy.children[1] as HTMLElement | undefined) ?? document.createElement("span");
       personality.textContent = entry.template.personality;
-      const state = document.createElement("span");
+      const state = (copy.children[2] as HTMLElement | undefined) ?? document.createElement("span");
       state.className = "adoption-card-state";
       state.textContent = actionLabel(entry);
-      copy.append(name, personality, state);
-      button.append(image, copy);
+      if (copy.children.length === 0) copy.append(name, personality, state);
+      if (button.children.length === 0) button.append(image, copy);
       return button;
-    }));
+    });
+    for (const [templateId, button] of existing) {
+      if (!this.catalogValue.some((entry) => entry.template.templateId === templateId)) button.remove();
+    }
+    root.append(...buttons);
+    if (!this.focusTemplateId || !buttons.some(
+      (button) => button.dataset.adoptionTemplate === this.focusTemplateId,
+    )) {
+      this.focusTemplateId = this.selectedId ?? buttons[0]?.dataset.adoptionTemplate ?? null;
+    }
+    for (const button of buttons) {
+      button.tabIndex = button.dataset.adoptionTemplate === this.focusTemplateId ? 0 : -1;
+    }
+  }
+
+  private moveCatalogFocus(event: Event): void {
+    const keyboard = event as KeyboardEvent;
+    if (!["ArrowDown", "ArrowRight", "ArrowUp", "ArrowLeft", "Home", "End"].includes(keyboard.key)) return;
+    const target = event.target;
+    if (!(target instanceof Element)) return;
+    const button = target.closest<HTMLButtonElement>("[data-adoption-template]");
+    const currentId = button?.dataset.adoptionTemplate;
+    if (!currentId || !this.elements) return;
+    const ids = this.catalogValue.map((entry) => entry.template.templateId);
+    const current = ids.indexOf(currentId);
+    if (current < 0) return;
+    let next = current;
+    if (keyboard.key === "Home") next = 0;
+    else if (keyboard.key === "End") next = ids.length - 1;
+    else if (keyboard.key === "ArrowDown" || keyboard.key === "ArrowRight") {
+      next = Math.min(ids.length - 1, current + 1);
+    } else {
+      next = Math.max(0, current - 1);
+    }
+    event.preventDefault();
+    this.focusTemplateId = ids[next]!;
+    const buttons = Array.from(this.elements.catalog.children) as HTMLButtonElement[];
+    for (const candidate of buttons) {
+      candidate.tabIndex = candidate.dataset.adoptionTemplate === this.focusTemplateId ? 0 : -1;
+    }
+    buttons.find((candidate) => candidate.dataset.adoptionTemplate === this.focusTemplateId)?.focus();
   }
 
   private listen(target: EventTarget, type: string, listener: EventListener): void {

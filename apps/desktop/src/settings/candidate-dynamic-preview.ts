@@ -1,6 +1,6 @@
 import type { MotionProfileV1 } from "../runtime/animated-image-manifest";
 import { AnimatedImageRenderer } from "../runtime/animated-image-renderer";
-import type { PetRenderer } from "../runtime/pet-renderer";
+import type { PetMotionHandle, PetRenderer } from "../runtime/pet-renderer";
 
 export interface CandidatePreviewHandle {
   destroy(): void;
@@ -17,6 +17,8 @@ export interface CandidatePreviewPorts {
   cancelAnimationFrame(id: number): void;
   createResizeObserver(callback: ResizeObserverCallback): CandidateResizeObserver;
   devicePixelRatio(): number;
+  prefersReducedMotion(): boolean;
+  onReducedMotionChange(listener: (reduced: boolean) => void): () => void;
 }
 
 const browserPorts: CandidatePreviewPorts = {
@@ -25,6 +27,13 @@ const browserPorts: CandidatePreviewPorts = {
   cancelAnimationFrame: (id) => window.cancelAnimationFrame(id),
   createResizeObserver: (callback) => new ResizeObserver(callback),
   devicePixelRatio: () => window.devicePixelRatio || 1,
+  prefersReducedMotion: () => window.matchMedia("(prefers-reduced-motion: reduce)").matches,
+  onReducedMotionChange: (listener) => {
+    const query = window.matchMedia("(prefers-reduced-motion: reduce)");
+    const handle = (event: MediaQueryListEvent) => listener(event.matches);
+    query.addEventListener("change", handle);
+    return () => query.removeEventListener("change", handle);
+  },
 };
 
 export async function mountCandidateDynamicPreview(
@@ -45,6 +54,7 @@ export async function mountCandidateDynamicPreview(
   let destroyed = false;
   let frameId: number | undefined;
   let previousTimestamp: number | undefined;
+  let motion: PetMotionHandle | null = null;
   const resize = () => {
     if (destroyed) return;
     const bounds = root.getBoundingClientRect();
@@ -57,22 +67,40 @@ export async function mountCandidateDynamicPreview(
   const resizeObserver = ports.createResizeObserver(resize);
   const update = (timestamp: number) => {
     if (destroyed) return;
+    frameId = undefined;
     if (previousTimestamp !== undefined) renderer.update(timestamp - previousTimestamp);
     previousTimestamp = timestamp;
     frameId = ports.requestAnimationFrame(update);
+  };
+  const stopAnimation = () => {
+    if (frameId !== undefined) ports.cancelAnimationFrame(frameId);
+    frameId = undefined;
+    previousTimestamp = undefined;
+    motion?.cancel();
+    motion = null;
+  };
+  const startAnimation = () => {
+    if (destroyed || motion) return;
+    motion = renderer.playMotion("idle", { loop: true });
+    frameId = ports.requestAnimationFrame(update);
+  };
+  const applyMotionPreference = (reduced: boolean) => {
+    if (reduced) stopAnimation();
+    else startAnimation();
   };
 
   resize();
   resizeObserver.observe(root);
   renderer.setVisibility(true);
-  renderer.playMotion("idle", { loop: true });
-  frameId = ports.requestAnimationFrame(update);
+  const stopWatchingMotion = ports.onReducedMotionChange(applyMotionPreference);
+  applyMotionPreference(ports.prefersReducedMotion());
 
   return {
     destroy() {
       if (destroyed) return;
       destroyed = true;
-      if (frameId !== undefined) ports.cancelAnimationFrame(frameId);
+      stopWatchingMotion();
+      stopAnimation();
       resizeObserver.disconnect();
       renderer.destroy();
       root.replaceChildren();

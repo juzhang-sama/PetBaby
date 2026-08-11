@@ -29,6 +29,17 @@ describe("settings upload creation assembly", () => {
     expect(source).toContain("creationApi.adoptionStart");
   });
 
+  it("wires one shared mutation owner and focus manager across all creation routes", () => {
+    const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("new CreationPageActivity(");
+    expect(source.match(/activity: creationActivity/g)).toHaveLength(4);
+    expect(source).toContain("new CreationPageFocusManager(");
+    expect(source).toContain("creationFocus.enter(");
+    expect(source).toContain("creationFocus.returnToTrigger(");
+    expect(source).toContain("tabList, tabCreate");
+  });
+
   it("keeps adoption keyboard reachable, announced and responsive without decorative motion", () => {
     const html = readFileSync(new URL("../settings.html", import.meta.url), "utf8");
     const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
@@ -40,9 +51,12 @@ describe("settings upload creation assembly", () => {
     expect(html).toContain('aria-live="polite"');
     expect(html).toContain('for="adoption-pet-name"');
     expect(html).toContain('id="draft-choice-dialog"');
+    expect(html).toContain("重试认领会沿用首次确认的名称");
+    expect(html.match(/data-creation-entry-focus/g)).toHaveLength(3);
     expect(css).toContain(".adoption-layout");
     expect(css).toContain("@media (max-width: 520px)");
     expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(css).toContain("[data-creation-entry-focus]:focus-visible");
     expect(css).not.toContain("adoption-float");
     const source = readFileSync(new URL("./settings/adoption-creation-view.ts", import.meta.url), "utf8");
     expect(source).toContain('button.setAttribute("role", "option")');

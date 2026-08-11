@@ -11,6 +11,7 @@ import {
   type ComposerCreationPorts,
   type ComposerCreationElements,
 } from "./composer-creation-view";
+import type { CreationActivityOwner, CreationPageActivityPort } from "./creation-page-run";
 
 class FakeElement {
   disabled = false;
@@ -169,6 +170,29 @@ function composerPorts(options: { draft?: CreationSnapshot | null } = {}) {
 }
 
 describe("ComposerCreationView", () => {
+  it("runs option saves through the injected page activity owner", async () => {
+    stubComposerDocument();
+    const owners: CreationActivityOwner[] = [];
+    const activity: CreationPageActivityPort = {
+      run: async <T>(owner: CreationActivityOwner, operation: () => Promise<T>) => {
+        owners.push(owner);
+        return operation();
+      },
+    };
+    const test = composerPorts();
+    test.ports.activity = activity;
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    const elements = composerElements();
+    view.mount(elements.typed);
+
+    elements.raw.options.children[0]!.dispatch("click");
+    await vi.waitFor(() => expect(test.creation.composerSave).toHaveBeenCalledOnce());
+
+    expect(owners[0]).toMatchObject({ route: "composer", kind: "save" });
+    vi.unstubAllGlobals();
+  });
+
   it("starts only after the first body selection and autosaves every valid selection", async () => {
     const test = composerPorts();
     const view = new ComposerCreationView(test.ports);

@@ -1,6 +1,17 @@
 import { describe, expect, it, vi } from "vitest";
 import type { CreationSnapshot } from "../creation/contracts";
-import { CreationPageRun } from "./creation-page-run";
+import {
+  CreationPageActivity,
+  CreationPageFocusManager,
+  CreationPageRun,
+} from "./creation-page-run";
+
+function deferred<T>() {
+  let resolve!: (value: T) => void;
+  let reject!: (error: unknown) => void;
+  const promise = new Promise<T>((onResolve, onReject) => { resolve = onResolve; reject = onReject; });
+  return { promise, resolve, reject };
+}
 
 function snapshot(method: "upload" | "composer", sessionId = `session-${method}`): CreationSnapshot {
   return {
@@ -47,6 +58,61 @@ function routerPorts(options: {
 }
 
 describe("CreationPageRun", () => {
+  it("serializes mutations from every creation route under one shared busy owner", async () => {
+    const first = deferred<void>();
+    const order: string[] = [];
+    const onBusy = vi.fn();
+    const activity = new CreationPageActivity(onBusy);
+
+    const upload = activity.run(
+      { route: "upload", kind: "finalize", sessionId: "session-upload" },
+      async () => { order.push("upload-start"); await first.promise; order.push("upload-end"); },
+    );
+    const composer = activity.run(
+      { route: "composer", kind: "save", sessionId: "session-composer" },
+      async () => { order.push("composer"); },
+    );
+    await Promise.resolve();
+
+    expect(order).toEqual(["upload-start"]);
+    expect(activity.isBusy()).toBe(true);
+    first.resolve();
+    await Promise.all([upload, composer]);
+
+    expect(order).toEqual(["upload-start", "upload-end", "composer"]);
+    expect(onBusy.mock.calls.map(([busy]) => busy)).toEqual([true, false]);
+    expect(activity.isBusy()).toBe(false);
+  });
+
+  it("moves focus into a route and returns it to the route trigger", () => {
+    const trigger = { focus: vi.fn() } as unknown as HTMLElement;
+    const firstControl = { focus: vi.fn() } as unknown as HTMLElement;
+    const workspace = {
+      querySelector: vi.fn(() => firstControl),
+    } as unknown as HTMLElement;
+    const focus = new CreationPageFocusManager((callback) => callback());
+
+    focus.remember("adoption", trigger);
+    focus.enter("adoption", workspace);
+    focus.returnToTrigger("adoption");
+
+    expect(firstControl.focus).toHaveBeenCalledOnce();
+    expect(trigger.focus).toHaveBeenCalledOnce();
+  });
+
+  it("cancels a scheduled route focus when the settings tab leaves creation", () => {
+    const scheduled: Array<() => void> = [];
+    const firstControl = { focus: vi.fn() } as unknown as HTMLElement;
+    const workspace = { querySelector: () => firstControl } as unknown as HTMLElement;
+    const focus = new CreationPageFocusManager((callback) => { scheduled.push(callback); });
+
+    focus.enter("upload", workspace);
+    focus.cancel();
+    scheduled[0]!();
+
+    expect(firstControl.focus).not.toHaveBeenCalled();
+  });
+
   it("offers exactly upload composer and adoption entries", () => {
     expect(new CreationPageRun().routes()).toEqual(["upload", "composer", "adoption"]);
   });
@@ -128,6 +194,30 @@ describe("CreationPageRun", () => {
     test.page.close();
 
     expect(test.views.adoption.leave).toHaveBeenCalledTimes(1);
+  });
+
+  it("waits for the shared mutation settlement before changing routes", async () => {
+    const idle = deferred<void>();
+    const test = routerPorts();
+    const page = new CreationPageRun({
+      creation: test.creation,
+      views: test.views,
+      dialog: test.dialog,
+      onRoute: test.onRoute,
+      onBusy: test.onBusy,
+      activity: {
+        waitForIdle: () => idle.promise,
+        run: async (_owner, operation) => operation(),
+      },
+    });
+
+    const opening = page.open("adoption");
+    await Promise.resolve();
+    expect(test.views.adoption.open).not.toHaveBeenCalled();
+
+    idle.resolve();
+    await opening;
+    expect(test.views.adoption.open).toHaveBeenCalledOnce();
   });
 
   it("ignores a previous visit candidate after leaving upload", () => {

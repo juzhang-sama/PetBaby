@@ -4,7 +4,7 @@ import { buildPrompt, sha256Hex } from "../creation/creation-flow";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 import { parseMotionProfile, type MotionProfileV1 } from "../runtime/animated-image-manifest";
 import type { CandidatePreviewController } from "./candidate-dynamic-preview";
-import { CreationPageRun } from "./creation-page-run";
+import { CreationPageRun, type CreationPageActivityPort } from "./creation-page-run";
 
 export interface UploadCreationPorts {
   creation: {
@@ -107,6 +107,7 @@ export interface UploadCreationDomPorts {
   createObjectURL(file: Blob): string;
   revokeObjectURL(url: string): void;
   confirm(message: string): boolean;
+  activity?: CreationPageActivityPort;
   onCancel(): void;
   onAbandoned(): void;
 }
@@ -133,12 +134,12 @@ export class UploadCreationView {
   private readonly onNameInput = () => this.render();
   private readonly onFinishClick = (event: Event) => {
     event.preventDefault();
-    void this.finishFromDom();
+    this.runPageAction("finalize", () => this.finishFromDom());
   };
   private readonly onPhotoChange = () => { void this.readSelectedPhoto(); };
   private readonly onNextClick = (event: Event) => {
     event.preventDefault();
-    void this.submitFromDom();
+    this.runPageAction("submit", () => this.submitFromDom());
   };
   private readonly onSaveKeyClick = (event: Event) => {
     event.preventDefault();
@@ -150,11 +151,11 @@ export class UploadCreationView {
   };
   private readonly onRetryClick = (event: Event) => {
     event.preventDefault();
-    void this.retryFromDom();
+    this.runPageAction("retry", () => this.retryFromDom());
   };
   private readonly onAbandonClick = (event: Event) => {
     event.preventDefault();
-    void this.abandonFromDom();
+    this.runPageAction("abandon", () => this.abandonFromDom());
   };
 
   constructor(
@@ -393,6 +394,17 @@ export class UploadCreationView {
       step: stepFromSnapshot(snapshot),
       creation: snapshot,
     };
+  }
+
+  private runPageAction(kind: string, operation: () => Promise<void>): void {
+    const action = this.dom?.activity
+      ? this.dom.activity.run({ route: "upload", kind, sessionId: this.state.sessionId }, operation)
+      : operation();
+    void action.catch((error) => {
+      if (!this.mounted) return;
+      this.setStatus(`操作未完成：${errorMessage(error)}。请保留当前页面并重试。`, true);
+      this.render();
+    });
   }
 
   private canApplyVisit(visit?: number): boolean {

@@ -16,7 +16,13 @@ import {
   ComposerCreationView,
   type ComposerCreationElements,
 } from "./settings/composer-creation-view";
-import { CreationPageRun, type CreationRoute, type DraftChoice } from "./settings/creation-page-run";
+import {
+  CreationPageActivity,
+  CreationPageFocusManager,
+  CreationPageRun,
+  type CreationRoute,
+  type DraftChoice,
+} from "./settings/creation-page-run";
 import { finalizeCreation } from "./settings/creation-finalizer";
 import {
   catalogSwitchStatus,
@@ -60,6 +66,13 @@ const workspaceBackButtons = Array.from(
 let catalogEntries: PetCatalogEntry[] = [];
 let catalogBusy: "switch" | "delete" | null = null;
 let selectedView: "list" | "create" = "list";
+let activeCreationRoute: CreationRoute | null = null;
+const creationBusy = { router: false, adoption: false, activity: false };
+
+const creationActivity = new CreationPageActivity(
+  (busy) => setCreationBusy("activity", busy),
+);
+const creationFocus = new CreationPageFocusManager();
 
 function setCatalogStatus(message: string, tone: "info" | "error" | "warning" = "info"): void {
   statusEl.textContent = message;
@@ -220,6 +233,7 @@ const uploadView = new UploadCreationView(
     createObjectURL: (file) => URL.createObjectURL(file),
     revokeObjectURL: (url) => URL.revokeObjectURL(url),
     confirm: (message) => window.confirm(message),
+    activity: creationActivity,
     onCancel: () => switchView("list"),
     onAbandoned: () => {
       setCreationStatus("已放弃创建并清理本地草稿。");
@@ -276,6 +290,7 @@ const composerView = new ComposerCreationView({
   preview: composerPreview,
   finalize: finalizeCreation,
   confirm: (message) => window.confirm(message),
+  activity: creationActivity,
 });
 
 const adoptionPreview = new CandidatePreviewController();
@@ -300,6 +315,7 @@ const adoptionView = new AdoptionCreationView({
   switchPet: requestPetSwitch,
   refreshPets: async () => { await renderList(); },
   onBusyChange: (busy) => setCreationBusy("adoption", busy),
+  activity: creationActivity,
   onBack: showCreationHome,
 });
 adoptionView.mount(adoptionElements);
@@ -328,17 +344,26 @@ const creationPage = new CreationPageRun({
   dialog: { showDraftChoice },
   onRoute: showRouteWorkspace,
   onBusy: (busy) => setCreationBusy("router", busy),
+  activity: creationActivity,
 });
-
-const creationBusy = { router: false, adoption: false };
 
 function setCreationBusy(source: keyof typeof creationBusy, busy: boolean): void {
   creationBusy[source] = busy;
-  const pageBusy = creationBusy.router || creationBusy.adoption;
+  const pageBusy = creationBusy.router || creationBusy.adoption || creationBusy.activity;
   viewCreate.setAttribute("aria-busy", String(pageBusy));
-  for (const button of [...routeButtons, ...workspaceBackButtons]) {
+  for (const button of [...routeButtons, ...workspaceBackButtons, tabList, tabCreate]) {
     button.disabled = pageBusy;
     button.setAttribute("aria-disabled", String(pageBusy));
+  }
+  for (const workspace of [uploadWorkspace, composerWorkspace, adoptionWorkspace]) {
+    workspace.inert = pageBusy;
+    workspace.setAttribute("aria-busy", String(pageBusy));
+    for (const control of workspace.querySelectorAll<HTMLElement>("button, input, [tabindex]")) {
+      const nativeDisabled = "disabled" in control && Boolean(
+        (control as HTMLButtonElement | HTMLInputElement).disabled,
+      );
+      control.setAttribute("aria-disabled", String(pageBusy || nativeDisabled));
+    }
   }
 }
 
@@ -348,19 +373,23 @@ function setCreationStatus(message: string, error = false): void {
 }
 
 function showRouteWorkspace(route: CreationRoute): void {
+  activeCreationRoute = route;
   creationHome.hidden = true;
   uploadWorkspace.hidden = route !== "upload";
   composerWorkspace.hidden = route !== "composer";
   adoptionWorkspace.hidden = route !== "adoption";
   setCreationStatus("");
+  creationFocus.enter(route, workspaceForRoute(route));
 }
 
-function showCreationHome(): void {
+function showCreationHome(returnRoute: CreationRoute | null = activeCreationRoute): void {
   creationPage.close();
+  activeCreationRoute = null;
   creationHome.hidden = false;
   uploadWorkspace.hidden = true;
   composerWorkspace.hidden = true;
   adoptionWorkspace.hidden = true;
+  if (returnRoute) creationFocus.returnToTrigger(returnRoute);
 }
 
 function showDraftChoice(method: "upload" | "composer"): Promise<DraftChoice> {
@@ -382,15 +411,16 @@ for (const button of routeButtons) {
   button.addEventListener("click", () => {
     const route = button.dataset.creationRoute;
     if (route !== "upload" && route !== "composer" && route !== "adoption") return;
+    creationFocus.remember(route, button);
     void creationPage.open(route).catch((error) => {
-      showCreationHome();
+      showCreationHome(route);
       setCreationStatus(`创建入口暂时无法打开：${String(error)}`, true);
     });
   });
 }
 for (const button of workspaceBackButtons) {
   if (button.id === "adoption-back") continue;
-  button.addEventListener("click", showCreationHome);
+  button.addEventListener("click", () => showCreationHome());
 }
 
 function queryComposerCreationElements(): ComposerCreationElements {
@@ -429,6 +459,12 @@ function queryAdoptionCreationElements(): AdoptionCreationElements {
   };
 }
 
+function workspaceForRoute(route: CreationRoute): HTMLElement {
+  if (route === "upload") return uploadWorkspace;
+  if (route === "composer") return composerWorkspace;
+  return adoptionWorkspace;
+}
+
 function encodeRelativeAssetPath(relativePath: string): string {
   const parts = relativePath.split("/");
   if (parts.some((part) => !part || part === "." || part === ".." || part.includes("\\"))) {
@@ -462,6 +498,8 @@ function switchView(view: "list" | "create"): void {
   tabCreate.setAttribute("aria-selected", String(view === "create"));
   if (view === "list") {
     creationPage.close();
+    activeCreationRoute = null;
+    creationFocus.cancel();
     void renderList();
   } else {
     showCreationHome();

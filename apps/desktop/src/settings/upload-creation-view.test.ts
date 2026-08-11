@@ -7,6 +7,7 @@ import {
   type UploadCreationDomPorts,
   type UploadCreationPorts,
 } from "./upload-creation-view";
+import type { CreationActivityOwner, CreationPageActivityPort } from "./creation-page-run";
 
 class FakeElement {
   hidden = false;
@@ -294,6 +295,30 @@ describe("UploadCreationView", () => {
 
     expect(dom.elements.stepComplete.hidden).toBe(false);
     expect(dom.elements.status.textContent).toContain("出现在桌面");
+  });
+
+  it("runs the final DOM action through the injected page activity owner", async () => {
+    const owners: CreationActivityOwner[] = [];
+    const activity: CreationPageActivityPort = {
+      run: async <T>(owner: CreationActivityOwner, operation: () => Promise<T>) => {
+        owners.push(owner);
+        return operation();
+      },
+    };
+    const core = uploadPorts({ candidateReady: true });
+    const dom = domPorts({ activity });
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+    dom.elements.nameInput.value = "团子";
+    dom.elements.nameInput.dispatch("input");
+
+    dom.elements.finishButton.dispatch("click");
+    await vi.waitFor(() => expect(core.finalize).toHaveBeenCalledOnce());
+
+    expect(owners).toContainEqual({
+      route: "upload", kind: "finalize", sessionId: "session-1",
+    });
   });
 
   it("ignores a snapshot poll that settles after leaving the visit", async () => {

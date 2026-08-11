@@ -70,6 +70,69 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+class FakeDomElement {
+  disabled = false;
+  textContent = "";
+  value = "";
+  type = "";
+  className = "";
+  tabIndex = 0;
+  src = "";
+  alt = "";
+  loading = "";
+  dataset: Record<string, string> = {};
+  children: FakeDomElement[] = [];
+  ownerDocument!: { createElement(tagName: string): FakeDomElement };
+  readonly focus = vi.fn();
+  private readonly attributes = new Map<string, string>();
+  private readonly listeners = new Map<string, Set<EventListener>>();
+
+  addEventListener(type: string, listener: EventListener): void {
+    const listeners = this.listeners.get(type) ?? new Set<EventListener>();
+    listeners.add(listener);
+    this.listeners.set(type, listeners);
+  }
+
+  removeEventListener(type: string, listener: EventListener): void {
+    this.listeners.get(type)?.delete(listener);
+  }
+
+  dispatch(type: string, event: Record<string, unknown>): void {
+    for (const listener of this.listeners.get(type) ?? []) {
+      listener({ preventDefault: vi.fn(), ...event } as unknown as Event);
+    }
+  }
+
+  replaceChildren(...children: FakeDomElement[]): void { this.children = children; }
+  append(...children: FakeDomElement[]): void {
+    this.children = [...this.children.filter((child) => !children.includes(child)), ...children];
+  }
+  remove(): void {}
+  setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
+  getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
+  closest(selector: string): FakeDomElement | null {
+    return selector === "[data-adoption-template]" && this.dataset.adoptionTemplate ? this : null;
+  }
+}
+
+function adoptionDomElements() {
+  const document = { createElement: (_tagName: string) => new FakeDomElement() };
+  const make = () => {
+    const element = new FakeDomElement();
+    element.ownerDocument = document;
+    return element;
+  };
+  const raw = {
+    root: make(), catalog: make(), selectedName: make(), selectedPersonality: make(),
+    nameInput: make(), actionButton: make(), refreshButton: make(), backButton: make(), status: make(),
+  };
+  vi.stubGlobal("Element", FakeDomElement);
+  return {
+    raw,
+    typed: raw as unknown as import("./adoption-creation-view").AdoptionCreationElements,
+  };
+}
+
 function adoptionPorts(options: {
   catalogs?: AdoptionCatalogEntry[][];
   start?: () => Promise<CreationSnapshot>;
@@ -103,7 +166,9 @@ function adoptionPorts(options: {
     finalize: vi.fn(options.finalize ?? (async (_sessionId: string): Promise<PetSwitchResult> => ({
       ok: true as const, requestId: "request-1", petId: "pet-adoption",
     }))),
-    switchPet: vi.fn(async (petId: string) => ({ ok: true as const, requestId: "switch-1", petId })),
+    switchPet: vi.fn(async (petId: string): Promise<PetSwitchResult> => ({
+      ok: true as const, requestId: "switch-1", petId,
+    })),
     refreshPets: vi.fn(async () => undefined),
     onBusyChange: vi.fn(),
   } satisfies AdoptionCreationPorts;
@@ -161,6 +226,35 @@ describe("AdoptionCreationView", () => {
     expect(test.ports.preview.show).toHaveBeenCalledTimes(1);
     expect(test.ports.preview.show.mock.calls[0]![1]).toContain("cat-2/body.png");
     expect(test.view.selectedTemplateId()).toBe("cat-2");
+  });
+
+  it("keeps exactly one adoption card in the keyboard tab order", async () => {
+    const test = adoptionPorts();
+    const dom = adoptionDomElements();
+    test.view.mount(dom.typed);
+
+    await test.view.open();
+
+    expect(dom.raw.catalog.children.map((button) => button.tabIndex)).toEqual([
+      0, -1, -1, -1, -1, -1, -1, -1,
+    ]);
+  });
+
+  it("preserves catalog nodes and supports End Arrow Home roving focus", async () => {
+    const test = adoptionPorts({ catalogs: [catalog(), catalog()] });
+    const dom = adoptionDomElements();
+    test.view.mount(dom.typed);
+    await test.view.open();
+    const firstNode = dom.raw.catalog.children[0]!;
+    const lastNode = dom.raw.catalog.children[7]!;
+
+    dom.raw.catalog.dispatch("keydown", { target: firstNode, key: "End" });
+    expect(lastNode.focus).toHaveBeenCalledOnce();
+    dom.raw.catalog.dispatch("keydown", { target: lastNode, key: "Home" });
+    expect(firstNode.focus).toHaveBeenCalledOnce();
+
+    await test.view.refresh();
+    expect(dom.raw.catalog.children[0]).toBe(firstNode);
   });
 
   it("invalidates a pending preview when leaving", async () => {
@@ -248,6 +342,35 @@ describe("AdoptionCreationView", () => {
     expect(test.view.entry("cat-misty")?.adoptedPetId).toBe("pet-adoption");
   });
 
+  it("does not start a second adoption while recovery remains finalizing", async () => {
+    const finalizing = adoptionSnapshot({ status: "finalizing" });
+    const test = adoptionPorts({
+      catalogs: [catalog(entry({ retrySessionId: "session-adoption" }))],
+      snapshot: async () => finalizing,
+    });
+    await test.view.open();
+
+    await expect(test.view.activate("cat-misty")).rejects.toThrow(/仍在完成|稍后重试/);
+
+    expect(test.ports.creation.recoverFinalization).toHaveBeenCalledTimes(1);
+    expect(test.ports.creation.adoptionStart).not.toHaveBeenCalled();
+    expect(test.ports.finalize).not.toHaveBeenCalled();
+  });
+
+  it("restores and locks the durable custom name for a retry session", async () => {
+    const retry = entry({ retrySessionId: "session-adoption" });
+    const test = adoptionPorts({
+      catalogs: [catalog(retry)],
+      snapshot: async () => adoptionSnapshot({ displayName: "小雾的名字" }),
+    });
+    await test.view.open();
+
+    await test.view.select("cat-misty");
+
+    expect(test.view.displayName()).toBe("小雾的名字");
+    expect(test.view.nameLocked()).toBe(true);
+  });
+
   it("refreshes durable catalog after finalize failure and preserves retry", async () => {
     const retry = entry({ retrySessionId: "session-adoption" });
     const test = adoptionPorts({
@@ -262,6 +385,24 @@ describe("AdoptionCreationView", () => {
     await expect(test.view.activate("cat-misty")).rejects.toThrow(/宠物窗口没有响应/);
 
     expect(test.view.entry("cat-misty")?.retrySessionId).toBe("session-adoption");
+    expect(test.view.entry("cat-misty")?.adoptedPetId).toBeNull();
+  });
+
+  it("refreshes durable catalog after an adopted switch fails", async () => {
+    const adopted = entry({ adoptedPetId: "pet-existing" });
+    const test = adoptionPorts({ catalogs: [catalog(adopted), catalog()] });
+    test.ports.switchPet.mockImplementation(async (): Promise<PetSwitchResult> => ({
+      ok: false,
+      requestId: "switch-failed",
+      petId: "pet-existing",
+      code: "target-not-found",
+      message: "宠物已被删除",
+    }));
+    await test.view.open();
+
+    await expect(test.view.activate("cat-misty")).rejects.toThrow(/宠物已被删除/);
+
+    expect(test.ports.creation.adoptionCatalog).toHaveBeenCalledTimes(2);
     expect(test.view.entry("cat-misty")?.adoptedPetId).toBeNull();
   });
 
@@ -328,9 +469,11 @@ describe("AdoptionCreationView", () => {
       textContent: "",
       value: "",
       disabled: false,
+      children: [] as unknown[],
       ownerDocument: {},
       setAttribute: vi.fn(),
       replaceChildren: vi.fn(),
+      append: vi.fn(),
     });
     const elements = {
       root: makeElement(),
@@ -359,7 +502,7 @@ describe("AdoptionCreationView", () => {
     test.view.destroy();
     test.view.destroy();
 
-    expect(added.map((spy) => spy.mock.calls.length)).toEqual([2, 2, 2, 2, 2]);
-    expect(removed.map((spy) => spy.mock.calls.length)).toEqual([2, 2, 2, 2, 2]);
+    expect(added.map((spy) => spy.mock.calls.length)).toEqual([4, 2, 2, 2, 2]);
+    expect(removed.map((spy) => spy.mock.calls.length)).toEqual([4, 2, 2, 2, 2]);
   });
 });

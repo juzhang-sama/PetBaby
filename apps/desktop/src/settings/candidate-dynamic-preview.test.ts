@@ -22,9 +22,11 @@ function fakeRenderer(): PetRenderer {
   };
 }
 
-function previewHarness() {
+function previewHarness(options: { reducedMotion?: boolean } = {}) {
   const callbacks = new Map<number, FrameRequestCallback>();
   const renderers: PetRenderer[] = [];
+  let reducedMotion = options.reducedMotion ?? false;
+  let reducedMotionListener: ((reduced: boolean) => void) | undefined;
   let nextFrame = 0;
   let resizeCallback: ResizeObserverCallback | undefined;
   const observer = { observe: vi.fn(), disconnect: vi.fn() };
@@ -51,6 +53,11 @@ function previewHarness() {
       return observer;
     }),
     devicePixelRatio: () => 2,
+    prefersReducedMotion: () => reducedMotion,
+    onReducedMotionChange: (listener: (reduced: boolean) => void) => {
+      reducedMotionListener = listener;
+      return () => { reducedMotionListener = undefined; };
+    },
   };
   return {
     root,
@@ -70,6 +77,10 @@ function previewHarness() {
     },
     queuedFrames() {
       return callbacks.size;
+    },
+    setReducedMotion(value: boolean) {
+      reducedMotion = value;
+      reducedMotionListener?.(value);
     },
   };
 }
@@ -132,6 +143,27 @@ describe("candidate dynamic preview", () => {
     expect(test.cancelAnimationFrame).toHaveBeenCalledOnce();
     expect(test.observer.disconnect).toHaveBeenCalledOnce();
     expect(test.renderer.destroy).toHaveBeenCalledOnce();
+  });
+
+  it("does not start idle animation or RAF under reduced motion and follows preference changes", async () => {
+    const test = previewHarness({ reducedMotion: true });
+    const handle = await mountCandidateDynamicPreview(
+      test.root,
+      "image",
+      validMotionProfile(),
+      test.ports,
+    );
+
+    expect(test.renderer.playMotion).not.toHaveBeenCalled();
+    expect(test.queuedFrames()).toBe(0);
+
+    test.setReducedMotion(false);
+    expect(test.renderer.playMotion).toHaveBeenCalledWith("idle", { loop: true });
+    expect(test.queuedFrames()).toBe(1);
+
+    test.setReducedMotion(true);
+    expect(test.queuedFrames()).toBe(0);
+    handle.destroy();
   });
 
   it("destroys the previous candidate before mounting a replacement", async () => {

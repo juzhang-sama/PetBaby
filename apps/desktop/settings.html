@@ -47,7 +47,7 @@
       <section id="upload-creation-workspace" class="wizard" aria-labelledby="wizard-title" hidden>
         <button type="button" class="workspace-back" data-creation-back>返回创建方式</button>
         <p class="wizard-kicker">上传创建 · 猫咪</p>
-        <h2 id="wizard-title">把一张照片变成桌面伙伴</h2>
+        <h2 id="wizard-title" data-creation-entry-focus tabindex="-1">把一张照片变成桌面伙伴</h2>
         <p class="wizard-intro">选择照片，等待生成，再确认会呼吸微动的候选。完成前不会替换当前宠物。</p>
         <div id="wizard-status" class="wizard-status" role="status" aria-live="polite"></div>
         <div class="wizard-step key-row">
@@ -108,7 +108,7 @@
         <button type="button" class="workspace-back" data-creation-back>返回创建方式</button>
         <header class="composer-heading">
           <p class="wizard-kicker">引导组合 · 猫咪工作台</p>
-          <h2 id="composer-title">亲手组合一只会呼吸的猫</h2>
+          <h2 id="composer-title" data-creation-entry-focus tabindex="-1">亲手组合一只会呼吸的猫</h2>
           <p>每次选择都会保存到本机。只有“已保存”时，关闭后才能从同一步继续。</p>
         </header>
         <div class="composer-layout">
@@ -146,7 +146,7 @@
         <button id="adoption-back" type="button" class="workspace-back">返回创建方式</button>
         <header class="adoption-heading">
           <p class="wizard-kicker">直接认领 · 本机猫咪目录</p>
-          <h2 id="adoption-title">先看看谁在等你</h2>
+          <h2 id="adoption-title" data-creation-entry-focus tabindex="-1">先看看谁在等你</h2>
           <p>目录固定保留八只猫。认领会复制成你自己的宠物，之后可以切换或删除，原始成品不会消失。</p>
         </header>
         <div id="adoption-root" class="adoption-layout" aria-busy="false">
@@ -167,7 +167,7 @@
             <div class="field-group">
               <label for="adoption-pet-name">给它取个名字</label>
               <input id="adoption-pet-name" type="text" autocomplete="off" aria-describedby="adoption-name-help" />
-              <p id="adoption-name-help" class="field-help">请输入 1–20 个完整字符；认领后仍会保留原始成品包。</p>
+              <p id="adoption-name-help" class="field-help">请输入 1–20 个完整字符；重试认领会沿用首次确认的名称并锁定。</p>
             </div>
             <button id="adoption-action" class="primary adoption-action" type="button" disabled>先选择一只猫</button>
             <div id="adoption-status" class="creation-inline-status" role="status" aria-live="polite">选择一只猫，先看看它呼吸微动的样子。</div>

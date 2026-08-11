@@ -164,7 +164,8 @@ body.settings-shell {
 
 .settings-shell button:focus-visible,
 .settings-shell input:focus-visible,
-.settings-shell select:focus-visible {
+.settings-shell select:focus-visible,
+.settings-shell [data-creation-entry-focus]:focus-visible {
   outline: 3px solid color-mix(in srgb, var(--pine) 42%, white);
   outline-offset: 2px;
 }
