@@ -15,7 +15,10 @@ use std::os::windows::{
 const MAX_COMPOSER_PNG_BYTES: usize = 10 * 1024 * 1024;
 const MAX_COMPOSER_B64_BYTES: usize = MAX_COMPOSER_PNG_BYTES.div_ceil(3) * 4;
 const MAX_COMPOSER_JSON_BYTES: u64 = 64 * 1024;
-const COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent.json";
+const LEGACY_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent.json";
+const RESERVED_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent-reserved.json";
+const OWNED_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent-owned.json";
+const COMPLETE_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent-complete.json";
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -127,8 +130,12 @@ pub struct PublishedComposerCandidate {
     _parent_guards: Vec<OwnedDirectoryGuard>,
     candidate_guard: Option<OwnedDirectoryGuard>,
     file_guards: Vec<std::fs::File>,
-    intent_path: PathBuf,
-    intent_guard: Option<std::fs::File>,
+    intent_files: Vec<OwnedIntentFile>,
+}
+
+struct OwnedIntentFile {
+    path: PathBuf,
+    guard: std::fs::File,
 }
 
 struct OwnedDirectoryGuard {
@@ -266,7 +273,7 @@ fn sha256_hex(bytes: &[u8]) -> String {
 impl PublishedComposerCandidate {
     pub fn commit(&mut self) {
         self.committed = true;
-        let _ = self.remove_intent();
+        let _ = self.remove_intents();
     }
 
     pub fn rollback(&mut self) -> Result<(), String> {
@@ -288,21 +295,13 @@ impl PublishedComposerCandidate {
                 "unpublished composer candidate remained after handle-relative deletion".into(),
             );
         }
-        self.remove_intent()?;
+        self.remove_intents()?;
         self.newly_published = false;
         Ok(())
     }
 
-    fn remove_intent(&mut self) -> Result<(), String> {
-        let Some(intent) = self.intent_guard.take() else {
-            return Ok(());
-        };
-        mark_file_delete(&intent)?;
-        drop(intent);
-        if std::fs::symlink_metadata(&self.intent_path).is_ok() {
-            return Err("composer publish intent remained after exact deletion".into());
-        }
-        Ok(())
+    fn remove_intents(&mut self) -> Result<(), String> {
+        delete_locked_intent_files(std::mem::take(&mut self.intent_files))
     }
 
     #[cfg(test)]
@@ -335,6 +334,8 @@ pub fn publish_composer_candidate(
         || {},
         |_| {},
         |_| {},
+        |_| {},
+        |_| {},
         || Ok(()),
     )
 }
@@ -355,6 +356,8 @@ pub fn publish_composer_candidate_with_hook(
         profile,
         recipe,
         hook,
+        |_| {},
+        |_| {},
         |_| {},
         |_| {},
         || Ok(()),
@@ -379,6 +382,8 @@ pub fn publish_composer_candidate_with_post_rename_hook(
         || {},
         |_| {},
         |_| {},
+        |_| {},
+        |_| {},
         hook,
     )
 }
@@ -400,8 +405,35 @@ pub fn publish_composer_candidate_with_staging_hooks(
         profile,
         recipe,
         || {},
+        |_| {},
+        |_| {},
         before_first_write,
         before_move,
+        || Ok(()),
+    )
+}
+
+#[cfg(test)]
+pub fn publish_composer_candidate_with_intent_phase_hooks(
+    app_data_dir: &Path,
+    session_id: &str,
+    png: &[u8],
+    profile: &MotionProfileV1,
+    recipe: &ComposerRecipe,
+    before_owned_intent: impl FnOnce(&Path),
+    before_complete_intent: impl FnOnce(&Path),
+) -> Result<PublishedComposerCandidate, String> {
+    publish_composer_candidate_inner(
+        app_data_dir,
+        session_id,
+        png,
+        profile,
+        recipe,
+        || {},
+        before_owned_intent,
+        before_complete_intent,
+        |_| {},
+        |_| {},
         || Ok(()),
     )
 }
@@ -413,6 +445,8 @@ fn publish_composer_candidate_inner(
     profile: &MotionProfileV1,
     recipe: &ComposerRecipe,
     before_publish: impl FnOnce(),
+    before_owned_intent: impl FnOnce(&Path),
+    before_complete_intent: impl FnOnce(&Path),
     before_first_write: impl FnOnce(&Path),
     before_move: impl FnOnce(&Path),
     after_rename: impl FnOnce() -> Result<(), String>,
@@ -433,9 +467,17 @@ fn publish_composer_candidate_inner(
         return Err("composer candidate already exists; exact recovery is required".into());
     }
 
-    let intent_path = session_dir.join(COMPOSER_INTENT_FILE);
-    if std::fs::symlink_metadata(&intent_path).is_ok() {
-        return Err("composer publish intent already exists; exact recovery is required".into());
+    for name in [
+        LEGACY_COMPOSER_INTENT_FILE,
+        RESERVED_COMPOSER_INTENT_FILE,
+        OWNED_COMPOSER_INTENT_FILE,
+        COMPLETE_COMPOSER_INTENT_FILE,
+    ] {
+        if std::fs::symlink_metadata(session_dir.join(name)).is_ok() {
+            return Err(
+                "composer publish intent already exists; exact recovery is required".into(),
+            );
+        }
     }
     let staging_name = format!(".candidate-stage-{}", new_entity_id("publish"));
     validate_component(staging_name.trim_start_matches('.'), "candidate staging id")?;
@@ -451,7 +493,11 @@ fn publish_composer_candidate_inner(
         directory_identity: None,
         file_identities: None,
     };
-    let mut intent_guard = replace_durable_intent(&session_dir, &intent_path, &intent, false)?;
+    let reserved_intent_path = session_dir.join(RESERVED_COMPOSER_INTENT_FILE);
+    let mut intent_files = vec![OwnedIntentFile {
+        path: reserved_intent_path.clone(),
+        guard: publish_durable_intent(&session_dir, &reserved_intent_path, &intent)?,
+    }];
     std::fs::create_dir(&staging)
         .map_err(|error| format!("create composer candidate staging directory: {error}"))?;
     let staging_guard = OwnedDirectoryGuard::open(&staging, "candidate staging")?;
@@ -460,8 +506,22 @@ fn publish_composer_candidate_inner(
     }
     intent.phase = Some(ComposerPublishPhase::Owned);
     intent.directory_identity = Some(staging_guard.identity);
-    drop(intent_guard);
-    intent_guard = replace_durable_intent(&session_dir, &intent_path, &intent, true)?;
+    let owned_intent_path = session_dir.join(OWNED_COMPOSER_INTENT_FILE);
+    before_owned_intent(&owned_intent_path);
+    match publish_durable_intent(&session_dir, &owned_intent_path, &intent) {
+        Ok(guard) => intent_files.push(OwnedIntentFile {
+            path: owned_intent_path,
+            guard,
+        }),
+        Err(error) => {
+            let cleanup = delete_locked_directory(staging_guard, Vec::new())
+                .and_then(|()| delete_locked_intent_files(intent_files));
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; owned phase cleanup failed: {cleanup}"),
+            });
+        }
+    }
     before_first_write(&staging);
 
     let mut file_guards = Vec::new();
@@ -493,7 +553,7 @@ fn publish_composer_candidate_inner(
             file_guards.clear();
             let cleanup = lock_owned_partial_file_set(&staging_guard)
                 .and_then(|files| delete_locked_directory(staging_guard, files))
-                .and_then(|()| delete_locked_file(intent_guard, &intent_path));
+                .and_then(|()| delete_locked_intent_files(intent_files));
             return Err(match cleanup {
                 Ok(()) => error,
                 Err(cleanup) => format!("{error}; staging cleanup failed: {cleanup}"),
@@ -502,8 +562,24 @@ fn publish_composer_candidate_inner(
     };
     intent.phase = Some(ComposerPublishPhase::Complete);
     intent.file_identities = Some(source_file_identities.clone());
-    drop(intent_guard);
-    intent_guard = replace_durable_intent(&session_dir, &intent_path, &intent, true)?;
+    let complete_intent_path = session_dir.join(COMPLETE_COMPOSER_INTENT_FILE);
+    before_complete_intent(&complete_intent_path);
+    match publish_durable_intent(&session_dir, &complete_intent_path, &intent) {
+        Ok(guard) => intent_files.push(OwnedIntentFile {
+            path: complete_intent_path,
+            guard,
+        }),
+        Err(error) => {
+            file_guards.clear();
+            let cleanup = lock_owned_partial_file_set(&staging_guard)
+                .and_then(|files| delete_locked_directory(staging_guard, files))
+                .and_then(|()| delete_locked_intent_files(intent_files));
+            return Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; complete phase cleanup failed: {cleanup}"),
+            });
+        }
+    }
 
     file_guards.clear();
     let staged_identity = staging_guard.identity;
@@ -580,9 +656,8 @@ fn publish_composer_candidate_inner(
         let cleanup = delete_published_directory(
             candidate_guard,
             final_file_guards,
-            intent_guard,
+            intent_files,
             &candidate_dir,
-            &intent_path,
         );
         return Err(match cleanup {
             Ok(()) => error,
@@ -595,8 +670,7 @@ fn publish_composer_candidate_inner(
         vec![app_data_guard, sessions_guard, session_guard],
         candidate_guard,
         final_file_guards,
-        intent_path,
-        intent_guard,
+        intent_files,
     ))
 }
 
@@ -606,8 +680,7 @@ fn candidate_projection(
     parent_guards: Vec<OwnedDirectoryGuard>,
     candidate_guard: OwnedDirectoryGuard,
     file_guards: Vec<std::fs::File>,
-    intent_path: PathBuf,
-    intent_guard: std::fs::File,
+    intent_files: Vec<OwnedIntentFile>,
 ) -> PublishedComposerCandidate {
     PublishedComposerCandidate {
         body_path: candidate_dir.join("body.png"),
@@ -618,9 +691,114 @@ fn candidate_projection(
         _parent_guards: parent_guards,
         candidate_guard: Some(candidate_guard),
         file_guards,
-        intent_path,
-        intent_guard: Some(intent_guard),
+        intent_files,
     }
+}
+
+struct LockedIntentChain {
+    files: Vec<OwnedIntentFile>,
+    highest: ComposerPublishIntent,
+}
+
+fn load_locked_intent_chain(
+    session_dir: &Path,
+    session_id: &str,
+    expected_profile: &MotionProfileV1,
+    expected_recipe: &ComposerRecipe,
+) -> Result<Option<LockedIntentChain>, String> {
+    let legacy_path = session_dir.join(LEGACY_COMPOSER_INTENT_FILE);
+    match std::fs::symlink_metadata(&legacy_path) {
+        Ok(_) => {
+            return Err(
+                "legacy composer publish intent lacks immutable phase ownership and was preserved"
+                    .into(),
+            )
+        }
+        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+        Err(error) => return Err(format!("inspect legacy composer publish intent: {error}")),
+    }
+
+    let mut files = Vec::new();
+    let mut intents = Vec::new();
+    let mut missing_phase = false;
+    for (expected_phase, name) in [
+        (
+            ComposerPublishPhase::Reserved,
+            RESERVED_COMPOSER_INTENT_FILE,
+        ),
+        (ComposerPublishPhase::Owned, OWNED_COMPOSER_INTENT_FILE),
+        (
+            ComposerPublishPhase::Complete,
+            COMPLETE_COMPOSER_INTENT_FILE,
+        ),
+    ] {
+        let path = session_dir.join(name);
+        match std::fs::symlink_metadata(&path) {
+            Ok(_) if missing_phase => {
+                return Err(format!(
+                    "composer publish intent phase prefix is incomplete before {expected_phase:?}; preserved"
+                ));
+            }
+            Ok(_) => {}
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                missing_phase = true;
+                continue;
+            }
+            Err(error) => {
+                return Err(format!(
+                    "inspect {expected_phase:?} composer publish intent: {error}"
+                ))
+            }
+        }
+        let (guard, bytes) = lock_bounded_regular_file(
+            &path,
+            session_dir,
+            &format!("{expected_phase:?} composer publish intent"),
+            32 * 1024,
+        )?;
+        let intent: ComposerPublishIntent = serde_json::from_slice(&bytes).map_err(|error| {
+            format!(
+                "{expected_phase:?} composer publish intent is invalid and was preserved: {error}"
+            )
+        })?;
+        let actual_phase =
+            validate_publish_intent(&intent, session_id, expected_profile, expected_recipe)?;
+        if actual_phase != expected_phase {
+            return Err(format!(
+                "composer publish intent file contains the wrong phase {actual_phase:?}; preserved"
+            ));
+        }
+        files.push(OwnedIntentFile { path, guard });
+        intents.push(intent);
+    }
+    if intents.is_empty() {
+        return Ok(None);
+    }
+    let reserved = &intents[0];
+    for intent in intents.iter().skip(1) {
+        if intent.version != reserved.version
+            || intent.session_id != reserved.session_id
+            || intent.stage_name != reserved.stage_name
+            || intent.body_sha256 != reserved.body_sha256
+            || intent.profile_sha256 != reserved.profile_sha256
+            || intent.recipe_sha256 != reserved.recipe_sha256
+        {
+            return Err(
+                "composer publish intent phase records do not share one immutable prefix; preserved"
+                    .into(),
+            );
+        }
+    }
+    if intents.len() == 3 && intents[1].directory_identity != intents[2].directory_identity {
+        return Err(
+            "composer publish intent complete phase changed its owned directory identity; preserved"
+                .into(),
+        );
+    }
+    Ok(Some(LockedIntentChain {
+        files,
+        highest: intents.pop().expect("non-empty intent chain"),
+    }))
 }
 
 fn validate_publish_intent(
@@ -736,10 +914,14 @@ pub fn recover_exact_composer_orphan(
     if session_guard.path.parent() != Some(sessions_guard.path.as_path()) {
         return Err("creation session directory escapes creation sessions".into());
     }
-    let intent_path = session_guard.path.join(COMPOSER_INTENT_FILE);
-    match std::fs::symlink_metadata(&intent_path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+    let chain = match load_locked_intent_chain(
+        &session_guard.path,
+        session_id,
+        expected_profile,
+        expected_recipe,
+    )? {
+        Some(chain) => chain,
+        None => {
             if std::fs::symlink_metadata(session_guard.path.join("candidate")).is_ok() {
                 return Err(
                     "composer candidate exists without an exact durable publish intent".into(),
@@ -747,17 +929,12 @@ pub fn recover_exact_composer_orphan(
             }
             return Ok(false);
         }
-        Err(error) => return Err(format!("inspect composer publish intent: {error}")),
-    }
-    let (intent_guard, intent_bytes) = lock_bounded_regular_file(
-        &intent_path,
-        &session_guard.path,
-        "composer publish intent",
-        16 * 1024,
-    )?;
-    let intent: ComposerPublishIntent = serde_json::from_slice(&intent_bytes)
-        .map_err(|error| format!("composer publish intent is invalid: {error}"))?;
-    let phase = validate_publish_intent(&intent, session_id, expected_profile, expected_recipe)?;
+    };
+    let phase = chain
+        .highest
+        .phase
+        .expect("validated intent chain has a phase");
+    let intent = &chain.highest;
     let candidate_path = session_guard.path.join("candidate");
     let stage_path = session_guard.path.join(&intent.stage_name);
     let candidate_exists = std::fs::symlink_metadata(&candidate_path).is_ok();
@@ -792,7 +969,7 @@ pub fn recover_exact_composer_orphan(
             } else if stage_exists {
                 &stage_path
             } else {
-                delete_locked_file(intent_guard, &intent_path)?;
+                delete_locked_intent_files(chain.files)?;
                 return Ok(true);
             };
             if phase == ComposerPublishPhase::Owned && candidate_exists {
@@ -810,7 +987,7 @@ pub fn recover_exact_composer_orphan(
             delete_locked_directory(directory, files)?;
         }
     }
-    delete_locked_file(intent_guard, &intent_path)?;
+    delete_locked_intent_files(chain.files)?;
     drop((session_guard, sessions_guard, app_data_guard));
     Ok(true)
 }
@@ -835,21 +1012,17 @@ pub fn clear_committed_composer_publish_intent(
     if session_guard.path.parent() != Some(sessions_guard.path.as_path()) {
         return Err("creation session directory escapes creation sessions".into());
     }
-    let intent_path = session_guard.path.join(COMPOSER_INTENT_FILE);
-    match std::fs::symlink_metadata(&intent_path) {
-        Ok(_) => {}
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => return Ok(false),
-        Err(error) => return Err(format!("inspect composer publish intent: {error}")),
-    }
-    let (intent_guard, intent_bytes) = lock_bounded_regular_file(
-        &intent_path,
+    let chain = match load_locked_intent_chain(
         &session_guard.path,
-        "composer publish intent",
-        32 * 1024,
-    )?;
-    let intent: ComposerPublishIntent = serde_json::from_slice(&intent_bytes)
-        .map_err(|error| format!("composer publish intent is invalid: {error}"))?;
-    let phase = validate_publish_intent(&intent, session_id, expected_profile, expected_recipe)?;
+        session_id,
+        expected_profile,
+        expected_recipe,
+    )? {
+        Some(chain) => chain,
+        None => return Ok(false),
+    };
+    let intent = &chain.highest;
+    let phase = intent.phase.expect("validated intent chain has a phase");
     if phase != ComposerPublishPhase::Complete {
         return Err("committed composer candidate lacks a complete durable intent".into());
     }
@@ -878,7 +1051,7 @@ pub fn clear_committed_composer_publish_intent(
     // `candidate`. Any object later appearing at the old random stage name has a
     // different identity and is deliberately preserved as unknown while the stale
     // intent can still be retired.
-    delete_locked_file(intent_guard, &intent_path)?;
+    delete_locked_intent_files(chain.files)?;
     Ok(true)
 }
 
@@ -1169,11 +1342,10 @@ fn lock_owned_partial_file_set(
     }
 }
 
-fn replace_durable_intent(
+fn publish_durable_intent(
     session_dir: &Path,
     intent_path: &Path,
     intent: &ComposerPublishIntent,
-    replace_existing: bool,
 ) -> Result<std::fs::File, String> {
     let bytes = serde_json::to_vec_pretty(intent).map_err(|error| error.to_string())?;
     if bytes.len() > 32 * 1024 {
@@ -1185,11 +1357,7 @@ fn replace_durable_intent(
     ));
     let temp_guard = write_new_synced_file(&temp_path, &bytes)?;
     let temp_identity = file_identity(&temp_guard)?;
-    let moved = if replace_existing {
-        crate::platform::durable_replace_file(&temp_path, intent_path)
-    } else {
-        crate::platform::durable_move_file(&temp_path, intent_path)
-    };
+    let moved = crate::platform::durable_move_file(&temp_path, intent_path);
     if let Err(error) = moved {
         let cleanup = delete_locked_file(temp_guard, &temp_path);
         return Err(match cleanup {
@@ -1364,9 +1532,8 @@ fn delete_locked_file(file: std::fs::File, path: &Path) -> Result<(), String> {
 fn delete_published_directory(
     candidate: OwnedDirectoryGuard,
     mut files: Vec<std::fs::File>,
-    intent: std::fs::File,
+    intent_files: Vec<OwnedIntentFile>,
     candidate_path: &Path,
-    intent_path: &Path,
 ) -> Result<(), String> {
     for file in &files {
         mark_file_delete(file)?;
@@ -1377,7 +1544,27 @@ fn delete_published_directory(
     if std::fs::symlink_metadata(candidate_path).is_ok() {
         return Err("exact published composer candidate remained after deletion".into());
     }
-    delete_locked_file(intent, intent_path)
+    delete_locked_intent_files(intent_files)
+}
+
+fn delete_locked_intent_files(intent_files: Vec<OwnedIntentFile>) -> Result<(), String> {
+    for intent in &intent_files {
+        mark_file_delete(&intent.guard)?;
+    }
+    let paths = intent_files
+        .iter()
+        .map(|intent| intent.path.clone())
+        .collect::<Vec<_>>();
+    drop(intent_files);
+    for path in paths {
+        if std::fs::symlink_metadata(&path).is_ok() {
+            return Err(format!(
+                "composer publish intent remained after exact deletion: {}",
+                path.display()
+            ));
+        }
+    }
+    Ok(())
 }
 
 fn delete_locked_directory(
@@ -1464,6 +1651,18 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+    fn assert_no_phase_intents(session_dir: &Path) {
+        for name in [
+            RESERVED_COMPOSER_INTENT_FILE,
+            OWNED_COMPOSER_INTENT_FILE,
+            COMPLETE_COMPOSER_INTENT_FILE,
+        ] {
+            assert!(
+                !session_dir.join(name).exists(),
+                "immutable intent phase remained: {name}"
+            );
+        }
+    }
 
     struct ComposerCandidateHarness {
         root: PathBuf,
@@ -1616,7 +1815,18 @@ mod tests {
     ) {
         let profile = serde_json::to_vec_pretty(profile).unwrap();
         let recipe = serde_json::to_vec_pretty(recipe).unwrap();
-        let intent = serde_json::json!({
+        let reserved = serde_json::json!({
+            "version": 2,
+            "phase": "reserved",
+            "sessionId": session_id,
+            "stageName": stage_name,
+            "bodySha256": sha256_hex(body),
+            "profileSha256": sha256_hex(&profile),
+            "recipeSha256": sha256_hex(&recipe),
+            "directoryIdentity": null,
+            "fileIdentities": null,
+        });
+        let owned = serde_json::json!({
             "version": 2,
             "phase": "owned",
             "sessionId": session_id,
@@ -1631,8 +1841,41 @@ mod tests {
             "fileIdentities": null,
         });
         std::fs::write(
-            session_dir.join(COMPOSER_INTENT_FILE),
-            serde_json::to_vec_pretty(&intent).unwrap(),
+            session_dir.join(RESERVED_COMPOSER_INTENT_FILE),
+            serde_json::to_vec_pretty(&reserved).unwrap(),
+        )
+        .unwrap();
+        std::fs::write(
+            session_dir.join(OWNED_COMPOSER_INTENT_FILE),
+            serde_json::to_vec_pretty(&owned).unwrap(),
+        )
+        .unwrap();
+    }
+
+    fn write_v2_reserved_intent(
+        session_dir: &Path,
+        session_id: &str,
+        stage_name: &str,
+        body: &[u8],
+        profile: &MotionProfileV1,
+        recipe: &ComposerRecipe,
+    ) {
+        let profile = serde_json::to_vec_pretty(profile).unwrap();
+        let recipe = serde_json::to_vec_pretty(recipe).unwrap();
+        let reserved = serde_json::json!({
+            "version": 2,
+            "phase": "reserved",
+            "sessionId": session_id,
+            "stageName": stage_name,
+            "bodySha256": sha256_hex(body),
+            "profileSha256": sha256_hex(&profile),
+            "recipeSha256": sha256_hex(&recipe),
+            "directoryIdentity": null,
+            "fileIdentities": null,
+        });
+        std::fs::write(
+            session_dir.join(RESERVED_COMPOSER_INTENT_FILE),
+            serde_json::to_vec_pretty(&reserved).unwrap(),
         )
         .unwrap();
     }
@@ -1813,6 +2056,7 @@ mod tests {
             .unwrap();
         assert_eq!(first.snapshot.candidate_id, second.snapshot.candidate_id);
         assert_eq!(test.candidate_count(), 1);
+        assert_no_phase_intents(&test.root.join("creation-sessions").join(&test.session_id));
 
         let failing = ComposerCandidateHarness::new();
         failing
@@ -1843,6 +2087,12 @@ mod tests {
                 .unwrap()
                 .status,
             CreationSessionStatus::Draft
+        );
+        assert_no_phase_intents(
+            &failing
+                .root
+                .join("creation-sessions")
+                .join(&failing.session_id),
         );
     }
 
@@ -1975,7 +2225,123 @@ mod tests {
         );
         let session = test.root.join("creation-sessions").join(&test.session_id);
         assert!(session.join("candidate/body.png").is_file());
-        assert!(!session.join(COMPOSER_INTENT_FILE).exists());
+        assert_no_phase_intents(&session);
+    }
+
+    #[test]
+    fn startup_recovery_cleans_a_crash_after_reserved_intent_and_empty_stage() {
+        let test = ComposerCandidateHarness::new();
+        let body = decode_composer_png(&valid_candidate_b64()).unwrap().bytes;
+        let profile = production_profile(&test.recipe);
+        let session = test.root.join("creation-sessions").join(&test.session_id);
+        std::fs::create_dir_all(&session).unwrap();
+        let stage_name = ".candidate-stage-reserved-crash";
+        let stage = session.join(stage_name);
+        std::fs::create_dir(&stage).unwrap();
+        write_v2_reserved_intent(
+            &session,
+            &test.session_id,
+            stage_name,
+            &body,
+            &profile,
+            &test.recipe,
+        );
+
+        let first = test.service.recover_composer_orphans().unwrap();
+        let second = test.service.recover_composer_orphans().unwrap();
+
+        assert_eq!(first.recovered_count, 1, "{:?}", first.warnings);
+        assert!(first.warnings.is_empty());
+        assert_eq!(second.recovered_count, 0);
+        assert!(!stage.exists());
+        assert_no_phase_intents(&session);
+    }
+
+    #[test]
+    fn startup_recovery_preserves_an_unknown_phase_sentinel_and_warns() {
+        let test = ComposerCandidateHarness::new();
+        let session = test.root.join("creation-sessions").join(&test.session_id);
+        std::fs::create_dir_all(&session).unwrap();
+        let sentinel = session.join(OWNED_COMPOSER_INTENT_FILE);
+        std::fs::write(&sentinel, b"unknown-phase-sentinel").unwrap();
+
+        let report = test.service.recover_composer_orphans().unwrap();
+
+        assert_eq!(report.recovered_count, 0);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("intent") || warning.contains("prefix")),
+            "{:?}",
+            report.warnings
+        );
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"unknown-phase-sentinel");
+    }
+
+    #[test]
+    fn startup_recovery_preserves_a_legacy_single_intent_and_warns() {
+        let test = ComposerCandidateHarness::new();
+        let session = test.root.join("creation-sessions").join(&test.session_id);
+        std::fs::create_dir_all(&session).unwrap();
+        let sentinel = session.join(LEGACY_COMPOSER_INTENT_FILE);
+        std::fs::write(&sentinel, b"legacy-intent-sentinel").unwrap();
+
+        let report = test.service.recover_composer_orphans().unwrap();
+
+        assert_eq!(report.recovered_count, 0);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("legacy") && warning.contains("preserved")),
+            "{:?}",
+            report.warnings
+        );
+        assert_eq!(std::fs::read(sentinel).unwrap(), b"legacy-intent-sentinel");
+    }
+
+    #[test]
+    fn startup_recovery_preserves_inconsistent_immutable_phase_records() {
+        let test = ComposerCandidateHarness::new();
+        let body = decode_composer_png(&valid_candidate_b64()).unwrap().bytes;
+        let profile = production_profile(&test.recipe);
+        let session = test.root.join("creation-sessions").join(&test.session_id);
+        let stage_name = ".candidate-stage-inconsistent-prefix";
+        let stage = session.join(stage_name);
+        std::fs::create_dir_all(&stage).unwrap();
+        let identity = OwnedDirectoryGuard::open(&stage, "inconsistent staging")
+            .unwrap()
+            .identity;
+        write_v2_owned_intent(
+            &session,
+            &test.session_id,
+            stage_name,
+            identity,
+            &body,
+            &profile,
+            &test.recipe,
+        );
+        let owned_path = session.join(OWNED_COMPOSER_INTENT_FILE);
+        let mut owned: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&owned_path).unwrap()).unwrap();
+        owned["bodySha256"] = serde_json::Value::String("f".repeat(64));
+        std::fs::write(&owned_path, serde_json::to_vec_pretty(&owned).unwrap()).unwrap();
+
+        let report = test.service.recover_composer_orphans().unwrap();
+
+        assert_eq!(report.recovered_count, 0);
+        assert!(
+            report
+                .warnings
+                .iter()
+                .any(|warning| warning.contains("immutable prefix")),
+            "{:?}",
+            report.warnings
+        );
+        assert!(stage.is_dir());
+        assert!(session.join(RESERVED_COMPOSER_INTENT_FILE).is_file());
+        assert!(owned_path.is_file());
     }
 
     #[test]
@@ -2023,10 +2389,7 @@ mod tests {
             );
             assert_eq!(second.recovered_count, 0, "case {file_case}");
             assert!(!stage.exists(), "case {file_case}");
-            assert!(
-                !session.join(COMPOSER_INTENT_FILE).exists(),
-                "case {file_case}"
-            );
+            assert_no_phase_intents(&session);
         }
     }
 
@@ -2153,7 +2516,7 @@ mod tests {
         assert!(candidate
             .parent()
             .unwrap()
-            .join(COMPOSER_INTENT_FILE)
+            .join(COMPLETE_COMPOSER_INTENT_FILE)
             .exists());
     }
 
@@ -2186,12 +2549,18 @@ mod tests {
             ))
             .unwrap();
         let session = test.root.join("creation-sessions").join(&test.session_id);
-        assert!(session.join(COMPOSER_INTENT_FILE).is_file());
+        for name in [
+            RESERVED_COMPOSER_INTENT_FILE,
+            OWNED_COMPOSER_INTENT_FILE,
+            COMPLETE_COMPOSER_INTENT_FILE,
+        ] {
+            assert!(session.join(name).is_file(), "missing intent phase {name}");
+        }
 
         let report = test.service.recover_composer_orphans().unwrap();
 
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-        assert!(!session.join(COMPOSER_INTENT_FILE).exists());
+        assert_no_phase_intents(&session);
         assert!(session.join("candidate/body.png").is_file());
         assert_eq!(
             test.service.snapshot(&test.session_id).unwrap().status,
@@ -2215,9 +2584,10 @@ mod tests {
             )
             .unwrap();
         let session = test.root.join("creation-sessions").join(&test.session_id);
-        let intent: ComposerPublishIntent =
-            serde_json::from_slice(&std::fs::read(session.join(COMPOSER_INTENT_FILE)).unwrap())
-                .unwrap();
+        let intent: ComposerPublishIntent = serde_json::from_slice(
+            &std::fs::read(session.join(COMPLETE_COMPOSER_INTENT_FILE)).unwrap(),
+        )
+        .unwrap();
         published.simulate_process_exit_before_database_commit();
         drop(published);
         let unknown_stage = session.join(intent.stage_name);
@@ -2227,7 +2597,7 @@ mod tests {
         let report = test.service.recover_composer_orphans().unwrap();
 
         assert!(report.warnings.is_empty(), "{:?}", report.warnings);
-        assert!(!session.join(COMPOSER_INTENT_FILE).exists());
+        assert_no_phase_intents(&session);
         assert_eq!(
             std::fs::read(unknown_stage.join("sentinel.txt")).unwrap(),
             b"unknown"
@@ -2577,6 +2947,67 @@ mod tests {
         );
         assert!(outside.join("sentinel.txt").exists());
         assert!(moved.join("body.png").exists());
+    }
+
+    #[test]
+    fn owned_intent_publish_never_replaces_an_unknown_competitor_file() {
+        let test = ComposerCandidateHarness::new();
+        let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+        let profile = production_profile(&test.recipe);
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None::<PathBuf>));
+        let observed_in_hook = observed.clone();
+
+        let result = publish_composer_candidate_with_intent_phase_hooks(
+            &test.root,
+            &test.session_id,
+            &decoded.bytes,
+            &profile,
+            &test.recipe,
+            move |path| {
+                if path.exists() {
+                    std::fs::remove_file(path).unwrap();
+                }
+                std::fs::write(path, b"unknown-owned-sentinel").unwrap();
+                *observed_in_hook.lock().unwrap() = Some(path.to_path_buf());
+            },
+            |_| {},
+        );
+
+        assert!(result.is_err(), "unknown owned intent target was replaced");
+        let path = observed.lock().unwrap().clone().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"unknown-owned-sentinel");
+    }
+
+    #[test]
+    fn complete_intent_publish_never_replaces_an_unknown_competitor_file() {
+        let test = ComposerCandidateHarness::new();
+        let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+        let profile = production_profile(&test.recipe);
+        let observed = std::sync::Arc::new(std::sync::Mutex::new(None::<PathBuf>));
+        let observed_in_hook = observed.clone();
+
+        let result = publish_composer_candidate_with_intent_phase_hooks(
+            &test.root,
+            &test.session_id,
+            &decoded.bytes,
+            &profile,
+            &test.recipe,
+            |_| {},
+            move |path| {
+                if path.exists() {
+                    std::fs::remove_file(path).unwrap();
+                }
+                std::fs::write(path, b"unknown-complete-sentinel").unwrap();
+                *observed_in_hook.lock().unwrap() = Some(path.to_path_buf());
+            },
+        );
+
+        assert!(
+            result.is_err(),
+            "unknown complete intent target was replaced"
+        );
+        let path = observed.lock().unwrap().clone().unwrap();
+        assert_eq!(std::fs::read(path).unwrap(), b"unknown-complete-sentinel");
     }
 
     #[test]
