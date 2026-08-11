@@ -3939,7 +3939,7 @@ mod tests {
 
     #[test]
     fn non_windows_file_creation_is_a_separate_compile_time_fail_closed_implementation() {
-        let candidate = include_str!("candidate.rs");
+        let candidate = include_str!("candidate.rs").replace("\r\n", "\n");
         let function = ["fn write_new", "_synced_file("].concat();
         let windows = ["#[cfg(windows)]", "\n", "fn write_new", "_synced_file"].concat();
         let other = ["#[cfg(not(windows))]", "\n", "fn write_new", "_synced_file"].concat();
