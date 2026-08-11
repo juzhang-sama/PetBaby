@@ -67,6 +67,13 @@ pub(crate) fn durable_replace_file(
     durable_move(source, target, true)
 }
 
+pub(crate) fn durable_move_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    durable_move(source, target, false)
+}
+
 pub(crate) fn durable_move_directory(
     source: &std::path::Path,
     target: &std::path::Path,

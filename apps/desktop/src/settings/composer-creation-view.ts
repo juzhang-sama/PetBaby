@@ -445,6 +445,7 @@ export class ComposerCreationView {
   canCreateCandidate(): boolean {
     return this.persistence === "saved"
       && this.composer !== null
+      && this.recipeAssetsAvailable(this.composer.recipe())
       && (this.snapshotValue?.status === "draft" || isCandidateLocked(this.snapshotValue));
   }
 
@@ -886,6 +887,9 @@ function probeAsset(ports: ComposerCreationPorts, path: string): Promise<boolean
   if (existing) return existing;
   const flight = ports.assetAvailable(path).catch(() => false);
   cache.set(path, flight);
+  void flight.finally(() => {
+    if (cache?.get(path) === flight) cache.delete(path);
+  });
   return flight;
 }
 

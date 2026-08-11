@@ -72,6 +72,21 @@ pub(crate) fn durable_replace_file(
     }
 }
 
+pub(crate) fn durable_move_file(
+    source: &std::path::Path,
+    target: &std::path::Path,
+) -> Result<(), String> {
+    #[cfg(target_os = "windows")]
+    {
+        windows::durable_move_file(source, target)
+    }
+    #[cfg(not(target_os = "windows"))]
+    {
+        let _ = (source, target);
+        Err("durable no-replace file move currently requires Windows".into())
+    }
+}
+
 pub(crate) fn durable_move_directory(
     source: &std::path::Path,
     target: &std::path::Path,

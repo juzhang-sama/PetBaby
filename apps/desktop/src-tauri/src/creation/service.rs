@@ -380,9 +380,6 @@ impl CreationService {
                     "SELECT cs.session_id, cs.pet_id
                      FROM creation_sessions cs
                      WHERE cs.method='composer'
-                       AND (cs.status='candidateReady' OR
-                            (cs.status='retryableFailure' AND
-                             cs.last_stable_status='candidateReady'))
                        AND EXISTS (SELECT 1 FROM appearance_variants av
                                    WHERE av.session_id=cs.session_id
                                      AND av.pet_id=cs.pet_id AND av.job_id IS NULL)
@@ -419,10 +416,6 @@ impl CreationService {
                 if snapshot.method != CreationMethod::Composer
                     || snapshot.pet_id != pet_id
                     || snapshot.candidate_id.is_none()
-                    || !(snapshot.status == CreationSessionStatus::CandidateReady
-                        || (snapshot.status == CreationSessionStatus::RetryableFailure
-                            && snapshot.last_stable_status
-                                == CreationSessionStatus::CandidateReady))
                 {
                     return Ok(false);
                 }
@@ -446,8 +439,15 @@ impl CreationService {
                         )?;
                         Ok(false)
                     }
-                    None => CreationStore::new(self.storage.clone())
-                        .revert_missing_local_composer_candidate(&session_id),
+                    None if snapshot.status == CreationSessionStatus::CandidateReady
+                        || (snapshot.status == CreationSessionStatus::RetryableFailure
+                            && snapshot.last_stable_status
+                                == CreationSessionStatus::CandidateReady) =>
+                    {
+                        CreationStore::new(self.storage.clone())
+                            .revert_missing_local_composer_candidate(&session_id)
+                    }
+                    None => Ok(false),
                 }
             })();
             match result {

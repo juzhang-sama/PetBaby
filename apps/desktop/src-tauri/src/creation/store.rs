@@ -502,6 +502,14 @@ impl CreationStore {
                 return Err(format!("{label} must be a regular file"));
             }
         }
+        let body_path_text = body_path
+            .to_str()
+            .ok_or("composer candidate body path is not valid Unicode")?
+            .to_owned();
+        let motion_profile_path_text = motion_profile_path
+            .to_str()
+            .ok_or("composer motion profile path is not valid Unicode")?
+            .to_owned();
         let candidate_id = crate::creation::domain::new_entity_id("candidate");
         let created_at = profiles::now_iso();
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
@@ -551,8 +559,8 @@ impl CreationStore {
                 candidate_id,
                 pet_id,
                 session_id,
-                body_path.to_string_lossy(),
-                motion_profile_path.to_string_lossy(),
+                &body_path_text,
+                &motion_profile_path_text,
                 created_at,
             ],
         )
@@ -575,8 +583,8 @@ impl CreationStore {
             session_id: session_id.into(),
             pet_id,
             job_id: None,
-            body_path: body_path.to_string_lossy().into_owned(),
-            motion_profile_path: motion_profile_path.to_string_lossy().into_owned(),
+            body_path: body_path_text,
+            motion_profile_path: motion_profile_path_text,
             quality: "acceptable".into(),
             created_at,
         })

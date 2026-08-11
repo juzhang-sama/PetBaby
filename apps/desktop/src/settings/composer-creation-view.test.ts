@@ -800,6 +800,53 @@ describe("ComposerCreationView", () => {
     vi.unstubAllGlobals();
   });
 
+  it("reprobes a temporarily unavailable asset after destroy and reopen", async () => {
+    stubComposerDocument();
+    const test = composerPorts();
+    let healthy = false;
+    const assetAvailable = vi.fn(async () => healthy);
+    Object.assign(test.ports, { assetAvailable });
+    const first = new ComposerCreationView(test.ports);
+    await first.open();
+    const firstElements = composerElements();
+    first.mount(firstElements.typed);
+    expect(firstElements.raw.options.children[0]!.getAttribute("aria-disabled")).toBe("true");
+
+    first.destroy();
+    healthy = true;
+    const reopened = new ComposerCreationView(test.ports);
+    await reopened.open();
+    const reopenedElements = composerElements();
+    reopened.mount(reopenedElements.typed);
+
+    expect(reopenedElements.raw.options.children[0]!.getAttribute("aria-disabled")).toBe("false");
+    expect(assetAvailable).toHaveBeenCalledTimes(2 * composerAssetCount(pack()));
+    vi.unstubAllGlobals();
+  });
+
+  it("disables candidate generation while the current recipe contains an unhealthy asset", async () => {
+    stubComposerDocument();
+    const manifest = pack();
+    const body = manifest.bodies[0]!;
+    const recipe = {
+      recipeVersion: 1, packId: manifest.packId, packVersion: manifest.packVersion,
+      layerContractVersion: manifest.layerContractVersion, bodyId: body.id,
+      ...body.defaults,
+    };
+    const test = composerPorts({ draft: snapshot({ recipe, currentStep: "name" }) });
+    Object.assign(test.ports, {
+      assetAvailable: vi.fn(async (path: string) => path !== "parts/ears/ears-round.png"),
+    });
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    const elements = composerElements();
+    view.mount(elements.typed);
+
+    expect(view.canCreateCandidate()).toBe(false);
+    expect(elements.raw.candidateButton.disabled).toBe(true);
+    vi.unstubAllGlobals();
+  });
+
   it("renders visual swatches for colors and the no-pattern choice", async () => {
     stubComposerDocument();
     const manifest = pack();
@@ -853,3 +900,16 @@ describe("ComposerCreationView", () => {
     expect(css).toContain("transform: scale(");
   });
 });
+
+function composerAssetCount(manifest: ReturnType<typeof pack>): number {
+  const paths = new Set<string>();
+  const add = (value?: string | null) => { if (value) paths.add(value); };
+  for (const part of [...manifest.bodies, ...manifest.ears, ...manifest.muzzles, ...manifest.tails]) {
+    add(part.image); add(part.colorMask); add(part.patternMask);
+  }
+  for (const eyes of manifest.eyes) {
+    add(eyes.openImage); add(eyes.closedImage); add(eyes.colorMask); add(eyes.patternMask);
+  }
+  for (const pattern of manifest.patterns) add(pattern.image);
+  return paths.size;
+}
