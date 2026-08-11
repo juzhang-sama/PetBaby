@@ -5,6 +5,7 @@ use crate::creation::domain::{
 };
 use crate::creation::name::normalize_display_name;
 use crate::creation::store::CreationStore;
+use crate::pets::active::BUILTIN_PET_ID;
 use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
 use crate::pets::repository::PetRepository;
 use crate::runtime_assets::motion_profile::parse_motion_profile;
@@ -31,6 +32,49 @@ const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
 const MAX_THUMBNAIL_BYTES: u64 = 5 * 1024 * 1024;
 const MAX_MOTION_PROFILE_BYTES: u64 = 64 * 1024;
 const MAX_PERSONALITY_GRAPHEMES: usize = 200;
+
+static ADOPTION_PUBLICATION_LOCK: std::sync::OnceLock<Mutex<()>> = std::sync::OnceLock::new();
+
+#[cfg(test)]
+thread_local! {
+    static TEST_RESERVATION_BARRIER: std::cell::RefCell<Option<Arc<std::sync::Barrier>>> =
+        const { std::cell::RefCell::new(None) };
+    static TEST_UNIQUE_LOSER_COUNTER: std::cell::RefCell<Option<Arc<std::sync::atomic::AtomicUsize>>> =
+        const { std::cell::RefCell::new(None) };
+}
+
+#[cfg(test)]
+fn set_thread_adoption_reservation_barrier(
+    barrier: Arc<std::sync::Barrier>,
+    unique_loser_counter: Arc<std::sync::atomic::AtomicUsize>,
+) {
+    TEST_RESERVATION_BARRIER.with(|slot| *slot.borrow_mut() = Some(barrier));
+    TEST_UNIQUE_LOSER_COUNTER.with(|slot| *slot.borrow_mut() = Some(unique_loser_counter));
+}
+
+#[cfg(test)]
+fn wait_at_test_reservation_barrier() {
+    TEST_RESERVATION_BARRIER.with(|slot| {
+        if let Some(barrier) = slot.borrow_mut().take() {
+            barrier.wait();
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn wait_at_test_reservation_barrier() {}
+
+#[cfg(test)]
+fn record_test_unique_loser() {
+    TEST_UNIQUE_LOSER_COUNTER.with(|slot| {
+        if let Some(counter) = slot.borrow_mut().take() {
+            counter.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        }
+    });
+}
+
+#[cfg(not(test))]
+fn record_test_unique_loser() {}
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -101,6 +145,11 @@ struct ValidatedTemplate {
 #[derive(Debug)]
 struct AdoptionFact {
     pet_id: String,
+    pet_schema_version: i64,
+    species: String,
+    identity_mode: String,
+    creation_method: String,
+    source_template_id: Option<String>,
     source_template_version: u32,
     lifecycle: String,
     pet_completed_at: Option<String>,
@@ -108,7 +157,12 @@ struct AdoptionFact {
     session_method: Option<String>,
     status: Option<String>,
     last_stable_status: Option<String>,
+    session_schema_version: Option<i64>,
     session_completed_at: Option<String>,
+    provenance_session_id: Option<String>,
+    provenance_source_template_id: Option<String>,
+    provenance_source_template_version: Option<u32>,
+    provenance_runtime_schema_version: Option<u32>,
     candidate_count: i64,
     accepted_count: i64,
     accepted_runtime_count: i64,
@@ -118,6 +172,7 @@ struct AdoptionFact {
 enum AdoptionFactState {
     Adopted,
     Retryable,
+    IgnoredAbandoned,
 }
 
 struct AdoptionReservation {
@@ -125,6 +180,15 @@ struct AdoptionReservation {
     pet_id: String,
     source_template_version: u32,
     newly_created: bool,
+}
+
+#[derive(Debug)]
+struct AdoptionProvenance {
+    source_template_id: String,
+    source_template_version: u32,
+    runtime_schema_version: u32,
+    body_sha256: String,
+    motion_profile_sha256: String,
 }
 
 pub(crate) fn catalog(
@@ -137,7 +201,8 @@ pub(crate) fn catalog(
         .into_iter()
         .map(|validated| {
             let facts = adoption_facts(&storage.db, &validated.template.template_id)?;
-            let (adopted_pet_id, retry_session_id) = project_facts(&facts)?;
+            let (adopted_pet_id, retry_session_id) =
+                project_facts(&facts, &validated.template.template_id)?;
             Ok(AdoptionCatalogEntry {
                 template: validated.template,
                 adopted_pet_id,
@@ -166,8 +231,14 @@ pub(crate) fn start(
     let request_id = new_entity_id("adoption-start");
     let _operation =
         mutation_gate.scoped(&request_id, MutationKind::Creation, &reservation.pet_id)?;
+    let _publication = ADOPTION_PUBLICATION_LOCK
+        .get_or_init(|| Mutex::new(()))
+        .lock()
+        .map_err(|_| "adoption publication lock poisoned")?;
 
     let stable = load_stable_reservation(storage, template_id, &reservation)?;
+    let provenance = load_adoption_provenance(storage, &stable.snapshot.session_id)?;
+    validate_provenance(&provenance, &stable, &template.template)?;
     if stable.source_template_version != template.template.template_version
         && stable.snapshot.candidate_id.is_none()
     {
@@ -177,14 +248,13 @@ pub(crate) fn start(
         ));
     }
     if stable.snapshot.candidate_id.is_some() {
-        if stable.source_template_version == template.template.template_version {
-            candidate::clear_committed_adoption_publish_intent(
-                app_data_dir,
-                &stable.snapshot.session_id,
-                &template.template.body_sha256,
-                &template.template.motion_profile_sha256,
-            )?;
-        }
+        verify_candidate_database_paths(storage, app_data_dir, &stable.snapshot)?;
+        candidate::verify_committed_adoption_candidate(
+            app_data_dir,
+            &stable.snapshot.session_id,
+            &provenance.body_sha256,
+            &provenance.motion_profile_sha256,
+        )?;
         return Ok(stable.snapshot);
     }
 
@@ -245,14 +315,15 @@ fn reserve_or_load(
     display_name: &str,
 ) -> Result<AdoptionReservation, String> {
     let mut storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    let facts = adoption_facts(&storage.db, &template.template_id)?;
+    if let Some(existing) = one_existing_reservation(&facts, &template.template_id)? {
+        return reservation_from_fact(existing, false);
+    }
+    wait_at_test_reservation_barrier();
     let tx = storage
         .db
         .transaction()
         .map_err(|error| error.to_string())?;
-    let facts = adoption_facts(&tx, &template.template_id)?;
-    if let Some(existing) = one_existing_reservation(&facts)? {
-        return reservation_from_fact(existing, false);
-    }
 
     let pet = match PetRepository::reserve_in_transaction(
         &tx,
@@ -263,8 +334,14 @@ fn reserve_or_load(
         Err(error) => {
             drop(tx);
             if error.contains("UNIQUE constraint failed") {
+                record_test_unique_loser();
+            }
+            if error.contains("UNIQUE constraint failed")
+                || error.contains("database is locked")
+                || error.contains("database is busy")
+            {
                 let winner = adoption_facts(&storage.db, &template.template_id)?;
-                if let Some(existing) = one_existing_reservation(&winner)? {
+                if let Some(existing) = one_existing_reservation(&winner, &template.template_id)? {
                     return reservation_from_fact(existing, false);
                 }
             }
@@ -292,6 +369,22 @@ fn reserve_or_load(
         rusqlite::params![session_id, pet.pet_id, now],
     )
     .map_err(|error| error.to_string())?;
+    tx.execute(
+        "INSERT INTO creation_adoption_provenance
+         (session_id, source_template_id, source_template_version,
+          runtime_schema_version, body_sha256, motion_profile_sha256, created_at)
+         VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)",
+        rusqlite::params![
+            session_id,
+            template.template_id,
+            template.template_version,
+            template.runtime_schema_version,
+            template.body_sha256,
+            template.motion_profile_sha256,
+            now,
+        ],
+    )
+    .map_err(|error| error.to_string())?;
     tx.commit().map_err(|error| error.to_string())?;
     Ok(AdoptionReservation {
         session_id,
@@ -303,19 +396,31 @@ fn reserve_or_load(
 
 fn one_existing_reservation<'a>(
     facts: &'a [AdoptionFact],
+    template_id: &str,
 ) -> Result<Option<&'a AdoptionFact>, String> {
-    if facts.len() > 1 {
-        return Err("contradictory adoption facts: multiple live pets use one template".into());
+    let mut existing = None;
+    for fact in facts {
+        let state = classify_fact(fact, template_id)?;
+        match state {
+            AdoptionFactState::IgnoredAbandoned => continue,
+            AdoptionFactState::Adopted | AdoptionFactState::Retryable if existing.is_none() => {
+                existing = Some((fact, state));
+            }
+            AdoptionFactState::Adopted | AdoptionFactState::Retryable => {
+                return Err(
+                    "contradictory adoption facts: multiple live pets use one template".into(),
+                )
+            }
+        }
     }
-    let Some(fact) = facts.first() else {
-        return Ok(None);
-    };
-    match classify_fact(fact)? {
-        AdoptionFactState::Adopted => Err(format!(
+    match existing {
+        Some((fact, AdoptionFactState::Adopted)) => Err(format!(
             "adoption template already adopted by petId={}",
             fact.pet_id
         )),
-        AdoptionFactState::Retryable => Ok(Some(fact)),
+        Some((fact, AdoptionFactState::Retryable)) => Ok(Some(fact)),
+        None => Ok(None),
+        Some((_, AdoptionFactState::IgnoredAbandoned)) => unreachable!(),
     }
 }
 
@@ -341,14 +446,21 @@ fn load_stable_reservation(
 ) -> Result<StableReservation, String> {
     let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
     let facts = adoption_facts(&storage.db, template_id)?;
-    if facts.len() != 1 {
+    let mut live = facts
+        .iter()
+        .filter_map(|fact| match classify_fact(fact, template_id) {
+            Ok(AdoptionFactState::IgnoredAbandoned) => None,
+            result => Some(result.map(|_| fact)),
+        })
+        .collect::<Result<Vec<_>, _>>()?;
+    if live.len() != 1 {
         return Err("contradictory adoption facts: reservation disappeared or multiplied".into());
     }
-    let fact = &facts[0];
+    let fact = live.pop().expect("one live adoption fact");
     if fact.pet_id != expected.pet_id || fact.session_id.as_deref() != Some(&expected.session_id) {
         return Err("adoption reservation changed before candidate publication".into());
     }
-    match classify_fact(fact)? {
+    match classify_fact(fact, template_id)? {
         AdoptionFactState::Adopted => {
             return Err(format!(
                 "adoption template already adopted by petId={}",
@@ -356,6 +468,7 @@ fn load_stable_reservation(
             ))
         }
         AdoptionFactState::Retryable => {}
+        AdoptionFactState::IgnoredAbandoned => unreachable!("ignored facts were filtered"),
     }
     Ok(StableReservation {
         snapshot: snapshot_from_db(&storage.db, &expected.session_id)?,
@@ -384,6 +497,15 @@ fn cleanup_failed_attempt(
         .db
         .transaction()
         .map_err(|error| error.to_string())?;
+    let provenance_removed = tx
+        .execute(
+            "DELETE FROM creation_adoption_provenance WHERE session_id=?1",
+            [&reservation.session_id],
+        )
+        .map_err(|error| error.to_string())?;
+    if provenance_removed != 1 {
+        return Err("new adoption provenance changed before rollback".into());
+    }
     let removed = tx
         .execute(
             "DELETE FROM pets
@@ -408,27 +530,155 @@ fn cleanup_failed_attempt(
     tx.commit().map_err(|error| error.to_string())
 }
 
-fn project_facts(facts: &[AdoptionFact]) -> Result<(Option<String>, Option<String>), String> {
-    if facts.len() > 1 {
-        return Err("contradictory adoption facts: multiple live pets use one template".into());
-    }
-    let Some(fact) = facts.first() else {
-        return Ok((None, None));
-    };
-    match classify_fact(fact)? {
-        AdoptionFactState::Adopted => Ok((Some(fact.pet_id.clone()), None)),
-        AdoptionFactState::Retryable => Ok((
-            None,
-            Some(
-                fact.session_id
-                    .clone()
-                    .ok_or("contradictory adoption facts: retry pet has no session")?,
-            ),
-        )),
-    }
+fn load_adoption_provenance(
+    storage: &Arc<Mutex<Storage>>,
+    session_id: &str,
+) -> Result<AdoptionProvenance, String> {
+    let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    storage
+        .db
+        .query_row(
+            "SELECT source_template_id, source_template_version, runtime_schema_version,
+                    body_sha256, motion_profile_sha256
+             FROM creation_adoption_provenance WHERE session_id=?1",
+            [session_id],
+            |row| {
+                let source_version: i64 = row.get(1)?;
+                let runtime_version: i64 = row.get(2)?;
+                Ok(AdoptionProvenance {
+                    source_template_id: row.get(0)?,
+                    source_template_version: u32::try_from(source_version).unwrap_or_default(),
+                    runtime_schema_version: u32::try_from(runtime_version).unwrap_or_default(),
+                    body_sha256: row.get(3)?,
+                    motion_profile_sha256: row.get(4)?,
+                })
+            },
+        )
+        .optional()
+        .map_err(|error| error.to_string())?
+        .ok_or_else(|| format!("adoption provenance is missing for session {session_id}"))
 }
 
-fn classify_fact(fact: &AdoptionFact) -> Result<AdoptionFactState, String> {
+fn validate_provenance(
+    provenance: &AdoptionProvenance,
+    stable: &StableReservation,
+    current_template: &AdoptionTemplate,
+) -> Result<(), String> {
+    validate_identifier(
+        &provenance.source_template_id,
+        "adoption provenance template id",
+    )?;
+    validate_sha256(&provenance.body_sha256, "adoption provenance body")?;
+    validate_sha256(
+        &provenance.motion_profile_sha256,
+        "adoption provenance motion profile",
+    )?;
+    if provenance.source_template_id != current_template.template_id
+        || provenance.source_template_version != stable.source_template_version
+        || provenance.source_template_version == 0
+        || provenance.runtime_schema_version != RUNTIME_SCHEMA_VERSION
+    {
+        return Err("adoption provenance contradicts the reserved template facts".into());
+    }
+    if provenance.source_template_version == current_template.template_version
+        && (provenance.body_sha256 != current_template.body_sha256
+            || provenance.motion_profile_sha256 != current_template.motion_profile_sha256)
+    {
+        return Err("adoption provenance contradicts the current immutable template".into());
+    }
+    Ok(())
+}
+
+fn verify_candidate_database_paths(
+    storage: &Arc<Mutex<Storage>>,
+    app_data_dir: &Path,
+    snapshot: &CreationSnapshot,
+) -> Result<(), String> {
+    let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    let row = storage
+        .db
+        .query_row(
+            "SELECT COUNT(*), MIN(variant_id), MIN(pet_id), MIN(job_id),
+                    MIN(image_path), MIN(cutout_path), MIN(motion_profile_path),
+                    MIN(quality), SUM(accepted)
+             FROM appearance_variants WHERE session_id=?1",
+            [&snapshot.session_id],
+            |row| {
+                Ok((
+                    row.get::<_, i64>(0)?,
+                    row.get::<_, Option<String>>(1)?,
+                    row.get::<_, Option<String>>(2)?,
+                    row.get::<_, Option<String>>(3)?,
+                    row.get::<_, Option<String>>(4)?,
+                    row.get::<_, Option<String>>(5)?,
+                    row.get::<_, Option<String>>(6)?,
+                    row.get::<_, Option<String>>(7)?,
+                    row.get::<_, Option<i64>>(8)?,
+                ))
+            },
+        )
+        .map_err(|error| error.to_string())?;
+    let candidate_dir = app_data_dir
+        .join("creation-sessions")
+        .join(&snapshot.session_id)
+        .join("candidate")
+        .canonicalize()
+        .map_err(|error| format!("adoption candidate directory is unavailable: {error}"))?;
+    let expected_body = candidate_dir.join("body.png");
+    let expected_profile = candidate_dir.join("motion-profile.json");
+    if row.0 != 1
+        || row.1.as_deref() != snapshot.candidate_id.as_deref()
+        || row.2.as_deref() != Some(snapshot.pet_id.as_str())
+        || row.3.is_some()
+        || row.4.as_deref() != expected_body.to_str()
+        || row.5.as_deref() != expected_body.to_str()
+        || row.6.as_deref() != expected_profile.to_str()
+        || row.7.as_deref() != Some("acceptable")
+        || row.8 != Some(0)
+    {
+        return Err("adoption candidate database paths or ownership are contradictory".into());
+    }
+    Ok(())
+}
+
+fn project_facts(
+    facts: &[AdoptionFact],
+    template_id: &str,
+) -> Result<(Option<String>, Option<String>), String> {
+    let mut projection = None;
+    for fact in facts {
+        let next = match classify_fact(fact, template_id)? {
+            AdoptionFactState::IgnoredAbandoned => continue,
+            AdoptionFactState::Adopted => (Some(fact.pet_id.clone()), None),
+            AdoptionFactState::Retryable => (
+                None,
+                Some(
+                    fact.session_id
+                        .clone()
+                        .ok_or("contradictory adoption facts: retry pet has no session")?,
+                ),
+            ),
+        };
+        if projection.replace(next).is_some() {
+            return Err("contradictory adoption facts: multiple live pets use one template".into());
+        }
+    }
+    Ok(projection.unwrap_or((None, None)))
+}
+
+fn classify_fact(fact: &AdoptionFact, template_id: &str) -> Result<AdoptionFactState, String> {
+    validate_identifier(&fact.pet_id, "adoption pet id")?;
+    if fact.pet_schema_version != 1
+        || fact.species != "cat"
+        || fact.identity_mode != "adopted"
+        || fact.creation_method != "adoption"
+        || fact.source_template_id.as_deref() != Some(template_id)
+    {
+        return Err(format!(
+            "contradictory adoption metadata for pet {}",
+            fact.pet_id
+        ));
+    }
     if fact.source_template_version == 0 {
         return Err("contradictory adoption facts: source version must be positive".into());
     }
@@ -436,29 +686,67 @@ fn classify_fact(fact: &AdoptionFact) -> Result<AdoptionFactState, String> {
         .session_id
         .as_deref()
         .ok_or("contradictory adoption facts: live adoption pet has no session")?;
-    validate_identifier(&fact.pet_id, "adoption pet id")?;
     validate_identifier(session_id, "adoption session id")?;
-    if fact.session_method.as_deref() != Some("adoption") {
+    if fact.session_method.as_deref() != Some("adoption") || fact.session_schema_version != Some(1)
+    {
         return Err("contradictory adoption facts: session method does not match pet".into());
     }
     let status = fact
         .status
         .as_deref()
         .ok_or("contradictory adoption facts: adoption session has no status")?;
+    let provenance_matches = fact.provenance_session_id.as_deref() == Some(session_id)
+        && fact.provenance_source_template_id.as_deref() == Some(template_id)
+        && fact.provenance_source_template_version == Some(fact.source_template_version)
+        && fact.provenance_runtime_schema_version == Some(RUNTIME_SCHEMA_VERSION);
+    if fact.lifecycle == "abandoned" || status == "abandoned" {
+        let abandoned = fact.lifecycle == "abandoned"
+            && status == "abandoned"
+            && fact.last_stable_status.as_deref() == Some("abandoned")
+            && fact.pet_completed_at.is_none()
+            && fact.session_completed_at.is_none()
+            && fact.candidate_count == 0
+            && fact.accepted_count == 0
+            && fact.accepted_runtime_count == 0
+            && (fact.provenance_session_id.is_none() || provenance_matches);
+        return if abandoned {
+            Ok(AdoptionFactState::IgnoredAbandoned)
+        } else {
+            Err(format!(
+                "contradictory abandoned adoption facts for pet {} and session {session_id}",
+                fact.pet_id
+            ))
+        };
+    }
+    if !provenance_matches {
+        return Err(format!(
+            "contradictory adoption facts: provenance does not match pet {} and session {session_id}",
+            fact.pet_id
+        ));
+    }
+
     let durable = fact.lifecycle == "ready"
         && fact.pet_completed_at.is_some()
         && fact.accepted_count == 1
         && fact.accepted_runtime_count == 1
         && fact.candidate_count == 1
-        && matches!(status, "completed" | "finalizing")
-        && (status != "completed" || fact.session_completed_at.is_some());
+        && status == "completed"
+        && fact.last_stable_status.as_deref() == Some("completed")
+        && fact.session_completed_at.is_some();
     if durable {
         return Ok(AdoptionFactState::Adopted);
     }
 
     let pending_candidate_count_is_valid = match status {
-        "draft" => fact.candidate_count == 0,
-        "candidateReady" | "finalizing" => fact.candidate_count == 1,
+        "draft" => fact.last_stable_status.as_deref() == Some("draft") && fact.candidate_count == 0,
+        "candidateReady" => {
+            fact.last_stable_status.as_deref() == Some("candidateReady")
+                && fact.candidate_count == 1
+        }
+        "finalizing" => {
+            fact.last_stable_status.as_deref() == Some("candidateReady")
+                && fact.candidate_count == 1
+        }
         "retryableFailure" => match fact.last_stable_status.as_deref() {
             Some("draft") => fact.candidate_count == 0,
             Some("candidateReady") => fact.candidate_count == 1,
@@ -485,8 +773,13 @@ fn classify_fact(fact: &AdoptionFact) -> Result<AdoptionFactState, String> {
 fn adoption_facts(db: &Connection, template_id: &str) -> Result<Vec<AdoptionFact>, String> {
     let mut statement = db
         .prepare(
-            "SELECT p.pet_id, p.source_template_version, p.lifecycle, p.completed_at,
-                    cs.session_id, cs.method, cs.status, cs.last_stable_status, cs.completed_at,
+            "SELECT p.pet_id, p.schema_version, p.species, p.identity_mode,
+                    p.creation_method, p.source_template_id, p.source_template_version,
+                    p.lifecycle, p.completed_at,
+                    cs.session_id, cs.method, cs.status, cs.last_stable_status,
+                    cs.schema_version, cs.completed_at,
+                    cap.session_id, cap.source_template_id, cap.source_template_version,
+                    cap.runtime_schema_version,
                     (SELECT COUNT(*) FROM appearance_variants av
                      WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id),
                     (SELECT COUNT(*) FROM appearance_variants av
@@ -496,27 +789,43 @@ fn adoption_facts(db: &Connection, template_id: &str) -> Result<Vec<AdoptionFact
                      WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1)
              FROM pets p
              LEFT JOIN creation_sessions cs ON cs.pet_id=p.pet_id
-             WHERE p.creation_method='adoption' AND p.source_template_id=?1
-               AND p.lifecycle!='abandoned'
+             LEFT JOIN creation_adoption_provenance cap ON cap.session_id=cs.session_id
+             WHERE p.source_template_id=?1
              ORDER BY p.rowid, cs.rowid",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
         .query_map([template_id], |row| {
-            let version: i64 = row.get(1)?;
+            let version: Option<i64> = row.get(6)?;
+            let provenance_source_version: Option<i64> = row.get(17)?;
+            let provenance_runtime_version: Option<i64> = row.get(18)?;
             Ok(AdoptionFact {
                 pet_id: row.get(0)?,
-                source_template_version: u32::try_from(version).unwrap_or_default(),
-                lifecycle: row.get(2)?,
-                pet_completed_at: row.get(3)?,
-                session_id: row.get(4)?,
-                session_method: row.get(5)?,
-                status: row.get(6)?,
-                last_stable_status: row.get(7)?,
-                session_completed_at: row.get(8)?,
-                candidate_count: row.get(9)?,
-                accepted_count: row.get(10)?,
-                accepted_runtime_count: row.get(11)?,
+                pet_schema_version: row.get(1)?,
+                species: row.get(2)?,
+                identity_mode: row.get(3)?,
+                creation_method: row.get(4)?,
+                source_template_id: row.get(5)?,
+                source_template_version: version
+                    .and_then(|value| u32::try_from(value).ok())
+                    .unwrap_or_default(),
+                lifecycle: row.get(7)?,
+                pet_completed_at: row.get(8)?,
+                session_id: row.get(9)?,
+                session_method: row.get(10)?,
+                status: row.get(11)?,
+                last_stable_status: row.get(12)?,
+                session_schema_version: row.get(13)?,
+                session_completed_at: row.get(14)?,
+                provenance_session_id: row.get(15)?,
+                provenance_source_template_id: row.get(16)?,
+                provenance_source_template_version: provenance_source_version
+                    .map(|value| u32::try_from(value).unwrap_or_default()),
+                provenance_runtime_schema_version: provenance_runtime_version
+                    .map(|value| u32::try_from(value).unwrap_or_default()),
+                candidate_count: row.get(19)?,
+                accepted_count: row.get(20)?,
+                accepted_runtime_count: row.get(21)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -611,15 +920,17 @@ fn load_catalog(content_root: &ContentRoot) -> Result<Vec<ValidatedTemplate>, St
             ));
         }
         let mut ids = std::collections::HashSet::new();
-        let mut validated = Vec::with_capacity(TEMPLATE_COUNT);
-        for template in manifest.templates {
-            validate_template(&template)?;
+        for template in &manifest.templates {
+            validate_template(template)?;
             if !ids.insert(template.template_id.clone()) {
                 return Err(format!(
                     "adoption catalog contains duplicate template id: {}",
                     template.template_id
                 ));
             }
+        }
+        let mut validated = Vec::with_capacity(TEMPLATE_COUNT);
+        for template in manifest.templates {
             let template_guard =
                 adoption_guard.child(&template.template_id, "adoption template directory")?;
             let thumbnail = template_guard.read_relative_file(
@@ -706,18 +1017,28 @@ fn validate_template(template: &AdoptionTemplate) -> Result<(), String> {
         (&template.body_sha256, "body SHA-256"),
         (&template.motion_profile_sha256, "motion profile SHA-256"),
     ] {
-        if hash.len() != 64
-            || !hash
-                .bytes()
-                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
-        {
-            return Err(format!("{label} must be 64 lowercase hexadecimal digits"));
-        }
+        validate_sha256(hash, label)?;
+    }
+    Ok(())
+}
+
+fn validate_sha256(hash: &str, label: &str) -> Result<(), String> {
+    if hash.len() != 64
+        || !hash
+            .bytes()
+            .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+    {
+        return Err(format!("{label} must be 64 lowercase hexadecimal digits"));
     }
     Ok(())
 }
 
 fn validate_template_id(value: &str) -> Result<(), String> {
+    if value == BUILTIN_PET_ID {
+        return Err(format!(
+            "adoption template id is a reserved pet id: {BUILTIN_PET_ID}"
+        ));
+    }
     validate_identifier(value, "adoption template id")
 }
 
@@ -1015,6 +1336,7 @@ fn read_bounded_regular_file(
 
 #[cfg(test)]
 mod tests {
+    use super::{adoption_facts, project_facts};
     use crate::creation::domain::{CreationMethod, CreationSessionStatus, CreationSnapshot};
     use crate::creation::service::CreationService;
     use crate::pets::active::{ActivePetService, BUILTIN_PET_ID};
@@ -1114,7 +1436,10 @@ mod tests {
         fn row_count(&self, table: &str) -> i64 {
             assert!(matches!(
                 table,
-                "pets" | "creation_sessions" | "appearance_variants"
+                "pets"
+                    | "creation_sessions"
+                    | "appearance_variants"
+                    | "creation_adoption_provenance"
             ));
             self.storage
                 .lock()
@@ -1124,6 +1449,38 @@ mod tests {
                     row.get(0)
                 })
                 .unwrap()
+        }
+
+        fn independent_service(&self) -> Arc<CreationService> {
+            let pets_dir = self.root.join("pets");
+            let storage = Arc::new(Mutex::new(Storage::open(&pets_dir).unwrap()));
+            let active_session: SharedActivePetSession =
+                Arc::new(Mutex::new(ActivePetSession::new()));
+            active_session
+                .lock()
+                .unwrap()
+                .set_active(BUILTIN_PET_ID.into())
+                .unwrap();
+            let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+            let active = Arc::new(ActivePetService::new(
+                storage.clone(),
+                active_session,
+                pets_dir,
+                gate.clone(),
+            ));
+            let deletion = Arc::new(PetDeletionService::new(
+                storage.clone(),
+                active,
+                self.root.clone(),
+                gate.clone(),
+            ));
+            Arc::new(CreationService::new(
+                storage,
+                self.root.clone(),
+                deletion,
+                crate::creation::content::test_content_root(&self.content_root).unwrap(),
+                gate,
+            ))
         }
 
         fn catalog_path(&self) -> PathBuf {
@@ -1384,6 +1741,27 @@ mod tests {
     }
 
     #[test]
+    fn catalog_rejects_the_builtin_pet_id_before_touching_template_assets() {
+        let test = AdoptionHarness::with_templates();
+        let mut catalog = test.catalog_json();
+        catalog["templates"][7]["templateId"] = serde_json::json!(BUILTIN_PET_ID);
+        catalog["templates"][0]["thumbnailPath"] = serde_json::json!("missing-thumbnail.png");
+        catalog["templates"][0]["bodyPath"] = serde_json::json!("missing-body.png");
+        catalog["templates"][0]["motionProfilePath"] =
+            serde_json::json!("missing-motion-profile.json");
+        test.write_catalog_json(&catalog);
+
+        let error = test.service.adoption_catalog().unwrap_err();
+
+        assert!(error.contains("reserved pet id"), "{error}");
+        assert_eq!(test.row_count("pets"), 0);
+        assert!(test
+            .content_root
+            .join("adoption/cat-misty/body.png")
+            .exists());
+    }
+
+    #[test]
     fn catalog_rejects_untrusted_paths_hashes_names_and_personality() {
         let test = AdoptionHarness::with_templates();
         let mut catalog = test.catalog_json();
@@ -1519,6 +1897,39 @@ mod tests {
     }
 
     #[test]
+    fn independent_sqlite_connections_race_through_unique_and_reread_the_winner() {
+        let test = AdoptionHarness::with_templates();
+        let barrier = Arc::new(std::sync::Barrier::new(2));
+        let unique_losers = Arc::new(std::sync::atomic::AtomicUsize::new(0));
+        let mut threads = Vec::new();
+        for (service, name) in [
+            (test.independent_service(), "闆鹃浘"),
+            (test.independent_service(), "浜戜簯"),
+        ] {
+            let barrier = barrier.clone();
+            let unique_losers = unique_losers.clone();
+            threads.push(std::thread::spawn(move || {
+                super::set_thread_adoption_reservation_barrier(barrier, unique_losers);
+                service.start_adoption("cat-misty", name)
+            }));
+        }
+        let first = threads.remove(0).join().unwrap().unwrap();
+        let second = threads.remove(0).join().unwrap().unwrap();
+
+        assert_eq!(first.pet_id, second.pet_id);
+        assert_eq!(first.session_id, second.session_id);
+        assert_eq!(test.row_count("pets"), 1);
+        assert_eq!(test.row_count("creation_sessions"), 1);
+        assert_eq!(test.row_count("creation_adoption_provenance"), 1);
+        assert_eq!(test.row_count("appearance_variants"), 1);
+        assert_eq!(
+            unique_losers.load(std::sync::atomic::Ordering::SeqCst),
+            1,
+            "the independent connection loser must hit UNIQUE and reread the winner"
+        );
+    }
+
+    #[test]
     fn a_new_reservation_is_removed_when_candidate_publication_fails() {
         let test = AdoptionHarness::with_templates();
         let sessions_root = test.root.join("creation-sessions");
@@ -1536,6 +1947,157 @@ mod tests {
 
         std::fs::remove_file(sessions_root).unwrap();
         assert!(test.service.start_adoption("cat-misty", "雾雾").is_ok());
+    }
+
+    #[test]
+    fn database_candidate_failure_rolls_back_new_reservation_and_provenance() {
+        let test = AdoptionHarness::with_templates();
+        let source_before =
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_adoption_candidate
+                 BEFORE INSERT ON appearance_variants
+                 BEGIN SELECT RAISE(ABORT, 'injected candidate DB failure'); END;",
+            )
+            .unwrap();
+
+        let error = test
+            .service
+            .start_adoption("cat-misty", "闆鹃浘")
+            .unwrap_err();
+
+        assert!(error.contains("injected candidate DB failure"), "{error}");
+        assert_eq!(test.row_count("pets"), 0);
+        assert_eq!(test.row_count("creation_sessions"), 0);
+        assert_eq!(test.row_count("creation_adoption_provenance"), 0);
+        assert_eq!(test.row_count("appearance_variants"), 0);
+        assert_eq!(
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap(),
+            source_before
+        );
+    }
+
+    #[test]
+    fn database_candidate_failure_preserves_an_existing_retry_and_its_provenance() {
+        let test = AdoptionHarness::with_templates();
+        let catalog = test.catalog_json();
+        let template = &catalog["templates"][0];
+        let source_before =
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap();
+        {
+            let storage = test.storage.lock().unwrap();
+            storage
+                .db
+                .execute_batch(
+                    "INSERT INTO pets
+                     (pet_id, schema_version, species, identity_mode, display_name,
+                      creation_method, source_template_id, source_template_version,
+                      lifecycle, created_at, updated_at)
+                     VALUES ('pet-existing-retry', 1, 'cat', 'adopted', 'existing',
+                             'adoption', 'cat-misty', 1, 'draft', '1', '1');
+                     INSERT INTO creation_sessions
+                     (session_id, pet_id, method, status, last_stable_status, current_step,
+                      schema_version, created_at, updated_at)
+                     VALUES ('session-existing-retry', 'pet-existing-retry', 'adoption',
+                             'draft', 'draft', 'adoption', 1, '1', '1');",
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO creation_adoption_provenance
+                     (session_id, source_template_id, source_template_version,
+                      runtime_schema_version, body_sha256, motion_profile_sha256, created_at)
+                     VALUES ('session-existing-retry', 'cat-misty', 1, 3, ?1, ?2, '1')",
+                    rusqlite::params![
+                        template["bodySha256"].as_str().unwrap(),
+                        template["motionProfileSha256"].as_str().unwrap()
+                    ],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute_batch(
+                    "CREATE TRIGGER fail_existing_adoption_candidate
+                     BEFORE INSERT ON appearance_variants
+                     BEGIN SELECT RAISE(ABORT, 'injected existing candidate DB failure'); END;",
+                )
+                .unwrap();
+        }
+
+        let error = test
+            .service
+            .start_adoption("cat-misty", "ignored")
+            .unwrap_err();
+
+        assert!(
+            error.contains("injected existing candidate DB failure"),
+            "{error}"
+        );
+        assert_eq!(test.row_count("pets"), 1);
+        assert_eq!(test.row_count("creation_sessions"), 1);
+        assert_eq!(test.row_count("creation_adoption_provenance"), 1);
+        assert_eq!(test.row_count("appearance_variants"), 0);
+        assert!(!test
+            .root
+            .join("creation-sessions/session-existing-retry/candidate")
+            .exists());
+        assert_eq!(
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap(),
+            source_before
+        );
+    }
+
+    #[test]
+    fn response_loss_retry_reuses_the_committed_candidate_exactly_once() {
+        let test = AdoptionHarness::with_templates();
+        let lost_response = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+
+        let recovered = test.service.start_adoption("cat-misty", "ignored").unwrap();
+
+        assert_eq!(recovered.pet_id, lost_response.pet_id);
+        assert_eq!(recovered.session_id, lost_response.session_id);
+        assert_eq!(recovered.candidate_id, lost_response.candidate_id);
+        assert_eq!(test.row_count("pets"), 1);
+        assert_eq!(test.row_count("creation_sessions"), 1);
+        assert_eq!(test.row_count("creation_adoption_provenance"), 1);
+        assert_eq!(test.row_count("appearance_variants"), 1);
+    }
+
+    #[test]
+    fn provenance_insert_failure_rolls_back_pet_and_session_in_the_same_transaction() {
+        let test = AdoptionHarness::with_templates();
+        let source_before =
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(
+                "CREATE TRIGGER fail_adoption_provenance
+                 BEFORE INSERT ON creation_adoption_provenance
+                 BEGIN SELECT RAISE(ABORT, 'injected provenance failure'); END;",
+            )
+            .unwrap();
+
+        let error = test
+            .service
+            .start_adoption("cat-misty", "闆鹃浘")
+            .unwrap_err();
+
+        assert!(error.contains("injected provenance failure"), "{error}");
+        assert_eq!(test.row_count("pets"), 0);
+        assert_eq!(test.row_count("creation_sessions"), 0);
+        assert_eq!(test.row_count("creation_adoption_provenance"), 0);
+        assert_eq!(test.row_count("appearance_variants"), 0);
+        assert_eq!(
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap(),
+            source_before
+        );
     }
 
     #[test]
@@ -1641,5 +2203,302 @@ mod tests {
         let error = test.service.adoption_catalog().unwrap_err();
 
         assert!(error.contains("source version"), "{error}");
+    }
+
+    #[test]
+    fn durable_fact_projection_rejects_metadata_and_lifecycle_contradictions() {
+        let test = AdoptionHarness::with_templates();
+        let session = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+        let cases = [
+            (
+                "wrong species",
+                "UPDATE pets SET species='dog' WHERE source_template_id='cat-misty'",
+                "UPDATE pets SET species='cat' WHERE source_template_id='cat-misty'",
+            ),
+            (
+                "wrong identity",
+                "UPDATE pets SET identity_mode='realPet' WHERE source_template_id='cat-misty'",
+                "UPDATE pets SET identity_mode='adopted' WHERE source_template_id='cat-misty'",
+            ),
+            (
+                "wrong pet schema",
+                "UPDATE pets SET schema_version=99 WHERE source_template_id='cat-misty'",
+                "UPDATE pets SET schema_version=1 WHERE source_template_id='cat-misty'",
+            ),
+            (
+                "wrong session schema",
+                "UPDATE creation_sessions SET schema_version=99 WHERE method='adoption'",
+                "UPDATE creation_sessions SET schema_version=1 WHERE method='adoption'",
+            ),
+            (
+                "candidateReady with draft lastStable",
+                "UPDATE creation_sessions SET last_stable_status='draft' WHERE method='adoption'",
+                "UPDATE creation_sessions SET last_stable_status='candidateReady' WHERE method='adoption'",
+            ),
+            (
+                "one-sided abandoned pet",
+                "UPDATE pets SET lifecycle='abandoned' WHERE source_template_id='cat-misty'",
+                "UPDATE pets SET lifecycle='draft' WHERE source_template_id='cat-misty'",
+            ),
+            (
+                "ready pet without completion",
+                "UPDATE pets SET lifecycle='ready' WHERE source_template_id='cat-misty'",
+                "UPDATE pets SET lifecycle='draft' WHERE source_template_id='cat-misty'",
+            ),
+            (
+                "completed session with draft pet",
+                "UPDATE creation_sessions
+                 SET status='completed', last_stable_status='completed', completed_at='1'
+                 WHERE method='adoption'",
+                "UPDATE creation_sessions
+                 SET status='candidateReady', last_stable_status='candidateReady',
+                     completed_at=NULL WHERE method='adoption'",
+            ),
+            (
+                "wrong session method",
+                "UPDATE creation_sessions SET method='composer' WHERE method='adoption'",
+                "UPDATE creation_sessions SET method='adoption' WHERE method='composer'",
+            ),
+            (
+                "wrong provenance template",
+                "UPDATE creation_adoption_provenance
+                 SET source_template_id='cat-sunny'",
+                "UPDATE creation_adoption_provenance
+                 SET source_template_id='cat-misty'",
+            ),
+            (
+                "wrong provenance source version",
+                "UPDATE creation_adoption_provenance SET source_template_version=2",
+                "UPDATE creation_adoption_provenance SET source_template_version=1",
+            ),
+            (
+                "wrong provenance runtime version",
+                "UPDATE creation_adoption_provenance SET runtime_schema_version=2",
+                "UPDATE creation_adoption_provenance SET runtime_schema_version=3",
+            ),
+        ];
+        let mut unexpected_successes = Vec::new();
+        for (label, mutate, restore) in cases {
+            let storage = test.storage.lock().unwrap();
+            storage.db.execute_batch(mutate).unwrap();
+            let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
+            if project_facts(&facts, "cat-misty").is_ok() {
+                unexpected_successes.push(label);
+            }
+            storage.db.execute_batch(restore).unwrap();
+        }
+
+        {
+            let storage = test.storage.lock().unwrap();
+            storage
+                .db
+                .execute_batch(
+                    "DROP TRIGGER pets_validate_source_template_update;
+                     UPDATE pets SET creation_method='composer'
+                     WHERE source_template_id='cat-misty';",
+                )
+                .unwrap();
+            let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
+            if project_facts(&facts, "cat-misty").is_ok() {
+                unexpected_successes.push("wrong pet creation method");
+            }
+            storage
+                .db
+                .execute(
+                    "UPDATE pets SET creation_method='adoption' WHERE pet_id=?1",
+                    [&session.pet_id],
+                )
+                .unwrap();
+        }
+
+        test.complete(&session);
+        {
+            let storage = test.storage.lock().unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE creation_sessions
+                     SET status='finalizing', last_stable_status='candidateReady'
+                     WHERE session_id=?1",
+                    [&session.session_id],
+                )
+                .unwrap();
+            let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
+            if project_facts(&facts, "cat-misty").is_ok() {
+                unexpected_successes.push("ready accepted pet with finalizing session");
+            }
+        }
+
+        assert!(
+            unexpected_successes.is_empty(),
+            "facts incorrectly accepted: {unexpected_successes:?}"
+        );
+    }
+
+    #[test]
+    fn coherent_abandoned_facts_are_ignored_but_abandoned_candidates_are_not() {
+        let test = AdoptionHarness::with_templates();
+        let session = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+        let storage = test.storage.lock().unwrap();
+        storage
+            .db
+            .execute(
+                "UPDATE pets SET lifecycle='abandoned' WHERE pet_id=?1",
+                [&session.pet_id],
+            )
+            .unwrap();
+        storage
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='abandoned', last_stable_status='abandoned', current_step='abandoned'
+                 WHERE session_id=?1",
+                [&session.session_id],
+            )
+            .unwrap();
+
+        let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
+        assert!(project_facts(&facts, "cat-misty").is_err());
+
+        storage
+            .db
+            .execute(
+                "DELETE FROM appearance_variants WHERE session_id=?1",
+                [&session.session_id],
+            )
+            .unwrap();
+        let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
+        assert_eq!(project_facts(&facts, "cat-misty").unwrap(), (None, None));
+    }
+
+    #[test]
+    fn retry_always_verifies_no_intent_candidate_files_and_database_paths() {
+        let test = AdoptionHarness::with_templates();
+        let session = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+        let body_path = test.candidate_file(&session, "body.png");
+        let profile_path = test.candidate_file(&session, "motion-profile.json");
+        let source_body =
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap();
+        let source_profile = std::fs::read(
+            test.content_root
+                .join("adoption/cat-misty/motion-profile.json"),
+        )
+        .unwrap();
+        let mut unexpected_successes = Vec::new();
+
+        let mut tampered = image::load_from_memory(&source_body).unwrap().to_rgba8();
+        tampered.put_pixel(300, 300, image::Rgba([1, 2, 3, 255]));
+        tampered.save(&body_path).unwrap();
+        if test.service.start_adoption("cat-misty", "ignored").is_ok() {
+            unexpected_successes.push("same-version valid PNG tamper");
+        }
+        std::fs::write(&body_path, &source_body).unwrap();
+
+        std::fs::remove_file(&profile_path).unwrap();
+        if test.service.start_adoption("cat-misty", "ignored").is_ok() {
+            unexpected_successes.push("missing profile without intent");
+        }
+        std::fs::write(&profile_path, &source_profile).unwrap();
+
+        std::fs::write(&profile_path, b"not-json").unwrap();
+        if test.service.start_adoption("cat-misty", "ignored").is_ok() {
+            unexpected_successes.push("corrupt profile without intent");
+        }
+        std::fs::write(&profile_path, &source_profile).unwrap();
+
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants SET image_path=?2 WHERE session_id=?1",
+                rusqlite::params![
+                    session.session_id,
+                    test.content_root
+                        .join("adoption/cat-misty/body.png")
+                        .to_string_lossy()
+                ],
+            )
+            .unwrap();
+        if test.service.start_adoption("cat-misty", "ignored").is_ok() {
+            unexpected_successes.push("database body path outside owned candidate");
+        }
+
+        assert!(
+            unexpected_successes.is_empty(),
+            "retry verification skipped: {unexpected_successes:?}"
+        );
+        assert_eq!(
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap(),
+            source_body
+        );
+    }
+
+    #[test]
+    fn older_version_retry_uses_original_provenance_and_rejects_tamper() {
+        let test = AdoptionHarness::with_templates();
+        let session = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+        let original_candidate = std::fs::read(test.candidate_file(&session, "body.png")).unwrap();
+        let source_path = test.content_root.join("adoption/cat-misty/body.png");
+        let mut upgraded = image::load_from_memory(&original_candidate)
+            .unwrap()
+            .to_rgba8();
+        upgraded.put_pixel(350, 350, image::Rgba([9, 8, 7, 255]));
+        upgraded.save(&source_path).unwrap();
+        let upgraded_bytes = std::fs::read(&source_path).unwrap();
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["templateVersion"] = serde_json::json!(2);
+        catalog["templates"][0]["bodySha256"] = serde_json::json!(sha256(&upgraded_bytes));
+        test.write_catalog_json(&catalog);
+
+        let retry = test.service.start_adoption("cat-misty", "ignored").unwrap();
+        assert_eq!(retry.session_id, session.session_id);
+        assert_eq!(
+            std::fs::read(test.candidate_file(&session, "body.png")).unwrap(),
+            original_candidate
+        );
+
+        let mut tampered = image::load_from_memory(&original_candidate)
+            .unwrap()
+            .to_rgba8();
+        tampered.put_pixel(400, 400, image::Rgba([4, 5, 6, 255]));
+        tampered
+            .save(test.candidate_file(&session, "body.png"))
+            .unwrap();
+        let error = test
+            .service
+            .start_adoption("cat-misty", "ignored")
+            .unwrap_err();
+        assert!(error.contains("candidate"), "{error}");
+    }
+
+    #[test]
+    fn retry_fails_closed_when_adoption_provenance_is_missing_or_corrupt() {
+        for mutation in [
+            "DELETE FROM creation_adoption_provenance WHERE session_id=?1",
+            "UPDATE creation_adoption_provenance
+             SET body_sha256='0000000000000000000000000000000000000000000000000000000000000000'
+             WHERE session_id=?1",
+            "UPDATE creation_adoption_provenance
+             SET source_template_id='cat-sunny' WHERE session_id=?1",
+            "UPDATE creation_adoption_provenance
+             SET source_template_version=2 WHERE session_id=?1",
+            "UPDATE creation_adoption_provenance
+             SET runtime_schema_version=2 WHERE session_id=?1",
+        ] {
+            let test = AdoptionHarness::with_templates();
+            let session = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+            {
+                let storage = test.storage.lock().unwrap();
+                storage.db.execute(mutation, [&session.session_id]).unwrap();
+            }
+
+            let error = test
+                .service
+                .start_adoption("cat-misty", "ignored")
+                .unwrap_err();
+            assert!(error.contains("provenance"), "{error}");
+            assert!(test.candidate_file(&session, "body.png").exists());
+        }
     }
 }

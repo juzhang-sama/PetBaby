@@ -28,6 +28,8 @@ impl Storage {
 
     fn open_connection(db_path: &Path) -> Result<Self, String> {
         let db = Connection::open(db_path).map_err(|error| error.to_string())?;
+        db.busy_timeout(std::time::Duration::from_secs(2))
+            .map_err(|error| error.to_string())?;
         db.pragma_update(None, "journal_mode", "WAL")
             .map_err(|error| error.to_string())?;
         db.pragma_update(None, "foreign_keys", "ON")

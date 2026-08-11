@@ -262,6 +262,22 @@ pub const MIGRATIONS: &[&str] = &[
       CHECK(length(normalized_png) = byte_size)
     );
     "#,
+    // v5: immutable template provenance owned by an adoption session
+    r#"
+    CREATE TABLE creation_adoption_provenance (
+      session_id TEXT PRIMARY KEY
+        REFERENCES creation_sessions(session_id) ON DELETE CASCADE,
+      source_template_id TEXT NOT NULL,
+      source_template_version INTEGER NOT NULL CHECK(source_template_version > 0),
+      runtime_schema_version INTEGER NOT NULL CHECK(runtime_schema_version > 0),
+      body_sha256 TEXT NOT NULL
+        CHECK(length(body_sha256) = 64 AND body_sha256 NOT GLOB '*[^0-9a-f]*'),
+      motion_profile_sha256 TEXT NOT NULL
+        CHECK(length(motion_profile_sha256) = 64
+              AND motion_profile_sha256 NOT GLOB '*[^0-9a-f]*'),
+      created_at TEXT NOT NULL
+    );
+    "#,
 ];
 
 pub fn apply(db: &Connection) -> Result<(), String> {
@@ -386,6 +402,67 @@ mod tests {
             sql.contains("byte_size <= 10485760"),
             "missing retransmittable normalized source hard limit: {sql}"
         );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn latest_migration_creates_transactional_adoption_provenance_table() {
+        let (db, root) = temp_db();
+        db.pragma_update(None, "foreign_keys", "ON").unwrap();
+        apply(&db).unwrap();
+
+        let sql: String = db
+            .query_row(
+                "SELECT sql FROM sqlite_master
+                 WHERE type='table' AND name='creation_adoption_provenance'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+
+        for required in [
+            "session_id",
+            "source_template_id",
+            "source_template_version",
+            "runtime_schema_version",
+            "body_sha256",
+            "motion_profile_sha256",
+            "created_at",
+        ] {
+            assert!(sql.contains(required), "missing {required}: {sql}");
+        }
+        assert!(sql.contains("REFERENCES creation_sessions"));
+        assert!(sql.contains("ON DELETE CASCADE"));
+        assert!(sql.contains("length(body_sha256) = 64"));
+        assert!(sql.contains("length(motion_profile_sha256) = 64"));
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn adoption_provenance_migration_rolls_back_as_one_transaction_on_conflict() {
+        let (db, root) = temp_db();
+        for migration in &MIGRATIONS[..4] {
+            db.execute_batch(migration).unwrap();
+        }
+        db.pragma_update(None, "user_version", 4).unwrap();
+        db.execute_batch("CREATE TABLE creation_adoption_provenance (wrong TEXT);")
+            .unwrap();
+
+        let error = apply(&db).unwrap_err();
+
+        assert!(error.contains("migration 4"), "{error}");
+        let version: i64 = db
+            .query_row("PRAGMA user_version", [], |row| row.get(0))
+            .unwrap();
+        assert_eq!(version, 4);
+        let columns: i64 = db
+            .query_row(
+                "SELECT COUNT(*) FROM pragma_table_info('creation_adoption_provenance')",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(columns, 1);
         let _ = std::fs::remove_dir_all(root);
     }
 

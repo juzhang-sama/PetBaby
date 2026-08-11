@@ -754,6 +754,8 @@ fn delete_owned_rows(
         "DELETE FROM generation_jobs WHERE pet_id=?1",
         "DELETE FROM creation_upload_sources WHERE session_id IN
              (SELECT session_id FROM creation_sessions WHERE pet_id=?1)",
+        "DELETE FROM creation_adoption_provenance WHERE session_id IN
+             (SELECT session_id FROM creation_sessions WHERE pet_id=?1)",
         "DELETE FROM composer_recipes WHERE session_id IN
              (SELECT session_id FROM creation_sessions WHERE pet_id=?1)",
         "DELETE FROM creation_sessions WHERE pet_id=?1",
@@ -1533,11 +1535,40 @@ mod tests {
                       schema_version, created_at, updated_at, completed_at)
                      VALUES ('session-a', 'pet-a', 'adoption', 'completed', 'completed',
                              'completed', 1, '0', '1', '1');
-                     UPDATE generation_jobs SET session_id='session-a' WHERE job_id='job-a';"
+                     INSERT INTO creation_adoption_provenance
+                     (session_id, source_template_id, source_template_version,
+                      runtime_schema_version, body_sha256, motion_profile_sha256, created_at)
+                     VALUES ('session-a', '{template_id}', 3, 3,
+                             '{body_hash}', '{profile_hash}', '0');
+                     UPDATE generation_jobs SET session_id='session-a' WHERE job_id='job-a';",
+                    body_hash = "1".repeat(64),
+                    profile_hash = "2".repeat(64),
                 ))
                 .unwrap();
             std::fs::create_dir_all(self.session_dir("session-a")).unwrap();
             std::fs::write(self.session_dir("session-a").join("source.txt"), b"session").unwrap();
+        }
+
+        fn bind_draft_adoption(&self, template_id: &str) {
+            self.bind_pet_a_job_to_creation_session();
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute_batch(&format!(
+                    "UPDATE pets
+                     SET identity_mode='adopted', creation_method='adoption',
+                         source_template_id='{template_id}', source_template_version=1
+                     WHERE pet_id='pet-a';
+                     UPDATE creation_sessions SET method='adoption' WHERE session_id='session-a';
+                     INSERT INTO creation_adoption_provenance
+                     (session_id, source_template_id, source_template_version,
+                      runtime_schema_version, body_sha256, motion_profile_sha256, created_at)
+                     VALUES ('session-a', '{template_id}', 1, 3, '{}', '{}', '0');",
+                    "1".repeat(64),
+                    "2".repeat(64),
+                ))
+                .unwrap();
         }
 
         fn source_count(&self, template_id: &str) -> i64 {
@@ -1687,6 +1718,19 @@ mod tests {
             )
             .unwrap();
         assert_eq!(source_version, 3);
+        let provenance_count: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM creation_adoption_provenance
+                 WHERE session_id='session-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provenance_count, 1);
     }
 
     #[test]
@@ -1732,6 +1776,7 @@ mod tests {
             ("appearance_variants", "pet_id", "pet-a"),
             ("generation_jobs", "pet_id", "pet-a"),
             ("creation_upload_sources", "session_id", "session-a"),
+            ("creation_adoption_provenance", "session_id", "session-a"),
             ("composer_recipes", "session_id", "session-a"),
             ("creation_sessions", "pet_id", "pet-a"),
             ("identity_profiles", "pet_id", "pet-a"),
@@ -1747,6 +1792,71 @@ mod tests {
                 .unwrap();
             assert_eq!(count, 0, "{table} retained an owned row");
         }
+    }
+
+    #[test]
+    fn abandonment_explicitly_removes_adoption_provenance_without_foreign_keys() {
+        let test = DeletionHarness::two_pets();
+        test.bind_draft_adoption("template-misty");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch("PRAGMA foreign_keys=OFF")
+            .unwrap();
+
+        test.service.abandon_creation("session-a").unwrap();
+
+        let count: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM creation_adoption_provenance
+                 WHERE session_id='session-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(count, 0);
+    }
+
+    #[test]
+    fn failed_abandonment_restores_provenance_with_foreign_keys_disabled() {
+        let test = DeletionHarness::two_pets();
+        test.bind_draft_adoption("template-misty");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(
+                "PRAGMA foreign_keys=OFF;
+                 CREATE TRIGGER fail_adoption_pet_delete BEFORE DELETE ON pets
+                 WHEN OLD.pet_id='pet-a'
+                 BEGIN SELECT RAISE(ABORT, 'forced adoption abandon failure'); END;",
+            )
+            .unwrap();
+
+        let error = test.service.abandon_creation("session-a").unwrap_err();
+
+        assert!(error.contains("forced adoption abandon failure"), "{error}");
+        assert!(test.pet_exists("pet-a"));
+        assert!(test.session_exists("session-a"));
+        let provenance_count: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM creation_adoption_provenance
+                 WHERE session_id='session-a'",
+                [],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provenance_count, 1);
+        assert!(test.session_dir("session-a").join("draft.txt").exists());
     }
 
     #[test]

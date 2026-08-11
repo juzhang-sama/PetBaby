@@ -19,6 +19,50 @@ const LEGACY_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent.json";
 const RESERVED_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent-reserved.json";
 const OWNED_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent-owned.json";
 const COMPLETE_COMPOSER_INTENT_FILE: &str = ".candidate-publish-intent-complete.json";
+const RESERVED_ADOPTION_INTENT_FILE: &str = ".adoption-candidate-publish-intent-reserved.json";
+const OWNED_ADOPTION_INTENT_FILE: &str = ".adoption-candidate-publish-intent-owned.json";
+const COMPLETE_ADOPTION_INTENT_FILE: &str = ".adoption-candidate-publish-intent-complete.json";
+
+#[derive(Clone, Copy)]
+struct PublishNamespace {
+    label: &'static str,
+    version: u32,
+    reserved_intent: &'static str,
+    owned_intent: &'static str,
+    complete_intent: &'static str,
+}
+
+const COMPOSER_NAMESPACE: PublishNamespace = PublishNamespace {
+    label: "composer",
+    version: 2,
+    reserved_intent: RESERVED_COMPOSER_INTENT_FILE,
+    owned_intent: OWNED_COMPOSER_INTENT_FILE,
+    complete_intent: COMPLETE_COMPOSER_INTENT_FILE,
+};
+const ADOPTION_NAMESPACE: PublishNamespace = PublishNamespace {
+    label: "adoption",
+    version: 3,
+    reserved_intent: RESERVED_ADOPTION_INTENT_FILE,
+    owned_intent: OWNED_ADOPTION_INTENT_FILE,
+    complete_intent: COMPLETE_ADOPTION_INTENT_FILE,
+};
+
+struct CandidateFile<'a> {
+    name: &'static str,
+    bytes: &'a [u8],
+    limit: u64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CandidatePublishCheckpoint {
+    AfterReserved,
+    AfterOwned,
+    AfterComplete,
+    AfterMove,
+}
+
+#[cfg(test)]
+type CandidateCrashPoint = CandidatePublishCheckpoint;
 
 #[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
@@ -374,6 +418,27 @@ pub fn publish_adoption_candidate(
 }
 
 #[cfg(test)]
+fn publish_adoption_candidate_with_crash_point(
+    app_data_dir: &Path,
+    session_id: &str,
+    body: &[u8],
+    motion_profile: &[u8],
+    crash_point: CandidateCrashPoint,
+) -> Result<PublishedComposerCandidate, String> {
+    publish_adoption_candidate_inner_with_checkpoint(
+        app_data_dir,
+        session_id,
+        body,
+        motion_profile,
+        move |checkpoint| {
+            if checkpoint == crash_point {
+                panic!("simulated adoption crash at {crash_point:?}");
+            }
+        },
+    )
+}
+
+#[cfg(test)]
 pub fn publish_composer_candidate_with_hook(
     app_data_dir: &Path,
     session_id: &str,
@@ -484,10 +549,59 @@ fn publish_composer_candidate_inner(
     before_move: impl FnOnce(&Path),
     after_rename: impl FnOnce() -> Result<(), String>,
 ) -> Result<PublishedComposerCandidate, String> {
-    validate_component(session_id, "session id")?;
     let profile_json = serde_json::to_vec_pretty(profile).map_err(|error| error.to_string())?;
     parse_motion_profile(std::str::from_utf8(&profile_json).map_err(|error| error.to_string())?)?;
     let recipe_json = serde_json::to_vec_pretty(recipe).map_err(|error| error.to_string())?;
+    let files = [
+        CandidateFile {
+            name: "body.png",
+            bytes: png,
+            limit: MAX_COMPOSER_PNG_BYTES as u64,
+        },
+        CandidateFile {
+            name: "motion-profile.json",
+            bytes: &profile_json,
+            limit: MAX_COMPOSER_JSON_BYTES,
+        },
+        CandidateFile {
+            name: "recipe.json",
+            bytes: &recipe_json,
+            limit: MAX_COMPOSER_JSON_BYTES,
+        },
+    ];
+    publish_candidate_inner(
+        app_data_dir,
+        session_id,
+        COMPOSER_NAMESPACE,
+        &files,
+        before_publish,
+        before_owned_intent,
+        before_complete_intent,
+        before_first_write,
+        before_move,
+        after_rename,
+        |_| {},
+    )
+}
+
+#[allow(clippy::too_many_arguments)]
+fn publish_candidate_inner(
+    app_data_dir: &Path,
+    session_id: &str,
+    namespace: PublishNamespace,
+    files: &[CandidateFile<'_>],
+    before_publish: impl FnOnce(),
+    before_owned_intent: impl FnOnce(&Path),
+    before_complete_intent: impl FnOnce(&Path),
+    before_first_write: impl FnOnce(&Path),
+    before_move: impl FnOnce(&Path),
+    after_rename: impl FnOnce() -> Result<(), String>,
+    mut checkpoint: impl FnMut(CandidatePublishCheckpoint),
+) -> Result<PublishedComposerCandidate, String> {
+    validate_component(session_id, "session id")?;
+    if files.len() < 2 || files.len() > 3 {
+        return Err("standard candidate must define two or three file roles".into());
+    }
 
     let app_data_guard = OwnedDirectoryGuard::open(app_data_dir, "app data")?;
     let (_sessions_root, sessions_guard) =
@@ -497,7 +611,10 @@ fn publish_composer_candidate_inner(
     before_publish();
     let candidate_dir = session_dir.join("candidate");
     if std::fs::symlink_metadata(&candidate_dir).is_ok() {
-        return Err("composer candidate already exists; exact recovery is required".into());
+        return Err(format!(
+            "{} candidate already exists; exact recovery is required",
+            namespace.label
+        ));
     }
 
     for name in [
@@ -505,41 +622,49 @@ fn publish_composer_candidate_inner(
         RESERVED_COMPOSER_INTENT_FILE,
         OWNED_COMPOSER_INTENT_FILE,
         COMPLETE_COMPOSER_INTENT_FILE,
+        RESERVED_ADOPTION_INTENT_FILE,
+        OWNED_ADOPTION_INTENT_FILE,
+        COMPLETE_ADOPTION_INTENT_FILE,
     ] {
         if std::fs::symlink_metadata(session_dir.join(name)).is_ok() {
-            return Err(
-                "composer publish intent already exists; exact recovery is required".into(),
-            );
+            return Err(format!(
+                "candidate publish intent already exists in namespace {name}; exact recovery is required"
+            ));
         }
     }
     let staging_name = format!(".candidate-stage-{}", new_entity_id("publish"));
     validate_component(staging_name.trim_start_matches('.'), "candidate staging id")?;
     let staging = session_dir.join(&staging_name);
     let mut intent = ComposerPublishIntent {
-        version: 2,
+        version: namespace.version,
         phase: Some(ComposerPublishPhase::Reserved),
         session_id: session_id.to_owned(),
         stage_name: staging_name.clone(),
-        body_sha256: sha256_hex(png),
-        profile_sha256: sha256_hex(&profile_json),
-        recipe_sha256: sha256_hex(&recipe_json),
+        body_sha256: sha256_hex(files[0].bytes),
+        profile_sha256: sha256_hex(files[1].bytes),
+        recipe_sha256: sha256_hex(files.get(2).map_or(&[], |file| file.bytes)),
         directory_identity: None,
         file_identities: None,
     };
-    let reserved_intent_path = session_dir.join(RESERVED_COMPOSER_INTENT_FILE);
+    let reserved_intent_path = session_dir.join(namespace.reserved_intent);
     let mut intent_files = vec![OwnedIntentFile {
         path: reserved_intent_path.clone(),
         guard: publish_durable_intent(&session_dir, &reserved_intent_path, &intent)?,
     }];
-    std::fs::create_dir(&staging)
-        .map_err(|error| format!("create composer candidate staging directory: {error}"))?;
+    checkpoint(CandidatePublishCheckpoint::AfterReserved);
+    std::fs::create_dir(&staging).map_err(|error| {
+        format!(
+            "create {} candidate staging directory: {error}",
+            namespace.label
+        )
+    })?;
     let staging_guard = OwnedDirectoryGuard::open(&staging, "candidate staging")?;
     if staging_guard.path.parent() != Some(session_dir.as_path()) {
         return Err("candidate staging directory escapes its creation session".into());
     }
     intent.phase = Some(ComposerPublishPhase::Owned);
     intent.directory_identity = Some(staging_guard.identity);
-    let owned_intent_path = session_dir.join(OWNED_COMPOSER_INTENT_FILE);
+    let owned_intent_path = session_dir.join(namespace.owned_intent);
     before_owned_intent(&owned_intent_path);
     match publish_durable_intent(&session_dir, &owned_intent_path, &intent) {
         Ok(guard) => intent_files.push(OwnedIntentFile {
@@ -555,26 +680,15 @@ fn publish_composer_candidate_inner(
             });
         }
     }
+    checkpoint(CandidatePublishCheckpoint::AfterOwned);
     before_first_write(&staging);
 
     let mut file_guards = Vec::new();
     let stage_result: Result<Vec<FileIdentity>, String> = (|| {
-        file_guards.push(write_new_synced_file(&staging.join("body.png"), png)?);
-        file_guards.push(write_new_synced_file(
-            &staging.join("motion-profile.json"),
-            &profile_json,
-        )?);
-        file_guards.push(write_new_synced_file(
-            &staging.join("recipe.json"),
-            &recipe_json,
-        )?);
-        validate_locked_candidate_files(
-            &staging_guard,
-            &file_guards,
-            png,
-            &profile_json,
-            &recipe_json,
-        )?;
+        for file in files {
+            file_guards.push(write_new_synced_file(&staging.join(file.name), file.bytes)?);
+        }
+        validate_locked_candidate_files_for(&staging_guard, &file_guards, files, namespace.label)?;
         file_guards
             .iter()
             .map(file_identity)
@@ -584,9 +698,14 @@ fn publish_composer_candidate_inner(
         Ok(identities) => identities,
         Err(error) => {
             file_guards.clear();
-            let cleanup = lock_owned_partial_file_set(&staging_guard)
-                .and_then(|files| delete_locked_directory(staging_guard, files))
-                .and_then(|()| delete_locked_intent_files(intent_files));
+            let names = files.iter().map(|file| file.name).collect::<Vec<_>>();
+            let cleanup = lock_owned_partial_file_set_for(
+                &staging_guard,
+                &names,
+                &format!("owned {} staging directory", namespace.label),
+            )
+            .and_then(|files| delete_locked_directory(staging_guard, files))
+            .and_then(|()| delete_locked_intent_files(intent_files));
             return Err(match cleanup {
                 Ok(()) => error,
                 Err(cleanup) => format!("{error}; staging cleanup failed: {cleanup}"),
@@ -595,7 +714,7 @@ fn publish_composer_candidate_inner(
     };
     intent.phase = Some(ComposerPublishPhase::Complete);
     intent.file_identities = Some(source_file_identities.clone());
-    let complete_intent_path = session_dir.join(COMPLETE_COMPOSER_INTENT_FILE);
+    let complete_intent_path = session_dir.join(namespace.complete_intent);
     before_complete_intent(&complete_intent_path);
     match publish_durable_intent(&session_dir, &complete_intent_path, &intent) {
         Ok(guard) => intent_files.push(OwnedIntentFile {
@@ -604,15 +723,21 @@ fn publish_composer_candidate_inner(
         }),
         Err(error) => {
             file_guards.clear();
-            let cleanup = lock_owned_partial_file_set(&staging_guard)
-                .and_then(|files| delete_locked_directory(staging_guard, files))
-                .and_then(|()| delete_locked_intent_files(intent_files));
+            let names = files.iter().map(|file| file.name).collect::<Vec<_>>();
+            let cleanup = lock_owned_partial_file_set_for(
+                &staging_guard,
+                &names,
+                &format!("owned {} staging directory", namespace.label),
+            )
+            .and_then(|files| delete_locked_directory(staging_guard, files))
+            .and_then(|()| delete_locked_intent_files(intent_files));
             return Err(match cleanup {
                 Ok(()) => error,
                 Err(cleanup) => format!("{error}; complete phase cleanup failed: {cleanup}"),
             });
         }
     }
+    checkpoint(CandidatePublishCheckpoint::AfterComplete);
 
     file_guards.clear();
     let staged_identity = staging_guard.identity;
@@ -627,9 +752,13 @@ fn publish_composer_candidate_inner(
     }
     before_move(&staging);
     crate::platform::durable_move_directory(&staging, &candidate_dir).map_err(|error| {
-        format!("durable composer candidate move failed: {error}; publish intent retained")
+        format!(
+            "durable {} candidate move failed: {error}; publish intent retained",
+            namespace.label
+        )
     })?;
     staging_guard.path = candidate_dir.clone();
+    checkpoint(CandidatePublishCheckpoint::AfterMove);
     let verification_guard =
         match OwnedDirectoryGuard::open_movable(&candidate_dir, "candidate verification") {
             Ok(guard) => guard,
@@ -649,7 +778,7 @@ fn publish_composer_candidate_inner(
         );
     }
     let final_file_guards =
-        match lock_candidate_files(&verification_guard, png, &profile_json, &recipe_json) {
+        match lock_candidate_files_for(&verification_guard, files, namespace.label) {
             Ok(files) => files,
             Err(error) => {
                 return Err(format!(
@@ -713,175 +842,48 @@ fn publish_adoption_candidate_inner(
     body: &[u8],
     motion_profile: &[u8],
 ) -> Result<PublishedComposerCandidate, String> {
-    validate_component(session_id, "session id")?;
-    let app_data_guard = OwnedDirectoryGuard::open(app_data_dir, "app data")?;
-    let (_sessions_root, sessions_guard) =
-        ensure_locked_child(&app_data_guard, "creation-sessions", "creation sessions")?;
-    let (session_dir, session_guard) =
-        ensure_locked_child(&sessions_guard, session_id, "creation session")?;
-    let candidate_dir = session_dir.join("candidate");
-    if std::fs::symlink_metadata(&candidate_dir).is_ok() {
-        return Err("adoption candidate already exists; exact recovery is required".into());
-    }
-    for name in [
-        LEGACY_COMPOSER_INTENT_FILE,
-        RESERVED_COMPOSER_INTENT_FILE,
-        OWNED_COMPOSER_INTENT_FILE,
-        COMPLETE_COMPOSER_INTENT_FILE,
-    ] {
-        if std::fs::symlink_metadata(session_dir.join(name)).is_ok() {
-            return Err(
-                "adoption publish intent already exists; exact recovery is required".into(),
-            );
-        }
-    }
+    publish_adoption_candidate_inner_with_checkpoint(
+        app_data_dir,
+        session_id,
+        body,
+        motion_profile,
+        |_| {},
+    )
+}
 
-    let staging_name = format!(".candidate-stage-{}", new_entity_id("publish"));
-    validate_component(staging_name.trim_start_matches('.'), "candidate staging id")?;
-    let staging = session_dir.join(&staging_name);
-    let mut intent = ComposerPublishIntent {
-        version: 3,
-        phase: Some(ComposerPublishPhase::Reserved),
-        session_id: session_id.to_owned(),
-        stage_name: staging_name,
-        body_sha256: sha256_hex(body),
-        profile_sha256: sha256_hex(motion_profile),
-        recipe_sha256: sha256_hex(&[]),
-        directory_identity: None,
-        file_identities: None,
-    };
-    let reserved_intent_path = session_dir.join(RESERVED_COMPOSER_INTENT_FILE);
-    let mut intent_files = vec![OwnedIntentFile {
-        path: reserved_intent_path.clone(),
-        guard: publish_durable_intent(&session_dir, &reserved_intent_path, &intent)?,
-    }];
-    std::fs::create_dir(&staging)
-        .map_err(|error| format!("create adoption candidate staging directory: {error}"))?;
-    let staging_guard = OwnedDirectoryGuard::open(&staging, "adoption candidate staging")?;
-    if staging_guard.path.parent() != Some(session_dir.as_path()) {
-        return Err("adoption candidate staging escapes its creation session".into());
-    }
-    intent.phase = Some(ComposerPublishPhase::Owned);
-    intent.directory_identity = Some(staging_guard.identity);
-    let owned_intent_path = session_dir.join(OWNED_COMPOSER_INTENT_FILE);
-    match publish_durable_intent(&session_dir, &owned_intent_path, &intent) {
-        Ok(guard) => intent_files.push(OwnedIntentFile {
-            path: owned_intent_path,
-            guard,
-        }),
-        Err(error) => {
-            let cleanup = delete_locked_directory(staging_guard, Vec::new())
-                .and_then(|()| delete_locked_intent_files(intent_files));
-            return Err(match cleanup {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; adoption owned cleanup failed: {cleanup}"),
-            });
-        }
-    }
-
-    let mut file_guards = Vec::new();
-    let stage_result: Result<Vec<FileIdentity>, String> = (|| {
-        file_guards.push(write_new_synced_file(&staging.join("body.png"), body)?);
-        file_guards.push(write_new_synced_file(
-            &staging.join("motion-profile.json"),
-            motion_profile,
-        )?);
-        validate_locked_adoption_candidate_files(
-            &staging_guard,
-            &file_guards,
-            body,
-            motion_profile,
-        )?;
-        file_guards
-            .iter()
-            .map(file_identity)
-            .collect::<Result<Vec<_>, _>>()
-    })();
-    let source_file_identities = match stage_result {
-        Ok(identities) => identities,
-        Err(error) => {
-            file_guards.clear();
-            let cleanup = lock_owned_partial_file_set_for(
-                &staging_guard,
-                &["body.png", "motion-profile.json"],
-                "owned adoption staging directory",
-            )
-            .and_then(|files| delete_locked_directory(staging_guard, files))
-            .and_then(|()| delete_locked_intent_files(intent_files));
-            return Err(match cleanup {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; adoption staging cleanup failed: {cleanup}"),
-            });
-        }
-    };
-    intent.phase = Some(ComposerPublishPhase::Complete);
-    intent.file_identities = Some(source_file_identities.clone());
-    let complete_intent_path = session_dir.join(COMPLETE_COMPOSER_INTENT_FILE);
-    match publish_durable_intent(&session_dir, &complete_intent_path, &intent) {
-        Ok(guard) => intent_files.push(OwnedIntentFile {
-            path: complete_intent_path,
-            guard,
-        }),
-        Err(error) => {
-            file_guards.clear();
-            let cleanup = lock_owned_partial_file_set_for(
-                &staging_guard,
-                &["body.png", "motion-profile.json"],
-                "owned adoption staging directory",
-            )
-            .and_then(|files| delete_locked_directory(staging_guard, files))
-            .and_then(|()| delete_locked_intent_files(intent_files));
-            return Err(match cleanup {
-                Ok(()) => error,
-                Err(cleanup) => format!("{error}; adoption complete cleanup failed: {cleanup}"),
-            });
-        }
-    }
-
-    file_guards.clear();
-    let staged_identity = staging_guard.identity;
-    drop(staging_guard);
-    let mut staging_guard =
-        OwnedDirectoryGuard::open_movable(&staging, "movable adoption candidate staging")?;
-    if staging_guard.identity != staged_identity {
-        return Err(
-            "adoption staging identity changed before durable move; intent retained".into(),
-        );
-    }
-    crate::platform::durable_move_directory(&staging, &candidate_dir).map_err(|error| {
-        format!("durable adoption candidate move failed: {error}; publish intent retained")
-    })?;
-    staging_guard.path = candidate_dir.clone();
-    let verification_guard =
-        OwnedDirectoryGuard::open_movable(&candidate_dir, "adoption candidate verification")?;
-    if verification_guard.path.parent() != Some(session_dir.as_path())
-        || verification_guard.identity != staging_guard.identity
-    {
-        return Err("published adoption candidate identity/path changed; intent retained".into());
-    }
-    let final_file_guards =
-        lock_adoption_candidate_files(&verification_guard, body, motion_profile)?;
-    for (source_identity, final_file) in source_file_identities.iter().zip(&final_file_guards) {
-        if *source_identity != file_identity(final_file)? {
-            return Err("adoption candidate file identity changed during publication".into());
-        }
-    }
-    let published_identity = verification_guard.identity;
-    drop(verification_guard);
-    drop(staging_guard);
-    let candidate_guard =
-        OwnedDirectoryGuard::open(&candidate_dir, "adoption candidate directory")?;
-    if candidate_guard.identity != published_identity {
-        return Err("adoption candidate identity changed before final lock".into());
-    }
-    Ok(candidate_projection(
-        candidate_dir,
-        true,
-        vec![app_data_guard, sessions_guard, session_guard],
-        candidate_guard,
-        final_file_guards,
-        intent_files,
-    ))
+fn publish_adoption_candidate_inner_with_checkpoint(
+    app_data_dir: &Path,
+    session_id: &str,
+    body: &[u8],
+    motion_profile: &[u8],
+    checkpoint: impl FnMut(CandidatePublishCheckpoint),
+) -> Result<PublishedComposerCandidate, String> {
+    validate_adoption_candidate_bytes(body, motion_profile)?;
+    let files = [
+        CandidateFile {
+            name: "body.png",
+            bytes: body,
+            limit: MAX_COMPOSER_PNG_BYTES as u64,
+        },
+        CandidateFile {
+            name: "motion-profile.json",
+            bytes: motion_profile,
+            limit: MAX_COMPOSER_JSON_BYTES,
+        },
+    ];
+    publish_candidate_inner(
+        app_data_dir,
+        session_id,
+        ADOPTION_NAMESPACE,
+        &files,
+        || {},
+        |_| {},
+        |_| {},
+        |_| {},
+        |_| {},
+        || Ok(()),
+        checkpoint,
+    )
 }
 
 fn candidate_projection(
@@ -918,37 +920,43 @@ fn load_locked_intent_chain(
     expected_profile: &MotionProfileV1,
     expected_recipe: &ComposerRecipe,
 ) -> Result<Option<LockedIntentChain>, String> {
-    let legacy_path = session_dir.join(LEGACY_COMPOSER_INTENT_FILE);
-    match std::fs::symlink_metadata(&legacy_path) {
-        Ok(_) => {
-            return Err(
+    load_locked_intent_chain_for(session_dir, COMPOSER_NAMESPACE, true, |intent| {
+        validate_publish_intent(intent, session_id, expected_profile, expected_recipe)
+    })
+}
+
+fn load_locked_intent_chain_for(
+    session_dir: &Path,
+    namespace: PublishNamespace,
+    reject_legacy_composer: bool,
+    validate: impl Fn(&ComposerPublishIntent) -> Result<ComposerPublishPhase, String>,
+) -> Result<Option<LockedIntentChain>, String> {
+    if reject_legacy_composer {
+        let legacy_path = session_dir.join(LEGACY_COMPOSER_INTENT_FILE);
+        match std::fs::symlink_metadata(&legacy_path) {
+            Ok(_) => return Err(
                 "legacy composer publish intent lacks immutable phase ownership and was preserved"
                     .into(),
-            )
+            ),
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
+            Err(error) => return Err(format!("inspect legacy composer publish intent: {error}")),
         }
-        Err(error) if error.kind() == std::io::ErrorKind::NotFound => {}
-        Err(error) => return Err(format!("inspect legacy composer publish intent: {error}")),
     }
 
     let mut files = Vec::new();
     let mut intents = Vec::new();
     let mut missing_phase = false;
     for (expected_phase, name) in [
-        (
-            ComposerPublishPhase::Reserved,
-            RESERVED_COMPOSER_INTENT_FILE,
-        ),
-        (ComposerPublishPhase::Owned, OWNED_COMPOSER_INTENT_FILE),
-        (
-            ComposerPublishPhase::Complete,
-            COMPLETE_COMPOSER_INTENT_FILE,
-        ),
+        (ComposerPublishPhase::Reserved, namespace.reserved_intent),
+        (ComposerPublishPhase::Owned, namespace.owned_intent),
+        (ComposerPublishPhase::Complete, namespace.complete_intent),
     ] {
         let path = session_dir.join(name);
         match std::fs::symlink_metadata(&path) {
             Ok(_) if missing_phase => {
                 return Err(format!(
-                    "composer publish intent phase prefix is incomplete before {expected_phase:?}; preserved"
+                    "{} publish intent phase prefix is incomplete before {expected_phase:?}; preserved",
+                    namespace.label
                 ));
             }
             Ok(_) => {}
@@ -958,26 +966,28 @@ fn load_locked_intent_chain(
             }
             Err(error) => {
                 return Err(format!(
-                    "inspect {expected_phase:?} composer publish intent: {error}"
+                    "inspect {expected_phase:?} {} publish intent: {error}",
+                    namespace.label
                 ))
             }
         }
         let (guard, bytes) = lock_bounded_regular_file(
             &path,
             session_dir,
-            &format!("{expected_phase:?} composer publish intent"),
+            &format!("{expected_phase:?} {} publish intent", namespace.label),
             32 * 1024,
         )?;
         let intent: ComposerPublishIntent = serde_json::from_slice(&bytes).map_err(|error| {
             format!(
-                "{expected_phase:?} composer publish intent is invalid and was preserved: {error}"
+                "{expected_phase:?} {} publish intent is invalid and was preserved: {error}",
+                namespace.label
             )
         })?;
-        let actual_phase =
-            validate_publish_intent(&intent, session_id, expected_profile, expected_recipe)?;
+        let actual_phase = validate(&intent)?;
         if actual_phase != expected_phase {
             return Err(format!(
-                "composer publish intent file contains the wrong phase {actual_phase:?}; preserved"
+                "{} publish intent file contains the wrong phase {actual_phase:?}; preserved",
+                namespace.label
             ));
         }
         files.push(OwnedIntentFile { path, guard });
@@ -995,17 +1005,17 @@ fn load_locked_intent_chain(
             || intent.profile_sha256 != reserved.profile_sha256
             || intent.recipe_sha256 != reserved.recipe_sha256
         {
-            return Err(
-                "composer publish intent phase records do not share one immutable prefix; preserved"
-                    .into(),
-            );
+            return Err(format!(
+                "{} publish intent phase records do not share one immutable prefix; preserved",
+                namespace.label
+            ));
         }
     }
     if intents.len() == 3 && intents[1].directory_identity != intents[2].directory_identity {
-        return Err(
-            "composer publish intent complete phase changed its owned directory identity; preserved"
-                .into(),
-        );
+        return Err(format!(
+            "{} publish intent complete phase changed its owned directory identity; preserved",
+            namespace.label
+        ));
     }
     Ok(Some(LockedIntentChain {
         files,
@@ -1036,10 +1046,17 @@ fn validate_publish_intent(
     {
         return Err("composer publish intent does not match the durable session facts".into());
     }
-    let phase = intent.phase.ok_or_else(|| {
-        "legacy composer publish intent lacks durable FileId ownership and was preserved"
-            .to_string()
-    })?;
+    validate_publish_phase_ownership(intent, 3, "composer")
+}
+
+fn validate_publish_phase_ownership(
+    intent: &ComposerPublishIntent,
+    expected_file_count: usize,
+    label: &str,
+) -> Result<ComposerPublishPhase, String> {
+    let phase = intent
+        .phase
+        .ok_or_else(|| format!("{label} publish intent has no durable ownership phase"))?;
     match phase {
         ComposerPublishPhase::Reserved
             if intent.directory_identity.is_none() && intent.file_identities.is_none() => {}
@@ -1050,8 +1067,12 @@ fn validate_publish_intent(
                 && intent
                     .file_identities
                     .as_ref()
-                    .is_some_and(|ids| ids.len() == 3) => {}
-        _ => return Err("composer publish intent phase ownership is inconsistent".into()),
+                    .is_some_and(|ids| ids.len() == expected_file_count) => {}
+        _ => {
+            return Err(format!(
+                "{label} publish intent phase ownership is inconsistent"
+            ))
+        }
     }
     Ok(phase)
 }
@@ -1074,28 +1095,48 @@ fn verify_partial_file_identities(
     files: &[std::fs::File],
     expected: &[FileIdentity],
 ) -> Result<(), String> {
+    verify_file_identities_for(
+        directory,
+        files,
+        expected,
+        &["body.png", "motion-profile.json", "recipe.json"],
+        "owned composer publication",
+    )
+}
+
+fn verify_file_identities_for(
+    directory: &OwnedDirectoryGuard,
+    files: &[std::fs::File],
+    expected: &[FileIdentity],
+    roles: &[&str],
+    label: &str,
+) -> Result<(), String> {
+    if files.len() != expected.len() || files.len() > roles.len() {
+        return Err(format!(
+            "{label} durable file ownership count is inconsistent"
+        ));
+    }
     let entries = collect_bounded_directory_names(
         std::fs::read_dir(&directory.path)
-            .map_err(|error| format!("read owned composer publication: {error}"))?
+            .map_err(|error| format!("read {label}: {error}"))?
             .map(|entry| {
                 entry
                     .map(|entry| entry.file_name())
                     .map_err(|error| error.to_string())
             }),
-        "owned composer publication",
+        label,
     )?;
     if entries.len() != files.len() {
-        return Err("owned composer publication changed while being locked".into());
+        return Err(format!("{label} changed while being locked"));
     }
-    let roles = ["body.png", "motion-profile.json", "recipe.json"];
     for (name, file) in entries.iter().zip(files) {
         let role = roles
             .iter()
             .position(|expected_name| expected_name == name)
-            .ok_or("owned composer publication contains an unexpected file")?;
+            .ok_or_else(|| format!("{label} contains an unexpected file"))?;
         if file_identity(file)? != expected[role] {
             return Err(format!(
-                "owned composer publication {name} identity does not match its durable intent; preserved"
+                "{label} {name} identity does not match its durable intent; preserved"
             ));
         }
     }
@@ -1108,75 +1149,14 @@ fn load_locked_adoption_intent_chain(
     expected_body_sha256: &str,
     expected_profile_sha256: &str,
 ) -> Result<Option<LockedIntentChain>, String> {
-    if std::fs::symlink_metadata(session_dir.join(LEGACY_COMPOSER_INTENT_FILE)).is_ok() {
-        return Err("legacy adoption publish intent was preserved".into());
-    }
-    let mut files = Vec::new();
-    let mut intents = Vec::new();
-    let mut missing_phase = false;
-    for (expected_phase, name) in [
-        (
-            ComposerPublishPhase::Reserved,
-            RESERVED_COMPOSER_INTENT_FILE,
-        ),
-        (ComposerPublishPhase::Owned, OWNED_COMPOSER_INTENT_FILE),
-        (
-            ComposerPublishPhase::Complete,
-            COMPLETE_COMPOSER_INTENT_FILE,
-        ),
-    ] {
-        let path = session_dir.join(name);
-        match std::fs::symlink_metadata(&path) {
-            Ok(_) if missing_phase => {
-                return Err("adoption publish intent phases are not a durable prefix".into())
-            }
-            Ok(_) => {
-                let (file, bytes) = lock_bounded_regular_file(
-                    &path,
-                    session_dir,
-                    "adoption publish intent",
-                    32 * 1024,
-                )?;
-                let intent: ComposerPublishIntent = serde_json::from_slice(&bytes)
-                    .map_err(|error| format!("invalid adoption publish intent: {error}"))?;
-                let phase = validate_adoption_publish_intent(
-                    &intent,
-                    session_id,
-                    expected_body_sha256,
-                    expected_profile_sha256,
-                )?;
-                if phase != expected_phase {
-                    return Err("adoption publish intent phase file has the wrong phase".into());
-                }
-                files.push(OwnedIntentFile { path, guard: file });
-                intents.push(intent);
-            }
-            Err(error) if error.kind() == std::io::ErrorKind::NotFound => missing_phase = true,
-            Err(error) => return Err(format!("inspect adoption publish intent: {error}")),
-        }
-    }
-    if intents.is_empty() {
-        return Ok(None);
-    }
-    let reserved = &intents[0];
-    for intent in intents.iter().skip(1) {
-        if intent.version != reserved.version
-            || intent.session_id != reserved.session_id
-            || intent.stage_name != reserved.stage_name
-            || intent.body_sha256 != reserved.body_sha256
-            || intent.profile_sha256 != reserved.profile_sha256
-            || intent.recipe_sha256 != reserved.recipe_sha256
-        {
-            return Err("adoption publish intent immutable prefix changed".into());
-        }
-    }
-    if intents.len() == 3 && intents[1].directory_identity != intents[2].directory_identity {
-        return Err("adoption publish intent directory identity changed".into());
-    }
-    Ok(Some(LockedIntentChain {
-        files,
-        highest: intents.pop().expect("non-empty adoption intent chain"),
-    }))
+    load_locked_intent_chain_for(session_dir, ADOPTION_NAMESPACE, false, |intent| {
+        validate_adoption_publish_intent(
+            intent,
+            session_id,
+            expected_body_sha256,
+            expected_profile_sha256,
+        )
+    })
 }
 
 fn validate_adoption_publish_intent(
@@ -1198,23 +1178,7 @@ fn validate_adoption_publish_intent(
     {
         return Err("adoption publish intent does not match durable template facts".into());
     }
-    let phase = intent
-        .phase
-        .ok_or("adoption publish intent has no durable ownership phase")?;
-    match phase {
-        ComposerPublishPhase::Reserved
-            if intent.directory_identity.is_none() && intent.file_identities.is_none() => {}
-        ComposerPublishPhase::Owned
-            if intent.directory_identity.is_some() && intent.file_identities.is_none() => {}
-        ComposerPublishPhase::Complete
-            if intent.directory_identity.is_some()
-                && intent
-                    .file_identities
-                    .as_ref()
-                    .is_some_and(|identities| identities.len() == 2) => {}
-        _ => return Err("adoption publish intent ownership is inconsistent".into()),
-    }
-    Ok(phase)
+    validate_publish_phase_ownership(intent, 2, "adoption")
 }
 
 fn lock_exact_adoption_candidate_file_set(
@@ -1260,30 +1224,13 @@ fn verify_adoption_file_identities(
     files: &[std::fs::File],
     expected: &[FileIdentity],
 ) -> Result<(), String> {
-    if files.len() != 2 || expected.len() != 2 {
-        return Err("adoption candidate intent must own exactly two files".into());
-    }
-    let entries = collect_bounded_directory_names(
-        std::fs::read_dir(&directory.path)
-            .map_err(|error| format!("read adoption publication: {error}"))?
-            .map(|entry| {
-                entry
-                    .map(|entry| entry.file_name())
-                    .map_err(|error| error.to_string())
-            }),
+    verify_file_identities_for(
+        directory,
+        files,
+        expected,
+        &["body.png", "motion-profile.json"],
         "adoption publication",
-    )?;
-    let roles = ["body.png", "motion-profile.json"];
-    for (name, file) in entries.iter().zip(files) {
-        let role = roles
-            .iter()
-            .position(|expected_name| expected_name == name)
-            .ok_or("adoption publication contains an unexpected file")?;
-        if file_identity(file)? != expected[role] {
-            return Err(format!("adoption publication {name} identity changed"));
-        }
-    }
-    Ok(())
+    )
 }
 
 pub fn recover_exact_adoption_orphan(
@@ -1392,7 +1339,7 @@ pub fn recover_exact_adoption_orphan(
     Ok(true)
 }
 
-pub fn clear_committed_adoption_publish_intent(
+pub fn verify_committed_adoption_candidate(
     app_data_dir: &Path,
     session_id: &str,
     expected_body_sha256: &str,
@@ -1413,17 +1360,12 @@ pub fn clear_committed_adoption_publish_intent(
     {
         return Err("adoption session directory escapes app data".into());
     }
-    let chain = match load_locked_adoption_intent_chain(
+    let chain = load_locked_adoption_intent_chain(
         &session_guard.path,
         session_id,
         expected_body_sha256,
         expected_profile_sha256,
-    )? {
-        Some(chain) => chain,
-        None => return Ok(false),
-    };
-    let intent = &chain.highest;
-    let phase = intent.phase.expect("validated adoption phase");
+    )?;
     let candidate_guard = OwnedDirectoryGuard::open(
         &session_guard.path.join("candidate"),
         "stored adoption candidate",
@@ -1431,24 +1373,34 @@ pub fn clear_committed_adoption_publish_intent(
     if candidate_guard.path.parent() != Some(session_guard.path.as_path()) {
         return Err("stored adoption candidate escapes its session".into());
     }
-    if phase != ComposerPublishPhase::Reserved {
-        verify_owned_directory_identity(&candidate_guard, intent)?;
-    }
     let (files, bytes) = lock_exact_adoption_candidate_file_set(&candidate_guard)?;
     validate_adoption_candidate_bytes(&bytes[0], &bytes[1])?;
-    if phase == ComposerPublishPhase::Complete {
+    if sha256_hex(&bytes[0]) != expected_body_sha256
+        || sha256_hex(&bytes[1]) != expected_profile_sha256
+    {
+        return Err("committed adoption candidate does not match durable provenance".into());
+    }
+    if let Some(chain) = chain {
+        let intent = &chain.highest;
+        let phase = intent.phase.expect("validated adoption phase");
+        if phase != ComposerPublishPhase::Complete {
+            return Err("database candidate has an incomplete adoption publish intent".into());
+        }
+        verify_owned_directory_identity(&candidate_guard, intent)?;
         verify_adoption_file_identities(
             &candidate_guard,
             &files,
             intent.file_identities.as_deref().unwrap_or_default(),
         )?;
+        if sha256_hex(&bytes[0]) != intent.body_sha256
+            || sha256_hex(&bytes[1]) != intent.profile_sha256
+        {
+            return Err("committed adoption candidate does not match its intent".into());
+        }
+        delete_locked_intent_files(chain.files)?;
+        return Ok(true);
     }
-    if sha256_hex(&bytes[0]) != intent.body_sha256 || sha256_hex(&bytes[1]) != intent.profile_sha256
-    {
-        return Err("committed adoption candidate does not match its intent".into());
-    }
-    delete_locked_intent_files(chain.files)?;
-    Ok(true)
+    Ok(false)
 }
 
 pub fn remove_empty_adoption_session_directory(
@@ -2102,141 +2054,85 @@ fn validate_adoption_candidate_bytes(body: &[u8], motion_profile: &[u8]) -> Resu
     Ok(())
 }
 
-fn lock_adoption_candidate_files(
+fn lock_candidate_files_for(
     directory: &OwnedDirectoryGuard,
-    body: &[u8],
-    profile: &[u8],
+    expected_files: &[CandidateFile<'_>],
+    label: &str,
 ) -> Result<Vec<std::fs::File>, String> {
     #[cfg(not(windows))]
     {
-        let _ = (directory, body, profile);
-        return Err("secure adoption file validation currently requires Windows handles".into());
+        let _ = (directory, expected_files, label);
+        return Err("secure candidate file validation currently requires Windows handles".into());
     }
     #[cfg(windows)]
     {
         let mut files = Vec::new();
-        for (name, expected, limit) in [
-            ("body.png", body, MAX_COMPOSER_PNG_BYTES as u64),
-            ("motion-profile.json", profile, MAX_COMPOSER_JSON_BYTES),
-        ] {
+        for expected in expected_files {
             let (file, actual) = lock_bounded_regular_file(
-                &directory.path.join(name),
+                &directory.path.join(expected.name),
                 &directory.path,
-                &format!("adoption candidate {name}"),
-                limit,
+                &format!("{label} candidate {}", expected.name),
+                expected.limit,
             )?;
-            if actual != expected {
+            if actual != expected.bytes {
                 return Err(format!(
-                    "adoption candidate {name} changed during publication"
+                    "{label} candidate {} changed during publication",
+                    expected.name
                 ));
             }
             files.push(file);
         }
+        validate_locked_candidate_files_for(directory, &files, expected_files, label)?;
         Ok(files)
     }
 }
 
-fn validate_locked_adoption_candidate_files(
+fn validate_locked_candidate_files_for(
     directory: &OwnedDirectoryGuard,
     files: &[std::fs::File],
-    body: &[u8],
-    profile: &[u8],
+    expected_files: &[CandidateFile<'_>],
+    label: &str,
 ) -> Result<(), String> {
-    if files.len() != 2 {
-        return Err("adoption candidate does not own exactly two locked files".into());
+    if files.len() != expected_files.len() {
+        return Err(format!(
+            "{label} candidate does not own exactly {} locked files",
+            expected_files.len()
+        ));
     }
-    for (index, (name, expected)) in [("body.png", body), ("motion-profile.json", profile)]
-        .into_iter()
-        .enumerate()
-    {
+    let actual_names = collect_bounded_directory_names(
+        std::fs::read_dir(&directory.path)
+            .map_err(|error| format!("read locked {label} candidate: {error}"))?
+            .map(|entry| {
+                entry
+                    .map(|entry| entry.file_name())
+                    .map_err(|error| error.to_string())
+            }),
+        &format!("locked {label} candidate"),
+    )?;
+    let expected_names = expected_files
+        .iter()
+        .map(|file| file.name.to_owned())
+        .collect::<std::collections::BTreeSet<_>>();
+    if actual_names != expected_names {
+        return Err(format!(
+            "{label} candidate file roles changed during publication"
+        ));
+    }
+    for (index, expected) in expected_files.iter().enumerate() {
         let canonical = directory
             .path
-            .join(name)
+            .join(expected.name)
             .canonicalize()
-            .map_err(|error| format!("resolve locked adoption candidate {name}: {error}"))?;
-        if canonical.parent() != Some(directory.path.as_path()) {
-            return Err(format!("adoption candidate {name} escapes its directory"));
-        }
-        let mut reader = files[index]
-            .try_clone()
-            .map_err(|error| error.to_string())?;
-        reader
-            .seek(std::io::SeekFrom::Start(0))
-            .map_err(|error| error.to_string())?;
-        let mut actual = Vec::new();
-        reader
-            .read_to_end(&mut actual)
-            .map_err(|error| error.to_string())?;
-        if actual != expected {
-            return Err(format!("locked adoption candidate {name} changed"));
-        }
-    }
-    Ok(())
-}
-
-fn lock_candidate_files(
-    directory: &OwnedDirectoryGuard,
-    body: &[u8],
-    profile: &[u8],
-    recipe: &[u8],
-) -> Result<Vec<std::fs::File>, String> {
-    #[cfg(not(windows))]
-    {
-        let _ = (directory, body, profile, recipe);
-        return Err("secure composer file validation currently requires Windows handle I/O".into());
-    }
-    #[cfg(windows)]
-    {
-        let mut files = Vec::new();
-        for (name, expected, limit) in [
-            ("body.png", body, MAX_COMPOSER_PNG_BYTES as u64),
-            ("motion-profile.json", profile, MAX_COMPOSER_JSON_BYTES),
-            ("recipe.json", recipe, MAX_COMPOSER_JSON_BYTES),
-        ] {
-            let path = directory.path.join(name);
-            let (file, actual) = lock_bounded_regular_file(
-                &path,
-                &directory.path,
-                &format!("composer candidate {name}"),
-                limit,
-            )?;
-            if actual != expected {
-                return Err(format!(
-                    "existing composer candidate {name} is not owned by this request"
-                ));
-            }
-            files.push(file);
-        }
-        Ok(files)
-    }
-}
-
-fn validate_locked_candidate_files(
-    directory: &OwnedDirectoryGuard,
-    files: &[std::fs::File],
-    body: &[u8],
-    profile: &[u8],
-    recipe: &[u8],
-) -> Result<(), String> {
-    if files.len() != 3 {
-        return Err("composer candidate does not own exactly three locked files".into());
-    }
-    for (index, (name, expected)) in [
-        ("body.png", body),
-        ("motion-profile.json", profile),
-        ("recipe.json", recipe),
-    ]
-    .into_iter()
-    .enumerate()
-    {
-        let canonical = directory
-            .path
-            .join(name)
-            .canonicalize()
-            .map_err(|error| format!("resolve locked composer candidate {name}: {error}"))?;
+            .map_err(|error| {
+                format!(
+                    "resolve locked {label} candidate {}: {error}",
+                    expected.name
+                )
+            })?;
         if canonical.parent() != Some(directory.path.as_path()) {
             return Err(format!(
-                "composer candidate {name} escapes its candidate directory"
+                "{label} candidate {} escapes its directory",
+                expected.name
             ));
         }
         let mut reader = files[index]
@@ -2247,11 +2143,13 @@ fn validate_locked_candidate_files(
             .map_err(|error| error.to_string())?;
         let mut actual = Vec::new();
         reader
+            .take(expected.limit + 1)
             .read_to_end(&mut actual)
             .map_err(|error| error.to_string())?;
-        if actual != expected {
+        if actual != expected.bytes {
             return Err(format!(
-                "locked composer candidate {name} changed during publication"
+                "locked {label} candidate {} changed",
+                expected.name
             ));
         }
     }
@@ -2348,6 +2246,9 @@ fn intent_phase_for_path(path: &Path) -> Option<ComposerPublishPhase> {
         Some(RESERVED_COMPOSER_INTENT_FILE) => Some(ComposerPublishPhase::Reserved),
         Some(OWNED_COMPOSER_INTENT_FILE) => Some(ComposerPublishPhase::Owned),
         Some(COMPLETE_COMPOSER_INTENT_FILE) => Some(ComposerPublishPhase::Complete),
+        Some(RESERVED_ADOPTION_INTENT_FILE) => Some(ComposerPublishPhase::Reserved),
+        Some(OWNED_ADOPTION_INTENT_FILE) => Some(ComposerPublishPhase::Owned),
+        Some(COMPLETE_ADOPTION_INTENT_FILE) => Some(ComposerPublishPhase::Complete),
         _ => None,
     }
 }
@@ -4081,6 +3982,118 @@ mod tests {
         )
         .expect("Unicode extended-length app data path must publish");
         published.rollback().unwrap();
+    }
+
+    #[test]
+    fn adoption_recovery_never_recognizes_or_cleans_composer_phase_files() {
+        let test = ComposerCandidateHarness::new();
+        let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+        let profile = production_profile(&test.recipe);
+        let session_dir = test.root.join("creation-sessions").join(&test.session_id);
+        let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+            let _ = publish_composer_candidate_with_intent_phase_hooks(
+                &test.root,
+                &test.session_id,
+                &decoded.bytes,
+                &profile,
+                &test.recipe,
+                |_| panic!("simulated composer crash after reserved phase"),
+                |_| {},
+            );
+        }));
+        assert!(crashed.is_err());
+        assert!(session_dir.join(RESERVED_COMPOSER_INTENT_FILE).exists());
+
+        let recovered = recover_exact_adoption_orphan(
+            &test.root,
+            &test.session_id,
+            &sha256_hex(&decoded.bytes),
+            &sha256_hex(&serde_json::to_vec_pretty(&profile).unwrap()),
+        )
+        .unwrap();
+
+        assert!(!recovered);
+        assert!(session_dir.join(RESERVED_COMPOSER_INTENT_FILE).exists());
+    }
+
+    #[test]
+    fn adoption_phase_crashes_are_recovered_from_one_shared_publish_protocol() {
+        for crash_point in [
+            CandidateCrashPoint::AfterReserved,
+            CandidateCrashPoint::AfterOwned,
+            CandidateCrashPoint::AfterComplete,
+            CandidateCrashPoint::AfterMove,
+        ] {
+            let test = ComposerCandidateHarness::new();
+            let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+            let profile = serde_json::to_vec_pretty(&production_profile(&test.recipe)).unwrap();
+            let body_hash = sha256_hex(&decoded.bytes);
+            let profile_hash = sha256_hex(&profile);
+            let crashed = std::panic::catch_unwind(std::panic::AssertUnwindSafe(|| {
+                let _ = publish_adoption_candidate_with_crash_point(
+                    &test.root,
+                    &test.session_id,
+                    &decoded.bytes,
+                    &profile,
+                    crash_point,
+                );
+            }));
+            assert!(crashed.is_err(), "{crash_point:?} did not crash");
+
+            assert!(
+                recover_exact_adoption_orphan(
+                    &test.root,
+                    &test.session_id,
+                    &body_hash,
+                    &profile_hash,
+                )
+                .unwrap(),
+                "{crash_point:?} left no recoverable publication"
+            );
+            let session_dir = test.root.join("creation-sessions").join(&test.session_id);
+            assert!(!session_dir.join("candidate").exists());
+            assert!(std::fs::read_dir(&session_dir).unwrap().all(|entry| {
+                let name = entry.unwrap().file_name().to_string_lossy().into_owned();
+                !name.starts_with(".candidate-stage-")
+                    && !name.starts_with(".adoption-candidate-publish-intent-")
+            }));
+        }
+    }
+
+    #[test]
+    fn adoption_db_record_crash_reuses_candidate_and_clears_complete_intent() {
+        let test = ComposerCandidateHarness::new();
+        let decoded = decode_composer_png(&valid_candidate_b64()).unwrap();
+        let profile = serde_json::to_vec_pretty(&production_profile(&test.recipe)).unwrap();
+        let body_hash = sha256_hex(&decoded.bytes);
+        let profile_hash = sha256_hex(&profile);
+        let mut published =
+            publish_adoption_candidate(&test.root, &test.session_id, &decoded.bytes, &profile)
+                .unwrap();
+        CreationStore::new(test.storage.clone())
+            .record_local_candidate(
+                &test.session_id,
+                &published.body_path,
+                &published.motion_profile_path,
+            )
+            .unwrap();
+        published.simulate_process_exit_before_database_commit();
+        drop(published);
+        let session_dir = test.root.join("creation-sessions").join(&test.session_id);
+        assert!(session_dir.join(COMPLETE_ADOPTION_INTENT_FILE).exists());
+        assert_eq!(test.candidate_count(), 1);
+
+        assert!(verify_committed_adoption_candidate(
+            &test.root,
+            &test.session_id,
+            &body_hash,
+            &profile_hash,
+        )
+        .unwrap());
+
+        assert!(session_dir.join("candidate").exists());
+        assert!(!session_dir.join(COMPLETE_ADOPTION_INTENT_FILE).exists());
+        assert_eq!(test.candidate_count(), 1);
     }
 
     struct CandidateHarness {
