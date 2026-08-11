@@ -140,4 +140,29 @@ describe("creationApi", () => {
 
     expect(invoke).toHaveBeenCalledWith("creation_recover_finalization");
   });
+
+  it("loads the backend-owned adoption catalog without client arguments", async () => {
+    const invoke = vi.fn().mockResolvedValue([]);
+    const api = createCreationApi(invoke);
+
+    await api.adoptionCatalog();
+
+    expect(invoke).toHaveBeenCalledWith("creation_adoption_catalog");
+  });
+
+  it("starts adoption with only template identity and a display name", async () => {
+    const invoke = vi.fn().mockResolvedValue({ sessionId: "session-adoption" });
+    const api = createCreationApi(invoke);
+
+    await api.adoptionStart("cat-misty", "雾雾");
+
+    expect(invoke).toHaveBeenCalledWith("creation_adoption_start", {
+      templateId: "cat-misty",
+      displayName: "雾雾",
+    });
+    expect(Object.keys(vi.mocked(invoke).mock.calls[0]![1]!)).toEqual([
+      "templateId",
+      "displayName",
+    ]);
+  });
 });

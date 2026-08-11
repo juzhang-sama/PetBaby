@@ -1,3 +1,4 @@
+pub mod adoption;
 pub mod candidate;
 pub mod composer;
 pub mod content;

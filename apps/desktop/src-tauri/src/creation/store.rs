@@ -476,13 +476,13 @@ impl CreationStore {
     ) -> Result<StandardCandidate, String> {
         let body_path = body_path
             .canonicalize()
-            .map_err(|error| format!("composer candidate body is unavailable: {error}"))?;
+            .map_err(|error| format!("local candidate body is unavailable: {error}"))?;
         let motion_profile_path = motion_profile_path
             .canonicalize()
-            .map_err(|error| format!("composer motion profile is unavailable: {error}"))?;
+            .map_err(|error| format!("local motion profile is unavailable: {error}"))?;
         let candidate_dir = body_path
             .parent()
-            .ok_or("composer candidate body has no candidate directory")?;
+            .ok_or("local candidate body has no candidate directory")?;
         if body_path.file_name().and_then(|name| name.to_str()) != Some("body.png")
             || motion_profile_path
                 .file_name()
@@ -490,11 +490,11 @@ impl CreationStore {
                 != Some("motion-profile.json")
             || motion_profile_path.parent() != Some(candidate_dir)
         {
-            return Err("composer candidate uses non-standard files".into());
+            return Err("local candidate uses non-standard files".into());
         }
         for (path, label) in [
-            (&body_path, "composer candidate body"),
-            (&motion_profile_path, "composer motion profile"),
+            (&body_path, "local candidate body"),
+            (&motion_profile_path, "local motion profile"),
         ] {
             let metadata = std::fs::symlink_metadata(path)
                 .map_err(|error| format!("{label} is unavailable: {error}"))?;
@@ -504,11 +504,11 @@ impl CreationStore {
         }
         let body_path_text = body_path
             .to_str()
-            .ok_or("composer candidate body path is not valid Unicode")?
+            .ok_or("local candidate body path is not valid Unicode")?
             .to_owned();
         let motion_profile_path_text = motion_profile_path
             .to_str()
-            .ok_or("composer motion profile path is not valid Unicode")?
+            .ok_or("local motion profile path is not valid Unicode")?
             .to_owned();
         let candidate_id = crate::creation::domain::new_entity_id("candidate");
         let created_at = profiles::now_iso();
@@ -527,18 +527,20 @@ impl CreationStore {
             .map_err(|error| error.to_string())?;
         let (pet_id, method, status) =
             session.ok_or_else(|| format!("creation session not found: {session_id}"))?;
-        if method != "composer" || status != "draft" {
-            return Err("local candidate requires an editable composer draft".into());
+        if !matches!(method.as_str(), "composer" | "adoption") || status != "draft" {
+            return Err("local candidate requires an editable local creation draft".into());
         }
-        let has_recipe: bool = tx
-            .query_row(
-                "SELECT EXISTS(SELECT 1 FROM composer_recipes WHERE session_id=?1)",
-                [session_id],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if !has_recipe {
-            return Err("composer candidate requires a saved recipe".into());
+        if method == "composer" {
+            let has_recipe: bool = tx
+                .query_row(
+                    "SELECT EXISTS(SELECT 1 FROM composer_recipes WHERE session_id=?1)",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if !has_recipe {
+                return Err("composer candidate requires a saved recipe".into());
+            }
         }
         let current_candidate: i64 = tx
             .query_row(
@@ -548,7 +550,7 @@ impl CreationStore {
             )
             .map_err(|error| error.to_string())?;
         if current_candidate != 0 {
-            return Err("composer session already has a current candidate".into());
+            return Err("local creation session already has a current candidate".into());
         }
         tx.execute(
             "INSERT INTO appearance_variants
@@ -570,12 +572,12 @@ impl CreationStore {
                 "UPDATE creation_sessions
                  SET status='candidateReady', last_stable_status='candidateReady',
                      current_step='review', error=NULL, updated_at=?3
-                 WHERE session_id=?1 AND pet_id=?2 AND method='composer' AND status='draft'",
-                rusqlite::params![session_id, pet_id, created_at],
+                 WHERE session_id=?1 AND pet_id=?2 AND method=?4 AND status='draft'",
+                rusqlite::params![session_id, pet_id, created_at, method],
             )
             .map_err(|error| error.to_string())?;
         if affected != 1 {
-            return Err("composer session is no longer eligible for a candidate".into());
+            return Err("local creation session is no longer eligible for a candidate".into());
         }
         tx.commit().map_err(|error| error.to_string())?;
         Ok(StandardCandidate {

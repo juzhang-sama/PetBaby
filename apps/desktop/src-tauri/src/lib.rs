@@ -397,6 +397,22 @@ fn creation_composer_candidate(
 }
 
 #[tauri::command]
+fn creation_adoption_catalog(
+    service: tauri::State<'_, creation::SharedCreationService>,
+) -> Result<Vec<creation::adoption::AdoptionCatalogEntry>, String> {
+    service.adoption_catalog()
+}
+
+#[tauri::command]
+fn creation_adoption_start(
+    service: tauri::State<'_, creation::SharedCreationService>,
+    template_id: String,
+    display_name: String,
+) -> Result<creation::domain::CreationSnapshot, String> {
+    service.start_adoption(&template_id, &display_name)
+}
+
+#[tauri::command]
 fn creation_abandon(
     service: tauri::State<'_, creation::SharedCreationService>,
     session_id: String,
@@ -1077,6 +1093,8 @@ pub fn run() {
             creation_set_name,
             creation_composer_save,
             creation_composer_candidate,
+            creation_adoption_catalog,
+            creation_adoption_start,
             creation_abandon,
             creation_prepare_finalize,
             creation_abort_finalize,
@@ -1276,6 +1294,12 @@ mod tests {
         let _upload_source = super::creation_upload_source;
         let _upload_retry = super::creation_upload_retry;
         let _candidate_assets = super::creation_upload_candidate_assets;
+    }
+
+    #[test]
+    fn creation_adoption_commands_are_available() {
+        let _catalog = super::creation_adoption_catalog;
+        let _start = super::creation_adoption_start;
     }
 
     #[test]

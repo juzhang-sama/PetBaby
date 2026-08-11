@@ -1,0 +1,1645 @@
+use crate::creation::candidate;
+use crate::creation::content::ContentRoot;
+use crate::creation::domain::{
+    new_entity_id, CreationMethod, CreationSessionStatus, CreationSnapshot,
+};
+use crate::creation::name::normalize_display_name;
+use crate::creation::store::CreationStore;
+use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
+use crate::pets::repository::PetRepository;
+use crate::runtime_assets::motion_profile::parse_motion_profile;
+use crate::storage::Storage;
+use image::ImageDecoder as _;
+use rusqlite::{Connection, OptionalExtension};
+use sha2::{Digest, Sha256};
+use std::io::{Cursor, Read, Seek};
+use std::path::{Component, Path, PathBuf};
+use std::sync::{Arc, Mutex};
+use unicode_segmentation::UnicodeSegmentation;
+
+#[cfg(windows)]
+use std::os::windows::{
+    fs::OpenOptionsExt,
+    io::{AsRawHandle, FromRawHandle, OwnedHandle},
+};
+
+const CATALOG_SCHEMA_VERSION: u32 = 1;
+const RUNTIME_SCHEMA_VERSION: u32 = 3;
+const TEMPLATE_COUNT: usize = 8;
+const MAX_CATALOG_BYTES: u64 = 256 * 1024;
+const MAX_BODY_BYTES: u64 = 10 * 1024 * 1024;
+const MAX_THUMBNAIL_BYTES: u64 = 5 * 1024 * 1024;
+const MAX_MOTION_PROFILE_BYTES: u64 = 64 * 1024;
+const MAX_PERSONALITY_GRAPHEMES: usize = 200;
+
+#[derive(Debug, Clone, serde::Serialize, serde::Deserialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct AdoptionTemplate {
+    pub template_id: String,
+    pub template_version: u32,
+    pub runtime_schema_version: u32,
+    pub default_name: String,
+    pub personality: String,
+    pub thumbnail_path: String,
+    pub body_path: String,
+    pub motion_profile_path: String,
+    pub thumbnail_sha256: String,
+    pub body_sha256: String,
+    pub motion_profile_sha256: String,
+}
+
+#[derive(Debug, Clone, serde::Serialize, PartialEq, Eq)]
+#[serde(rename_all = "camelCase")]
+pub struct AdoptionCatalogEntry {
+    pub template: AdoptionTemplate,
+    pub adopted_pet_id: Option<String>,
+    pub retry_session_id: Option<String>,
+}
+
+#[derive(Debug, serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+struct AdoptionCatalogManifest {
+    schema_version: u32,
+    templates: Vec<AdoptionTemplate>,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+#[allow(dead_code)]
+struct StrictMotionProfileShape {
+    profile_version: u32,
+    engine_profile: String,
+    alpha_bounds: StrictRectShape,
+    breath_zone: StrictRectShape,
+    sway_pivot: StrictPointShape,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct StrictRectShape {
+    left: f32,
+    top: f32,
+    right: f32,
+    bottom: f32,
+}
+
+#[derive(serde::Deserialize)]
+#[serde(deny_unknown_fields)]
+#[allow(dead_code)]
+struct StrictPointShape {
+    x: f32,
+    y: f32,
+}
+
+struct ValidatedTemplate {
+    template: AdoptionTemplate,
+    body: Vec<u8>,
+    motion_profile: Vec<u8>,
+}
+
+#[derive(Debug)]
+struct AdoptionFact {
+    pet_id: String,
+    source_template_version: u32,
+    lifecycle: String,
+    pet_completed_at: Option<String>,
+    session_id: Option<String>,
+    session_method: Option<String>,
+    status: Option<String>,
+    last_stable_status: Option<String>,
+    session_completed_at: Option<String>,
+    candidate_count: i64,
+    accepted_count: i64,
+    accepted_runtime_count: i64,
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum AdoptionFactState {
+    Adopted,
+    Retryable,
+}
+
+struct AdoptionReservation {
+    session_id: String,
+    pet_id: String,
+    source_template_version: u32,
+    newly_created: bool,
+}
+
+pub(crate) fn catalog(
+    storage: &Arc<Mutex<Storage>>,
+    content_root: &ContentRoot,
+) -> Result<Vec<AdoptionCatalogEntry>, String> {
+    let templates = load_catalog(content_root)?;
+    let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    templates
+        .into_iter()
+        .map(|validated| {
+            let facts = adoption_facts(&storage.db, &validated.template.template_id)?;
+            let (adopted_pet_id, retry_session_id) = project_facts(&facts)?;
+            Ok(AdoptionCatalogEntry {
+                template: validated.template,
+                adopted_pet_id,
+                retry_session_id,
+            })
+        })
+        .collect()
+}
+
+pub(crate) fn start(
+    storage: &Arc<Mutex<Storage>>,
+    app_data_dir: &Path,
+    content_root: &ContentRoot,
+    mutation_gate: &SharedPetMutationGate,
+    template_id: &str,
+    display_name: &str,
+) -> Result<CreationSnapshot, String> {
+    validate_template_id(template_id)?;
+    let display_name = normalize_display_name(display_name)?;
+    let templates = load_catalog(content_root)?;
+    let template = templates
+        .into_iter()
+        .find(|candidate| candidate.template.template_id == template_id)
+        .ok_or_else(|| format!("adoption template not found: {template_id}"))?;
+    let reservation = reserve_or_load(storage, &template.template, &display_name)?;
+    let request_id = new_entity_id("adoption-start");
+    let _operation =
+        mutation_gate.scoped(&request_id, MutationKind::Creation, &reservation.pet_id)?;
+
+    let stable = load_stable_reservation(storage, template_id, &reservation)?;
+    if stable.source_template_version != template.template.template_version
+        && stable.snapshot.candidate_id.is_none()
+    {
+        return Err(format!(
+            "adoption template version {} is unavailable for retry session {}",
+            stable.source_template_version, stable.snapshot.session_id
+        ));
+    }
+    if stable.snapshot.candidate_id.is_some() {
+        if stable.source_template_version == template.template.template_version {
+            candidate::clear_committed_adoption_publish_intent(
+                app_data_dir,
+                &stable.snapshot.session_id,
+                &template.template.body_sha256,
+                &template.template.motion_profile_sha256,
+            )?;
+        }
+        return Ok(stable.snapshot);
+    }
+
+    let attempt = (|| {
+        candidate::recover_exact_adoption_orphan(
+            app_data_dir,
+            &stable.snapshot.session_id,
+            &template.template.body_sha256,
+            &template.template.motion_profile_sha256,
+        )?;
+        let mut published = candidate::publish_adoption_candidate(
+            app_data_dir,
+            &stable.snapshot.session_id,
+            &template.body,
+            &template.motion_profile,
+        )?;
+        let store = CreationStore::new(storage.clone());
+        match store.record_local_candidate(
+            &stable.snapshot.session_id,
+            &published.body_path,
+            &published.motion_profile_path,
+        ) {
+            Ok(_) => {
+                published.commit();
+                snapshot_for_session(storage, &stable.snapshot.session_id)
+            }
+            Err(error) => {
+                let rollback = published.rollback();
+                Err(match rollback {
+                    Ok(()) => error,
+                    Err(rollback) => format!("{error}; candidate rollback failed: {rollback}"),
+                })
+            }
+        }
+    })();
+
+    match attempt {
+        Ok(snapshot) => Ok(snapshot),
+        Err(error) => {
+            let cleanup =
+                cleanup_failed_attempt(storage, app_data_dir, &reservation, &template.template);
+            Err(match cleanup {
+                Ok(()) => error,
+                Err(cleanup) => format!("{error}; adoption cleanup failed: {cleanup}"),
+            })
+        }
+    }
+}
+
+struct StableReservation {
+    snapshot: CreationSnapshot,
+    source_template_version: u32,
+}
+
+fn reserve_or_load(
+    storage: &Arc<Mutex<Storage>>,
+    template: &AdoptionTemplate,
+    display_name: &str,
+) -> Result<AdoptionReservation, String> {
+    let mut storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    let tx = storage
+        .db
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let facts = adoption_facts(&tx, &template.template_id)?;
+    if let Some(existing) = one_existing_reservation(&facts)? {
+        return reservation_from_fact(existing, false);
+    }
+
+    let pet = match PetRepository::reserve_in_transaction(
+        &tx,
+        CreationMethod::Adoption,
+        Some((&template.template_id, template.template_version)),
+    ) {
+        Ok(pet) => pet,
+        Err(error) => {
+            drop(tx);
+            if error.contains("UNIQUE constraint failed") {
+                let winner = adoption_facts(&storage.db, &template.template_id)?;
+                if let Some(existing) = one_existing_reservation(&winner)? {
+                    return reservation_from_fact(existing, false);
+                }
+            }
+            return Err(error);
+        }
+    };
+    let session_id = new_entity_id("session");
+    validate_identifier(&session_id, "session id")?;
+    let now = crate::creation::profiles::now_iso();
+    let named = tx
+        .execute(
+            "UPDATE pets SET display_name=?2, updated_at=?3
+             WHERE pet_id=?1 AND creation_method='adoption' AND lifecycle='draft'",
+            rusqlite::params![pet.pet_id, display_name, now],
+        )
+        .map_err(|error| error.to_string())?;
+    if named != 1 {
+        return Err("new adoption pet could not store its normalized name".into());
+    }
+    tx.execute(
+        "INSERT INTO creation_sessions
+         (session_id, pet_id, method, status, last_stable_status, current_step,
+          schema_version, created_at, updated_at)
+         VALUES (?1, ?2, 'adoption', 'draft', 'draft', 'adoption', 1, ?3, ?3)",
+        rusqlite::params![session_id, pet.pet_id, now],
+    )
+    .map_err(|error| error.to_string())?;
+    tx.commit().map_err(|error| error.to_string())?;
+    Ok(AdoptionReservation {
+        session_id,
+        pet_id: pet.pet_id,
+        source_template_version: template.template_version,
+        newly_created: true,
+    })
+}
+
+fn one_existing_reservation<'a>(
+    facts: &'a [AdoptionFact],
+) -> Result<Option<&'a AdoptionFact>, String> {
+    if facts.len() > 1 {
+        return Err("contradictory adoption facts: multiple live pets use one template".into());
+    }
+    let Some(fact) = facts.first() else {
+        return Ok(None);
+    };
+    match classify_fact(fact)? {
+        AdoptionFactState::Adopted => Err(format!(
+            "adoption template already adopted by petId={}",
+            fact.pet_id
+        )),
+        AdoptionFactState::Retryable => Ok(Some(fact)),
+    }
+}
+
+fn reservation_from_fact(
+    fact: &AdoptionFact,
+    newly_created: bool,
+) -> Result<AdoptionReservation, String> {
+    Ok(AdoptionReservation {
+        session_id: fact
+            .session_id
+            .clone()
+            .ok_or("contradictory adoption facts: live pet has no session")?,
+        pet_id: fact.pet_id.clone(),
+        source_template_version: fact.source_template_version,
+        newly_created,
+    })
+}
+
+fn load_stable_reservation(
+    storage: &Arc<Mutex<Storage>>,
+    template_id: &str,
+    expected: &AdoptionReservation,
+) -> Result<StableReservation, String> {
+    let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    let facts = adoption_facts(&storage.db, template_id)?;
+    if facts.len() != 1 {
+        return Err("contradictory adoption facts: reservation disappeared or multiplied".into());
+    }
+    let fact = &facts[0];
+    if fact.pet_id != expected.pet_id || fact.session_id.as_deref() != Some(&expected.session_id) {
+        return Err("adoption reservation changed before candidate publication".into());
+    }
+    match classify_fact(fact)? {
+        AdoptionFactState::Adopted => {
+            return Err(format!(
+                "adoption template already adopted by petId={}",
+                fact.pet_id
+            ))
+        }
+        AdoptionFactState::Retryable => {}
+    }
+    Ok(StableReservation {
+        snapshot: snapshot_from_db(&storage.db, &expected.session_id)?,
+        source_template_version: fact.source_template_version,
+    })
+}
+
+fn cleanup_failed_attempt(
+    storage: &Arc<Mutex<Storage>>,
+    app_data_dir: &Path,
+    reservation: &AdoptionReservation,
+    template: &AdoptionTemplate,
+) -> Result<(), String> {
+    candidate::recover_exact_adoption_orphan(
+        app_data_dir,
+        &reservation.session_id,
+        &template.body_sha256,
+        &template.motion_profile_sha256,
+    )?;
+    if !reservation.newly_created {
+        return Ok(());
+    }
+    candidate::remove_empty_adoption_session_directory(app_data_dir, &reservation.session_id)?;
+    let mut storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    let tx = storage
+        .db
+        .transaction()
+        .map_err(|error| error.to_string())?;
+    let removed = tx
+        .execute(
+            "DELETE FROM pets
+             WHERE pet_id=?1 AND source_template_id=?2
+               AND source_template_version=?3 AND creation_method='adoption'
+               AND lifecycle='draft' AND completed_at IS NULL
+               AND EXISTS (SELECT 1 FROM creation_sessions cs
+                           WHERE cs.session_id=?4 AND cs.pet_id=pets.pet_id
+                             AND cs.method='adoption'
+                             AND cs.status NOT IN ('completed','abandoned'))",
+            rusqlite::params![
+                reservation.pet_id,
+                template.template_id,
+                reservation.source_template_version,
+                reservation.session_id
+            ],
+        )
+        .map_err(|error| error.to_string())?;
+    if removed != 1 {
+        return Err("new adoption reservation changed before rollback".into());
+    }
+    tx.commit().map_err(|error| error.to_string())
+}
+
+fn project_facts(facts: &[AdoptionFact]) -> Result<(Option<String>, Option<String>), String> {
+    if facts.len() > 1 {
+        return Err("contradictory adoption facts: multiple live pets use one template".into());
+    }
+    let Some(fact) = facts.first() else {
+        return Ok((None, None));
+    };
+    match classify_fact(fact)? {
+        AdoptionFactState::Adopted => Ok((Some(fact.pet_id.clone()), None)),
+        AdoptionFactState::Retryable => Ok((
+            None,
+            Some(
+                fact.session_id
+                    .clone()
+                    .ok_or("contradictory adoption facts: retry pet has no session")?,
+            ),
+        )),
+    }
+}
+
+fn classify_fact(fact: &AdoptionFact) -> Result<AdoptionFactState, String> {
+    if fact.source_template_version == 0 {
+        return Err("contradictory adoption facts: source version must be positive".into());
+    }
+    let session_id = fact
+        .session_id
+        .as_deref()
+        .ok_or("contradictory adoption facts: live adoption pet has no session")?;
+    validate_identifier(&fact.pet_id, "adoption pet id")?;
+    validate_identifier(session_id, "adoption session id")?;
+    if fact.session_method.as_deref() != Some("adoption") {
+        return Err("contradictory adoption facts: session method does not match pet".into());
+    }
+    let status = fact
+        .status
+        .as_deref()
+        .ok_or("contradictory adoption facts: adoption session has no status")?;
+    let durable = fact.lifecycle == "ready"
+        && fact.pet_completed_at.is_some()
+        && fact.accepted_count == 1
+        && fact.accepted_runtime_count == 1
+        && fact.candidate_count == 1
+        && matches!(status, "completed" | "finalizing")
+        && (status != "completed" || fact.session_completed_at.is_some());
+    if durable {
+        return Ok(AdoptionFactState::Adopted);
+    }
+
+    let pending_candidate_count_is_valid = match status {
+        "draft" => fact.candidate_count == 0,
+        "candidateReady" | "finalizing" => fact.candidate_count == 1,
+        "retryableFailure" => match fact.last_stable_status.as_deref() {
+            Some("draft") => fact.candidate_count == 0,
+            Some("candidateReady") => fact.candidate_count == 1,
+            _ => false,
+        },
+        _ => false,
+    };
+    let pending = fact.lifecycle == "draft"
+        && fact.pet_completed_at.is_none()
+        && fact.session_completed_at.is_none()
+        && fact.accepted_count == 0
+        && fact.accepted_runtime_count == 0
+        && pending_candidate_count_is_valid;
+    if pending {
+        Ok(AdoptionFactState::Retryable)
+    } else {
+        Err(format!(
+            "contradictory adoption facts for pet {} and session {session_id}",
+            fact.pet_id
+        ))
+    }
+}
+
+fn adoption_facts(db: &Connection, template_id: &str) -> Result<Vec<AdoptionFact>, String> {
+    let mut statement = db
+        .prepare(
+            "SELECT p.pet_id, p.source_template_version, p.lifecycle, p.completed_at,
+                    cs.session_id, cs.method, cs.status, cs.last_stable_status, cs.completed_at,
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id),
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1),
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
+                     WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1)
+             FROM pets p
+             LEFT JOIN creation_sessions cs ON cs.pet_id=p.pet_id
+             WHERE p.creation_method='adoption' AND p.source_template_id=?1
+               AND p.lifecycle!='abandoned'
+             ORDER BY p.rowid, cs.rowid",
+        )
+        .map_err(|error| error.to_string())?;
+    let rows = statement
+        .query_map([template_id], |row| {
+            let version: i64 = row.get(1)?;
+            Ok(AdoptionFact {
+                pet_id: row.get(0)?,
+                source_template_version: u32::try_from(version).unwrap_or_default(),
+                lifecycle: row.get(2)?,
+                pet_completed_at: row.get(3)?,
+                session_id: row.get(4)?,
+                session_method: row.get(5)?,
+                status: row.get(6)?,
+                last_stable_status: row.get(7)?,
+                session_completed_at: row.get(8)?,
+                candidate_count: row.get(9)?,
+                accepted_count: row.get(10)?,
+                accepted_runtime_count: row.get(11)?,
+            })
+        })
+        .map_err(|error| error.to_string())?;
+    rows.collect::<Result<Vec<_>, _>>()
+        .map_err(|error| error.to_string())
+}
+
+fn snapshot_for_session(
+    storage: &Arc<Mutex<Storage>>,
+    session_id: &str,
+) -> Result<CreationSnapshot, String> {
+    let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
+    snapshot_from_db(&storage.db, session_id)
+}
+
+fn snapshot_from_db(db: &Connection, session_id: &str) -> Result<CreationSnapshot, String> {
+    db.query_row(
+        "SELECT cs.session_id, cs.pet_id, cs.status, cs.last_stable_status,
+                cs.current_step, p.display_name, cs.error,
+                (SELECT av.variant_id FROM appearance_variants av
+                 WHERE av.session_id=cs.session_id AND av.pet_id=cs.pet_id
+                 ORDER BY av.created_at DESC, av.rowid DESC LIMIT 1)
+         FROM creation_sessions cs JOIN pets p ON p.pet_id=cs.pet_id
+         WHERE cs.session_id=?1 AND cs.method='adoption' AND p.creation_method='adoption'",
+        [session_id],
+        |row| {
+            let status: String = row.get(2)?;
+            let last_stable_status: String = row.get(3)?;
+            Ok(CreationSnapshot {
+                session_id: row.get(0)?,
+                pet_id: row.get(1)?,
+                method: CreationMethod::Adoption,
+                status: parse_status(&status).map_err(to_sql_error)?,
+                last_stable_status: parse_status(&last_stable_status).map_err(to_sql_error)?,
+                current_step: row.get(4)?,
+                display_name: row.get(5)?,
+                job_id: None,
+                job_status: None,
+                candidate_id: row.get(7)?,
+                recipe: None,
+                error: row.get(6)?,
+            })
+        },
+    )
+    .optional()
+    .map_err(|error| error.to_string())?
+    .ok_or_else(|| format!("creation session not found: {session_id}"))
+}
+
+fn to_sql_error(error: String) -> rusqlite::Error {
+    rusqlite::Error::FromSqlConversionFailure(
+        0,
+        rusqlite::types::Type::Text,
+        Box::new(std::io::Error::new(std::io::ErrorKind::InvalidData, error)),
+    )
+}
+
+fn parse_status(value: &str) -> Result<CreationSessionStatus, String> {
+    match value {
+        "draft" => Ok(CreationSessionStatus::Draft),
+        "candidateReady" => Ok(CreationSessionStatus::CandidateReady),
+        "finalizing" => Ok(CreationSessionStatus::Finalizing),
+        "retryableFailure" => Ok(CreationSessionStatus::RetryableFailure),
+        "completed" => Ok(CreationSessionStatus::Completed),
+        "abandoned" => Ok(CreationSessionStatus::Abandoned),
+        _ => Err(format!("unknown creation session status: {value}")),
+    }
+}
+
+fn load_catalog(content_root: &ContentRoot) -> Result<Vec<ValidatedTemplate>, String> {
+    (|| {
+        let content_guard = ReadOnlyDirectoryGuard::open(content_root.as_path(), "content root")?;
+        if content_guard.path != content_root.as_path() {
+            return Err("content root identity changed after setup".into());
+        }
+        let adoption_guard = content_guard.child("adoption", "adoption catalog directory")?;
+        let catalog_bytes = adoption_guard.read_file(
+            "catalog.json",
+            "adoption catalog manifest",
+            MAX_CATALOG_BYTES,
+        )?;
+        let manifest: AdoptionCatalogManifest = serde_json::from_slice(&catalog_bytes)
+            .map_err(|error| format!("adoption catalog JSON is invalid: {error}"))?;
+        if manifest.schema_version != CATALOG_SCHEMA_VERSION {
+            return Err(format!(
+                "adoption catalog schema version must be {CATALOG_SCHEMA_VERSION}"
+            ));
+        }
+        if manifest.templates.len() != TEMPLATE_COUNT {
+            return Err(format!(
+                "adoption catalog must contain exactly {TEMPLATE_COUNT} templates"
+            ));
+        }
+        let mut ids = std::collections::HashSet::new();
+        let mut validated = Vec::with_capacity(TEMPLATE_COUNT);
+        for template in manifest.templates {
+            validate_template(&template)?;
+            if !ids.insert(template.template_id.clone()) {
+                return Err(format!(
+                    "adoption catalog contains duplicate template id: {}",
+                    template.template_id
+                ));
+            }
+            let template_guard =
+                adoption_guard.child(&template.template_id, "adoption template directory")?;
+            let thumbnail = template_guard.read_relative_file(
+                &template.thumbnail_path,
+                "adoption thumbnail",
+                MAX_THUMBNAIL_BYTES,
+            )?;
+            verify_hash(&thumbnail, &template.thumbnail_sha256, "adoption thumbnail")?;
+            validate_png(&thumbnail, 512, 512, false, "adoption thumbnail")?;
+            let body = template_guard.read_relative_file(
+                &template.body_path,
+                "adoption body",
+                MAX_BODY_BYTES,
+            )?;
+            verify_hash(&body, &template.body_sha256, "adoption body")?;
+            validate_png(&body, 1024, 1024, true, "adoption body")?;
+            let motion_profile = template_guard.read_relative_file(
+                &template.motion_profile_path,
+                "adoption motion profile",
+                MAX_MOTION_PROFILE_BYTES,
+            )?;
+            verify_hash(
+                &motion_profile,
+                &template.motion_profile_sha256,
+                "adoption motion profile",
+            )?;
+            let motion_json = std::str::from_utf8(&motion_profile)
+                .map_err(|error| format!("adoption motion profile is not UTF-8: {error}"))?;
+            parse_strict_motion_profile(motion_json)?;
+            validated.push(ValidatedTemplate {
+                template,
+                body,
+                motion_profile,
+            });
+        }
+        Ok(validated)
+    })()
+    .map_err(|error: String| format!("adoption catalog is unavailable: {error}"))
+}
+
+fn parse_strict_motion_profile(
+    json: &str,
+) -> Result<crate::runtime_assets::motion_profile::MotionProfileV1, String> {
+    serde_json::from_str::<StrictMotionProfileShape>(json)
+        .map_err(|error| format!("strict motion profile contract is invalid: {error}"))?;
+    parse_motion_profile(json)
+}
+
+fn validate_template(template: &AdoptionTemplate) -> Result<(), String> {
+    validate_template_id(&template.template_id)?;
+    if template.template_version == 0 {
+        return Err("adoption template version must be positive".into());
+    }
+    if template.runtime_schema_version != RUNTIME_SCHEMA_VERSION {
+        return Err(format!(
+            "adoption runtime schema version must be {RUNTIME_SCHEMA_VERSION}"
+        ));
+    }
+    if normalize_display_name(&template.default_name)? != template.default_name {
+        return Err("adoption default name must be stored in normalized form".into());
+    }
+    let personality = template.personality.trim();
+    let personality_length = personality.graphemes(true).count();
+    if personality != template.personality
+        || personality_length == 0
+        || personality_length > MAX_PERSONALITY_GRAPHEMES
+        || personality.chars().any(|character| {
+            character.is_control() || matches!(character, '\n' | '\r' | '\u{2028}' | '\u{2029}')
+        })
+    {
+        return Err(format!(
+            "adoption personality must be normalized plain text with 1 to {MAX_PERSONALITY_GRAPHEMES} characters"
+        ));
+    }
+    for (path, label) in [
+        (&template.thumbnail_path, "thumbnail path"),
+        (&template.body_path, "body path"),
+        (&template.motion_profile_path, "motion profile path"),
+    ] {
+        validate_relative_path(path, label)?;
+    }
+    for (hash, label) in [
+        (&template.thumbnail_sha256, "thumbnail SHA-256"),
+        (&template.body_sha256, "body SHA-256"),
+        (&template.motion_profile_sha256, "motion profile SHA-256"),
+    ] {
+        if hash.len() != 64
+            || !hash
+                .bytes()
+                .all(|byte| byte.is_ascii_digit() || (b'a'..=b'f').contains(&byte))
+        {
+            return Err(format!("{label} must be 64 lowercase hexadecimal digits"));
+        }
+    }
+    Ok(())
+}
+
+fn validate_template_id(value: &str) -> Result<(), String> {
+    validate_identifier(value, "adoption template id")
+}
+
+fn validate_identifier(value: &str, label: &str) -> Result<(), String> {
+    if value.is_empty()
+        || value.len() > 80
+        || !value
+            .bytes()
+            .all(|byte| byte.is_ascii_alphanumeric() || matches!(byte, b'-' | b'_'))
+    {
+        return Err(format!("invalid {label}"));
+    }
+    Ok(())
+}
+
+fn validate_relative_path<'a>(value: &'a str, label: &str) -> Result<Vec<&'a str>, String> {
+    let path = Path::new(value);
+    if value.is_empty()
+        || value.contains('\\')
+        || path.is_absolute()
+        || path.components().any(|component| {
+            matches!(
+                component,
+                Component::Prefix(_)
+                    | Component::RootDir
+                    | Component::ParentDir
+                    | Component::CurDir
+            )
+        })
+    {
+        return Err(format!("{label} must be a restricted relative path"));
+    }
+    let parts = value.split('/').collect::<Vec<_>>();
+    if parts.is_empty()
+        || parts.iter().any(|part| {
+            part.is_empty()
+                || *part == "."
+                || *part == ".."
+                || part.contains(':')
+                || part.chars().any(char::is_control)
+        })
+    {
+        return Err(format!("{label} must be a restricted relative path"));
+    }
+    Ok(parts)
+}
+
+fn verify_hash(bytes: &[u8], expected: &str, label: &str) -> Result<(), String> {
+    let mut digest = Sha256::new();
+    digest.update(bytes);
+    let actual = format!("{:x}", digest.finalize());
+    if actual != expected {
+        return Err(format!("{label} SHA-256 does not match its manifest"));
+    }
+    Ok(())
+}
+
+fn validate_png(
+    bytes: &[u8],
+    expected_width: u32,
+    expected_height: u32,
+    require_transparent_background: bool,
+    label: &str,
+) -> Result<(), String> {
+    if image::guess_format(bytes).ok() != Some(image::ImageFormat::Png) {
+        return Err(format!("{label} must be a PNG image"));
+    }
+    let decoder = image::codecs::png::PngDecoder::new(Cursor::new(bytes))
+        .map_err(|error| format!("{label} PNG header is invalid: {error}"))?;
+    let (width, height) = decoder.dimensions();
+    if width != expected_width || height != expected_height {
+        return Err(format!(
+            "{label} must be exactly {expected_width}x{expected_height}, got {width}x{height}"
+        ));
+    }
+    if decoder.color_type() != image::ColorType::Rgba8 {
+        return Err(format!("{label} must be an RGBA PNG"));
+    }
+    let expected_allocation = u64::from(expected_width) * u64::from(expected_height) * 4;
+    if decoder.total_bytes() != expected_allocation || expected_allocation > 8 * 1024 * 1024 {
+        return Err(format!("{label} decoded allocation is invalid"));
+    }
+    let mut pixels = vec![0; expected_allocation as usize];
+    decoder
+        .read_image(&mut pixels)
+        .map_err(|error| format!("{label} PNG decode failed: {error}"))?;
+    if !pixels.chunks_exact(4).any(|pixel| pixel[3] >= 8) {
+        return Err(format!("{label} has no visible content"));
+    }
+    if require_transparent_background && !pixels.chunks_exact(4).any(|pixel| pixel[3] == 0) {
+        return Err(format!(
+            "{label} must include transparent background pixels"
+        ));
+    }
+    Ok(())
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+struct FileIdentity {
+    volume_serial: u32,
+    file_index: u64,
+}
+
+struct ReadOnlyDirectoryGuard {
+    path: PathBuf,
+    #[cfg(windows)]
+    _handle: OwnedHandle,
+}
+
+impl ReadOnlyDirectoryGuard {
+    #[cfg(windows)]
+    fn open(path: &Path, label: &str) -> Result<Self, String> {
+        use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
+        use windows_sys::Win32::Storage::FileSystem::{
+            CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+            FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_BACKUP_SEMANTICS,
+            FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
+            FILE_SHARE_READ, OPEN_EXISTING,
+        };
+        let wide = crate::platform::windows::encode_windows_path(path)?;
+        let raw = unsafe {
+            CreateFileW(
+                wide.as_ptr(),
+                FILE_LIST_DIRECTORY | FILE_READ_ATTRIBUTES,
+                FILE_SHARE_READ,
+                std::ptr::null(),
+                OPEN_EXISTING,
+                FILE_FLAG_BACKUP_SEMANTICS | FILE_FLAG_OPEN_REPARSE_POINT,
+                std::ptr::null_mut(),
+            )
+        };
+        if raw == INVALID_HANDLE_VALUE {
+            return Err(format!(
+                "open read-only {label}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
+        let mut info = BY_HANDLE_FILE_INFORMATION::default();
+        if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut info) } == 0 {
+            return Err(format!(
+                "inspect read-only {label}: {}",
+                std::io::Error::last_os_error()
+            ));
+        }
+        if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
+            || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        {
+            return Err(format!("{label} must be a real non-reparse directory"));
+        }
+        let canonical = path
+            .canonicalize()
+            .map_err(|error| format!("resolve {label}: {error}"))?;
+        Ok(Self {
+            path: canonical,
+            _handle: handle,
+        })
+    }
+
+    #[cfg(not(windows))]
+    fn open(_path: &Path, _label: &str) -> Result<Self, String> {
+        Err("secure adoption catalog access currently requires Windows handles".into())
+    }
+
+    fn child(&self, name: &str, label: &str) -> Result<Self, String> {
+        validate_identifier(name, label)?;
+        let child = Self::open(&self.path.join(name), label)?;
+        if child.path.parent() != Some(self.path.as_path()) {
+            return Err(format!("{label} escapes its read-only parent"));
+        }
+        Ok(child)
+    }
+
+    fn read_file(&self, name: &str, label: &str, limit: u64) -> Result<Vec<u8>, String> {
+        if validate_relative_path(name, label)?.len() != 1 {
+            return Err(format!("{label} must be a direct child file"));
+        }
+        read_bounded_regular_file(&self.path.join(name), &self.path, label, limit)
+    }
+
+    fn read_relative_file(
+        &self,
+        relative: &str,
+        label: &str,
+        limit: u64,
+    ) -> Result<Vec<u8>, String> {
+        let parts = validate_relative_path(relative, label)?;
+        let mut directories = Vec::new();
+        let mut parent = self.path.clone();
+        for part in &parts[..parts.len() - 1] {
+            let directory = ReadOnlyDirectoryGuard::open(&parent.join(part), label)?;
+            if directory.path.parent() != Some(parent.as_path()) {
+                return Err(format!("{label} directory escapes its template"));
+            }
+            parent = directory.path.clone();
+            directories.push(directory);
+        }
+        let bytes =
+            read_bounded_regular_file(&parent.join(parts[parts.len() - 1]), &parent, label, limit)?;
+        drop(directories);
+        Ok(bytes)
+    }
+}
+
+#[cfg(windows)]
+fn handle_identity(file: &std::fs::File, label: &str) -> Result<(FileIdentity, u32), String> {
+    use windows_sys::Win32::Storage::FileSystem::{
+        GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
+    };
+    let mut info = BY_HANDLE_FILE_INFORMATION::default();
+    if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
+        return Err(format!(
+            "inspect {label} identity: {}",
+            std::io::Error::last_os_error()
+        ));
+    }
+    Ok((
+        FileIdentity {
+            volume_serial: info.dwVolumeSerialNumber,
+            file_index: (u64::from(info.nFileIndexHigh) << 32) | u64::from(info.nFileIndexLow),
+        },
+        info.dwFileAttributes,
+    ))
+}
+
+#[cfg(windows)]
+fn read_bounded_regular_file(
+    path: &Path,
+    expected_parent: &Path,
+    label: &str,
+    limit: u64,
+) -> Result<Vec<u8>, String> {
+    use windows_sys::Win32::Foundation::GENERIC_READ;
+    use windows_sys::Win32::Storage::FileSystem::{
+        FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
+        FILE_FLAG_SEQUENTIAL_SCAN, FILE_SHARE_READ,
+    };
+    let mut file = std::fs::OpenOptions::new()
+        .read(true)
+        .access_mode(GENERIC_READ)
+        .share_mode(FILE_SHARE_READ)
+        .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN)
+        .open(path)
+        .map_err(|error| format!("open read-only {label}: {error}"))?;
+    let (before_identity, before_attributes) = handle_identity(&file, label)?;
+    if before_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
+        || before_attributes & FILE_ATTRIBUTE_DIRECTORY != 0
+    {
+        return Err(format!("{label} must be a regular non-reparse file"));
+    }
+    let metadata = file
+        .metadata()
+        .map_err(|error| format!("inspect {label}: {error}"))?;
+    if metadata.len() == 0 || metadata.len() > limit {
+        return Err(format!("{label} exceeds its bounded size"));
+    }
+    let canonical = path
+        .canonicalize()
+        .map_err(|error| format!("resolve {label}: {error}"))?;
+    if canonical.parent() != Some(expected_parent) {
+        return Err(format!("{label} escapes its read-only template directory"));
+    }
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|error| format!("seek {label}: {error}"))?;
+    let mut bytes = Vec::with_capacity(metadata.len() as usize);
+    file.by_ref()
+        .take(limit + 1)
+        .read_to_end(&mut bytes)
+        .map_err(|error| format!("read {label}: {error}"))?;
+    if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > limit {
+        return Err(format!("{label} changed while it was read"));
+    }
+    let (after_identity, after_attributes) = handle_identity(&file, label)?;
+    if after_identity != before_identity
+        || after_attributes != before_attributes
+        || path
+            .canonicalize()
+            .map_err(|error| format!("re-resolve {label}: {error}"))?
+            != canonical
+    {
+        return Err(format!("{label} identity changed while it was read"));
+    }
+    Ok(bytes)
+}
+
+#[cfg(not(windows))]
+fn read_bounded_regular_file(
+    _path: &Path,
+    _expected_parent: &Path,
+    _label: &str,
+    _limit: u64,
+) -> Result<Vec<u8>, String> {
+    Err("secure adoption catalog file access currently requires Windows handles".into())
+}
+
+#[cfg(test)]
+mod tests {
+    use crate::creation::domain::{CreationMethod, CreationSessionStatus, CreationSnapshot};
+    use crate::creation::service::CreationService;
+    use crate::pets::active::{ActivePetService, BUILTIN_PET_ID};
+    use crate::pets::deletion::PetDeletionService;
+    use crate::pets::mutation::PetMutationGate;
+    use crate::pets::{ActivePetSession, SharedActivePetSession};
+    use crate::runtime_assets::motion_profile::generate_motion_profile;
+    use crate::storage::Storage;
+    use sha2::{Digest, Sha256};
+    use std::path::{Path, PathBuf};
+    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::{Arc, Mutex};
+
+    static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    struct AdoptionHarness {
+        root: PathBuf,
+        content_root: PathBuf,
+        storage: Arc<Mutex<Storage>>,
+        service: Arc<CreationService>,
+    }
+
+    impl AdoptionHarness {
+        fn with_templates() -> Self {
+            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+            let unique = std::time::SystemTime::now()
+                .duration_since(std::time::UNIX_EPOCH)
+                .unwrap()
+                .as_nanos();
+            let root = std::env::temp_dir().join(format!(
+                "desktop-pet-adoption-{}-{n}-{unique}",
+                std::process::id()
+            ));
+            let pets_dir = root.join("pets");
+            let content_root = root.join("creation-content");
+            std::fs::create_dir_all(root.join("jobs")).unwrap();
+            std::fs::create_dir_all(&content_root).unwrap();
+            write_catalog(&content_root);
+
+            let storage = Arc::new(Mutex::new(Storage::open(&pets_dir).unwrap()));
+            let active_session: SharedActivePetSession =
+                Arc::new(Mutex::new(ActivePetSession::new()));
+            active_session
+                .lock()
+                .unwrap()
+                .set_active(BUILTIN_PET_ID.into())
+                .unwrap();
+            let gate = Arc::new(PetMutationGate::new(std::time::Duration::from_secs(60)));
+            let active = Arc::new(ActivePetService::new(
+                storage.clone(),
+                active_session,
+                pets_dir,
+                gate.clone(),
+            ));
+            let deletion = Arc::new(PetDeletionService::new(
+                storage.clone(),
+                active,
+                root.clone(),
+                gate.clone(),
+            ));
+            let service = Arc::new(CreationService::new(
+                storage.clone(),
+                root.clone(),
+                deletion,
+                crate::creation::content::test_content_root(&content_root).unwrap(),
+                gate,
+            ));
+            Self {
+                root,
+                content_root,
+                storage,
+                service,
+            }
+        }
+
+        fn candidate_file(&self, session: &CreationSnapshot, file: &str) -> PathBuf {
+            self.root
+                .join("creation-sessions")
+                .join(&session.session_id)
+                .join("candidate")
+                .join(file)
+        }
+
+        fn pet_count_for(&self, template_id: &str) -> i64 {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT COUNT(*) FROM pets WHERE source_template_id=?1",
+                    [template_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        }
+
+        fn row_count(&self, table: &str) -> i64 {
+            assert!(matches!(
+                table,
+                "pets" | "creation_sessions" | "appearance_variants"
+            ));
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(&format!("SELECT COUNT(*) FROM {table}"), [], |row| {
+                    row.get(0)
+                })
+                .unwrap()
+        }
+
+        fn catalog_path(&self) -> PathBuf {
+            self.content_root.join("adoption/catalog.json")
+        }
+
+        fn catalog_json(&self) -> serde_json::Value {
+            serde_json::from_slice(&std::fs::read(self.catalog_path()).unwrap()).unwrap()
+        }
+
+        fn write_catalog_json(&self, catalog: &serde_json::Value) {
+            std::fs::write(
+                self.catalog_path(),
+                serde_json::to_vec_pretty(catalog).unwrap(),
+            )
+            .unwrap();
+        }
+
+        fn display_name(&self, pet_id: &str) -> String {
+            self.storage
+                .lock()
+                .unwrap()
+                .db
+                .query_row(
+                    "SELECT display_name FROM pets WHERE pet_id=?1",
+                    [pet_id],
+                    |row| row.get(0),
+                )
+                .unwrap()
+        }
+
+        fn complete(&self, session: &CreationSnapshot) {
+            let storage = self.storage.lock().unwrap();
+            let candidate_id: String = storage
+                .db
+                .query_row(
+                    "SELECT variant_id FROM appearance_variants WHERE session_id=?1",
+                    [&session.session_id],
+                    |row| row.get(0),
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO variants (variant_id, pet_id, style_id, manifest_path, created_at)
+                     VALUES (?1, ?2, 'animated-image-v1', 'manifest.json', '1')",
+                    rusqlite::params![candidate_id, session.pet_id],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE appearance_variants SET accepted=1 WHERE variant_id=?1",
+                    [&candidate_id],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE pets SET lifecycle='ready', completed_at='1' WHERE pet_id=?1",
+                    [&session.pet_id],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE creation_sessions SET status='completed',
+                     last_stable_status='completed', current_step='completed', completed_at='1'
+                     WHERE session_id=?1",
+                    [&session.session_id],
+                )
+                .unwrap();
+        }
+    }
+
+    impl Drop for AdoptionHarness {
+        fn drop(&mut self) {
+            let _ = std::fs::remove_dir_all(&self.root);
+        }
+    }
+
+    fn sha256(bytes: &[u8]) -> String {
+        let mut digest = Sha256::new();
+        digest.update(bytes);
+        format!("{:x}", digest.finalize())
+    }
+
+    fn write_png(path: &Path, size: u32, transparent_background: bool) -> Vec<u8> {
+        let mut image = image::RgbaImage::new(size, size);
+        if !transparent_background {
+            for pixel in image.pixels_mut() {
+                *pixel = image::Rgba([245, 245, 245, 255]);
+            }
+        }
+        for y in size / 4..size * 3 / 4 {
+            for x in size / 4..size * 3 / 4 {
+                image.put_pixel(x, y, image::Rgba([90, 120, 180, 255]));
+            }
+        }
+        image.save(path).unwrap();
+        std::fs::read(path).unwrap()
+    }
+
+    fn write_catalog(content_root: &Path) {
+        let adoption_root = content_root.join("adoption");
+        std::fs::create_dir_all(&adoption_root).unwrap();
+        let ids = [
+            "cat-misty",
+            "cat-sunny",
+            "cat-mochi",
+            "cat-cocoa",
+            "cat-snow",
+            "cat-amber",
+            "cat-luna",
+            "cat-pepper",
+        ];
+        let mut templates = Vec::new();
+        for (index, template_id) in ids.into_iter().enumerate() {
+            let template_root = adoption_root.join(template_id);
+            std::fs::create_dir_all(&template_root).unwrap();
+            let body = write_png(&template_root.join("body.png"), 1024, true);
+            let thumbnail = write_png(&template_root.join("thumbnail.png"), 512, true);
+            let rgba = image::load_from_memory(&body).unwrap().to_rgba8();
+            let profile =
+                serde_json::to_vec_pretty(&generate_motion_profile(&rgba).unwrap()).unwrap();
+            std::fs::write(template_root.join("motion-profile.json"), &profile).unwrap();
+            templates.push(serde_json::json!({
+                "templateId": template_id,
+                "templateVersion": 1,
+                "runtimeSchemaVersion": 3,
+                "defaultName": format!("猫咪{}", index + 1),
+                "personality": format!("温柔又好奇的猫咪{}", index + 1),
+                "thumbnailPath": "thumbnail.png",
+                "bodyPath": "body.png",
+                "motionProfilePath": "motion-profile.json",
+                "thumbnailSha256": sha256(&thumbnail),
+                "bodySha256": sha256(&body),
+                "motionProfileSha256": sha256(&profile),
+            }));
+        }
+        std::fs::write(
+            adoption_root.join("catalog.json"),
+            serde_json::to_vec_pretty(&serde_json::json!({
+                "schemaVersion": 1,
+                "templates": templates,
+            }))
+            .unwrap(),
+        )
+        .unwrap();
+    }
+
+    #[test]
+    fn catalog_projects_adoptable_adopted_and_retryable_states() {
+        let test = AdoptionHarness::with_templates();
+        let initial = test.service.adoption_catalog().unwrap();
+        assert!(initial
+            .iter()
+            .all(|entry| { entry.adopted_pet_id.is_none() && entry.retry_session_id.is_none() }));
+        let session = test.service.start_adoption("cat-misty", "雾雾").unwrap();
+        let pending = test.service.adoption_catalog().unwrap();
+        assert_eq!(
+            pending[0].retry_session_id.as_deref(),
+            Some(session.session_id.as_str())
+        );
+        assert!(pending[0].adopted_pet_id.is_none());
+        test.complete(&session);
+        let adopted = test.service.adoption_catalog().unwrap();
+        assert_eq!(
+            adopted[0].adopted_pet_id.as_deref(),
+            Some(session.pet_id.as_str())
+        );
+        assert!(adopted[0].retry_session_id.is_none());
+    }
+
+    #[test]
+    fn start_copies_trusted_template_into_a_user_candidate() {
+        let test = AdoptionHarness::with_templates();
+        let source_body =
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap();
+        let session = test.service.start_adoption("cat-misty", "雾雾").unwrap();
+        assert_eq!(session.method, CreationMethod::Adoption);
+        assert_eq!(session.status, CreationSessionStatus::CandidateReady);
+        assert_eq!(
+            std::fs::read(test.candidate_file(&session, "body.png")).unwrap(),
+            source_body
+        );
+        assert!(test
+            .candidate_file(&session, "motion-profile.json")
+            .exists());
+        let names = std::fs::read_dir(test.candidate_file(&session, "body.png").parent().unwrap())
+            .unwrap()
+            .map(|entry| entry.unwrap().file_name().into_string().unwrap())
+            .collect::<std::collections::BTreeSet<_>>();
+        assert_eq!(
+            names,
+            ["body.png".to_owned(), "motion-profile.json".to_owned()]
+                .into_iter()
+                .collect()
+        );
+    }
+
+    #[test]
+    fn repeated_start_returns_the_same_retry_session_not_a_second_pet() {
+        let test = AdoptionHarness::with_templates();
+        let first = test.service.start_adoption("cat-misty", "雾雾").unwrap();
+        let second = test
+            .service
+            .start_adoption("cat-misty", "另一个名字")
+            .unwrap();
+        assert_eq!(second.session_id, first.session_id);
+        assert_eq!(second.pet_id, first.pet_id);
+        assert_eq!(test.pet_count_for("cat-misty"), 1);
+        assert_eq!(test.display_name(&first.pet_id), "雾雾");
+    }
+
+    #[test]
+    fn catalog_is_loaded_lazily_and_reports_a_missing_adoption_catalog() {
+        let test = AdoptionHarness::with_templates();
+        std::fs::remove_file(test.catalog_path()).unwrap();
+
+        let error = test.service.adoption_catalog().unwrap_err();
+
+        assert!(error.contains("adoption catalog is unavailable"), "{error}");
+        assert_eq!(test.row_count("pets"), 0);
+    }
+
+    #[test]
+    fn catalog_requires_exactly_eight_unique_templates_and_runtime_v3() {
+        let test = AdoptionHarness::with_templates();
+        let mut catalog = test.catalog_json();
+        catalog["templates"].as_array_mut().unwrap().pop();
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("exactly 8"));
+
+        write_catalog(&test.content_root);
+        let mut catalog = test.catalog_json();
+        catalog["templates"][1]["templateId"] = serde_json::json!("cat-misty");
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("duplicate template id"));
+
+        write_catalog(&test.content_root);
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["runtimeSchemaVersion"] = serde_json::json!(2);
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("runtime schema version"));
+    }
+
+    #[test]
+    fn catalog_rejects_untrusted_paths_hashes_names_and_personality() {
+        let test = AdoptionHarness::with_templates();
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["bodyPath"] = serde_json::json!("../body.png");
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("restricted relative path"));
+
+        write_catalog(&test.content_root);
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["bodySha256"] = serde_json::json!("0".repeat(64));
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("SHA-256 does not match"));
+
+        write_catalog(&test.content_root);
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["defaultName"] = serde_json::json!(" 雾雾 ");
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("normalized"));
+
+        write_catalog(&test.content_root);
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["personality"] = serde_json::json!("gentle\ncurious");
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("personality"));
+    }
+
+    #[test]
+    fn catalog_requires_the_exact_motion_profile_contract() {
+        let test = AdoptionHarness::with_templates();
+        let profile_path = test
+            .content_root
+            .join("adoption")
+            .join("cat-misty")
+            .join("motion-profile.json");
+        let mut profile: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(&profile_path).unwrap()).unwrap();
+        profile["clientOwnedMotion"] = serde_json::json!(true);
+        let bytes = serde_json::to_vec_pretty(&profile).unwrap();
+        std::fs::write(&profile_path, &bytes).unwrap();
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["motionProfileSha256"] = serde_json::json!(sha256(&bytes));
+        test.write_catalog_json(&catalog);
+
+        let error = test.service.adoption_catalog().unwrap_err();
+
+        assert!(error.contains("strict motion profile"), "{error}");
+    }
+
+    #[test]
+    fn catalog_enforces_bounded_rgba_png_roles() {
+        let test = AdoptionHarness::with_templates();
+        let template_root = test.content_root.join("adoption").join("cat-misty");
+        let wrong_thumbnail = std::fs::read(template_root.join("body.png")).unwrap();
+        std::fs::write(template_root.join("thumbnail.png"), &wrong_thumbnail).unwrap();
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["thumbnailSha256"] = serde_json::json!(sha256(&wrong_thumbnail));
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("512x512"));
+
+        write_catalog(&test.content_root);
+        let template_root = test.content_root.join("adoption").join("cat-misty");
+        let opaque_body = write_png(&template_root.join("body.png"), 1024, false);
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["bodySha256"] = serde_json::json!(sha256(&opaque_body));
+        test.write_catalog_json(&catalog);
+        assert!(test
+            .service
+            .adoption_catalog()
+            .unwrap_err()
+            .contains("transparent background"));
+    }
+
+    #[cfg(windows)]
+    #[test]
+    fn catalog_rejects_reparse_components_even_when_the_target_is_contained() {
+        let test = AdoptionHarness::with_templates();
+        let template_root = test.content_root.join("adoption").join("cat-misty");
+        let real = template_root.join("real");
+        std::fs::create_dir(&real).unwrap();
+        let body = std::fs::read(template_root.join("body.png")).unwrap();
+        std::fs::write(real.join("body.png"), &body).unwrap();
+        crate::platform::create_directory_link(&real, &template_root.join("linked"));
+        let mut catalog = test.catalog_json();
+        catalog["templates"][0]["bodyPath"] = serde_json::json!("linked/body.png");
+        catalog["templates"][0]["bodySha256"] = serde_json::json!(sha256(&body));
+        test.write_catalog_json(&catalog);
+
+        let error = test.service.adoption_catalog().unwrap_err();
+
+        assert!(error.contains("reparse"), "{error}");
+    }
+
+    #[test]
+    fn concurrent_starts_converge_on_one_pet_and_one_session() {
+        let test = AdoptionHarness::with_templates();
+        let barrier = Arc::new(std::sync::Barrier::new(3));
+        let mut threads = Vec::new();
+        for name in ["雾雾", "云云"] {
+            let barrier = barrier.clone();
+            let service = test.service.clone();
+            threads.push(std::thread::spawn(move || {
+                barrier.wait();
+                service.start_adoption("cat-misty", name).unwrap()
+            }));
+        }
+        barrier.wait();
+        let first = threads.remove(0).join().unwrap();
+        let second = threads.remove(0).join().unwrap();
+        assert_eq!(first.session_id, second.session_id);
+        assert_eq!(first.pet_id, second.pet_id);
+        assert_eq!(test.pet_count_for("cat-misty"), 1);
+        assert_eq!(test.row_count("creation_sessions"), 1);
+    }
+
+    #[test]
+    fn a_new_reservation_is_removed_when_candidate_publication_fails() {
+        let test = AdoptionHarness::with_templates();
+        let sessions_root = test.root.join("creation-sessions");
+        std::fs::write(&sessions_root, b"not a directory").unwrap();
+        let source_before =
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap();
+
+        assert!(test.service.start_adoption("cat-misty", "雾雾").is_err());
+        assert_eq!(test.row_count("pets"), 0);
+        assert_eq!(test.row_count("creation_sessions"), 0);
+        assert_eq!(
+            std::fs::read(test.content_root.join("adoption/cat-misty/body.png")).unwrap(),
+            source_before
+        );
+
+        std::fs::remove_file(sessions_root).unwrap();
+        assert!(test.service.start_adoption("cat-misty", "雾雾").is_ok());
+    }
+
+    #[test]
+    fn adopted_errors_are_deterministic_and_abandon_releases_the_template() {
+        let test = AdoptionHarness::with_templates();
+        let first = test.service.start_adoption("cat-misty", "雾雾").unwrap();
+        test.complete(&first);
+        let error = test
+            .service
+            .start_adoption("cat-misty", "云云")
+            .unwrap_err();
+        assert!(error.contains("already adopted"), "{error}");
+        assert!(error.contains(&first.pet_id), "{error}");
+
+        let retry = test.service.start_adoption("cat-sunny", "阳阳").unwrap();
+        let source = std::fs::read(test.content_root.join("adoption/cat-sunny/body.png")).unwrap();
+        test.service.abandon(&retry.session_id).unwrap();
+        let replacement = test.service.start_adoption("cat-sunny", "新阳阳").unwrap();
+        assert_ne!(replacement.pet_id, retry.pet_id);
+        assert_eq!(
+            std::fs::read(test.content_root.join("adoption/cat-sunny/body.png")).unwrap(),
+            source
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_contradictory_or_incomplete_durable_facts() {
+        let test = AdoptionHarness::with_templates();
+        let first = test.service.start_adoption("cat-misty", "雾雾").unwrap();
+        {
+            let storage = test.storage.lock().unwrap();
+            storage
+                .db
+                .execute_batch("DROP INDEX pets_unique_adoption_source")
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO pets
+                     (pet_id, schema_version, species, identity_mode, display_name,
+                      creation_method, source_template_id, source_template_version,
+                      lifecycle, created_at, updated_at)
+                     VALUES ('pet-duplicate', 1, 'cat', 'adopted', '重复', 'adoption',
+                             'cat-misty', 1, 'draft', '2', '2')",
+                    [],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "INSERT INTO creation_sessions
+                     (session_id, pet_id, method, status, last_stable_status, current_step,
+                      schema_version, created_at, updated_at)
+                     VALUES ('session-duplicate', 'pet-duplicate', 'adoption', 'draft',
+                             'draft', 'adoption', 1, '2', '2')",
+                    [],
+                )
+                .unwrap();
+        }
+        let error = test.service.adoption_catalog().unwrap_err();
+        assert!(error.contains("contradictory adoption facts"), "{error}");
+
+        {
+            let storage = test.storage.lock().unwrap();
+            storage
+                .db
+                .execute("DELETE FROM pets WHERE pet_id='pet-duplicate'", [])
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE pets SET lifecycle='ready', completed_at='3' WHERE pet_id=?1",
+                    [&first.pet_id],
+                )
+                .unwrap();
+            storage
+                .db
+                .execute(
+                    "UPDATE creation_sessions SET status='completed',
+                     last_stable_status='completed', completed_at='3' WHERE session_id=?1",
+                    [&first.session_id],
+                )
+                .unwrap();
+        }
+        let error = test.service.adoption_catalog().unwrap_err();
+        assert!(error.contains("contradictory adoption facts"), "{error}");
+    }
+
+    #[test]
+    fn catalog_rejects_a_non_positive_durable_source_version() {
+        let test = AdoptionHarness::with_templates();
+        let session = test.service.start_adoption("cat-misty", "雾雾").unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE pets SET source_template_version=0 WHERE pet_id=?1",
+                [&session.pet_id],
+            )
+            .unwrap();
+
+        let error = test.service.adoption_catalog().unwrap_err();
+
+        assert!(error.contains("source version"), "{error}");
+    }
+}

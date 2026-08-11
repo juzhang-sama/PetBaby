@@ -99,6 +99,27 @@ impl CreationService {
         self.snapshot(&session_id)
     }
 
+    pub fn adoption_catalog(
+        &self,
+    ) -> Result<Vec<crate::creation::adoption::AdoptionCatalogEntry>, String> {
+        crate::creation::adoption::catalog(&self.storage, &self.content_root)
+    }
+
+    pub fn start_adoption(
+        &self,
+        template_id: &str,
+        display_name: &str,
+    ) -> Result<CreationSnapshot, String> {
+        crate::creation::adoption::start(
+            &self.storage,
+            &self.app_data_dir,
+            &self.content_root,
+            &self.mutation_gate,
+            template_id,
+            display_name,
+        )
+    }
+
     pub fn draft(&self) -> Result<Option<CreationSnapshot>, String> {
         let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
         let session_id = find_long_draft_id(&storage.db)?;

@@ -1,6 +1,10 @@
 import { invoke as tauriInvoke } from "@tauri-apps/api/core";
 import type { MotionProfileV1 } from "../runtime/animated-image-manifest";
-import type { ComposerRecipe, CreationSnapshot } from "./contracts";
+import type {
+  AdoptionCatalogEntry,
+  ComposerRecipe,
+  CreationSnapshot,
+} from "./contracts";
 
 export type InvokePort = <T>(
   command: string,
@@ -53,6 +57,10 @@ export function createCreationApi(invoke: InvokePort) {
       invoke<CreationSnapshot>("creation_composer_save", { sessionId, recipe, currentStep }),
     composerCandidate: (sessionId: string, pngB64?: string) =>
       invoke<ComposerCandidateProjection>("creation_composer_candidate", { sessionId, pngB64 }),
+    adoptionCatalog: () =>
+      invoke<AdoptionCatalogEntry[]>("creation_adoption_catalog"),
+    adoptionStart: (templateId: string, displayName: string) =>
+      invoke<CreationSnapshot>("creation_adoption_start", { templateId, displayName }),
     uploadStart: (
       sessionId: string,
       prompt: string,
