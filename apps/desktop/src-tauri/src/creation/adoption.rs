@@ -777,6 +777,16 @@ fn classify_fact(
         ));
     }
 
+    let expected_runtime_manifest_path = app_data_dir
+        .join("pets")
+        .join(&fact.pet_id)
+        .join("assets")
+        .join("manifest.json");
+    let runtime_manifest_path_matches = fact
+        .accepted_runtime_manifest_path
+        .as_deref()
+        .map(Path::new)
+        == Some(expected_runtime_manifest_path.as_path());
     let durable = fact.lifecycle == "ready"
         && fact.pet_completed_at.is_some()
         && fact.accepted_count == 1
@@ -788,12 +798,7 @@ fn classify_fact(
         && status == "completed"
         && fact.last_stable_status.as_deref() == Some("completed")
         && fact.session_completed_at.is_some()
-        && fact.accepted_runtime_manifest_path.as_deref()
-            == app_data_dir
-                .join("pets")
-                .join(&fact.pet_id)
-                .join("assets/manifest.json")
-                .to_str();
+        && runtime_manifest_path_matches;
     if durable {
         return Ok(AdoptionFactState::Adopted);
     }
@@ -1640,7 +1645,8 @@ mod tests {
                 .root
                 .join("pets")
                 .join(&session.pet_id)
-                .join("assets/manifest.json")
+                .join("assets")
+                .join("manifest.json")
                 .to_string_lossy()
                 .into_owned();
             storage
@@ -1774,6 +1780,23 @@ mod tests {
             Some(session.pet_id.as_str())
         );
         assert!(adopted[0].retry_session_id.is_none());
+    }
+
+    #[test]
+    fn adopted_projection_accepts_the_formal_finalization_manifest_path() {
+        let test = AdoptionHarness::with_templates();
+        let session = test
+            .service
+            .start_adoption("cat-misty", "formal-path")
+            .unwrap();
+
+        test.complete(&session);
+
+        let catalog = test.service.adoption_catalog().unwrap();
+        assert_eq!(
+            catalog[0].adopted_pet_id.as_deref(),
+            Some(session.pet_id.as_str())
+        );
     }
 
     #[test]
