@@ -102,7 +102,7 @@ impl CreationService {
     pub fn adoption_catalog(
         &self,
     ) -> Result<Vec<crate::creation::adoption::AdoptionCatalogEntry>, String> {
-        crate::creation::adoption::catalog(&self.storage, &self.content_root)
+        crate::creation::adoption::catalog(&self.storage, &self.app_data_dir, &self.content_root)
     }
 
     pub fn start_adoption(

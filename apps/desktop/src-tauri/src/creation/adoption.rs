@@ -163,9 +163,17 @@ struct AdoptionFact {
     provenance_source_template_id: Option<String>,
     provenance_source_template_version: Option<u32>,
     provenance_runtime_schema_version: Option<u32>,
+    provenance_body_sha256: Option<String>,
+    provenance_motion_profile_sha256: Option<String>,
+    session_candidate_count: i64,
+    pet_candidate_count: i64,
     candidate_count: i64,
+    unaccepted_count: i64,
     accepted_count: i64,
     accepted_runtime_count: i64,
+    accepted_owned_runtime_count: i64,
+    accepted_animated_runtime_count: i64,
+    accepted_runtime_manifest_path: Option<String>,
 }
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq)]
@@ -193,6 +201,7 @@ struct AdoptionProvenance {
 
 pub(crate) fn catalog(
     storage: &Arc<Mutex<Storage>>,
+    app_data_dir: &Path,
     content_root: &ContentRoot,
 ) -> Result<Vec<AdoptionCatalogEntry>, String> {
     let templates = load_catalog(content_root)?;
@@ -202,7 +211,7 @@ pub(crate) fn catalog(
         .map(|validated| {
             let facts = adoption_facts(&storage.db, &validated.template.template_id)?;
             let (adopted_pet_id, retry_session_id) =
-                project_facts(&facts, &validated.template.template_id)?;
+                project_facts(&facts, &validated.template, app_data_dir)?;
             Ok(AdoptionCatalogEntry {
                 template: validated.template,
                 adopted_pet_id,
@@ -227,7 +236,7 @@ pub(crate) fn start(
         .into_iter()
         .find(|candidate| candidate.template.template_id == template_id)
         .ok_or_else(|| format!("adoption template not found: {template_id}"))?;
-    let reservation = reserve_or_load(storage, &template.template, &display_name)?;
+    let reservation = reserve_or_load(storage, app_data_dir, &template.template, &display_name)?;
     let request_id = new_entity_id("adoption-start");
     let _operation =
         mutation_gate.scoped(&request_id, MutationKind::Creation, &reservation.pet_id)?;
@@ -236,7 +245,7 @@ pub(crate) fn start(
         .lock()
         .map_err(|_| "adoption publication lock poisoned")?;
 
-    let stable = load_stable_reservation(storage, template_id, &reservation)?;
+    let stable = load_stable_reservation(storage, app_data_dir, &template.template, &reservation)?;
     let provenance = load_adoption_provenance(storage, &stable.snapshot.session_id)?;
     validate_provenance(&provenance, &stable, &template.template)?;
     if stable.source_template_version != template.template.template_version
@@ -311,12 +320,13 @@ struct StableReservation {
 
 fn reserve_or_load(
     storage: &Arc<Mutex<Storage>>,
+    app_data_dir: &Path,
     template: &AdoptionTemplate,
     display_name: &str,
 ) -> Result<AdoptionReservation, String> {
     let mut storage = storage.lock().map_err(|_| "storage lock poisoned")?;
     let facts = adoption_facts(&storage.db, &template.template_id)?;
-    if let Some(existing) = one_existing_reservation(&facts, &template.template_id)? {
+    if let Some(existing) = one_existing_reservation(&facts, template, app_data_dir)? {
         return reservation_from_fact(existing, false);
     }
     wait_at_test_reservation_barrier();
@@ -341,7 +351,7 @@ fn reserve_or_load(
                 || error.contains("database is busy")
             {
                 let winner = adoption_facts(&storage.db, &template.template_id)?;
-                if let Some(existing) = one_existing_reservation(&winner, &template.template_id)? {
+                if let Some(existing) = one_existing_reservation(&winner, template, app_data_dir)? {
                     return reservation_from_fact(existing, false);
                 }
             }
@@ -396,11 +406,12 @@ fn reserve_or_load(
 
 fn one_existing_reservation<'a>(
     facts: &'a [AdoptionFact],
-    template_id: &str,
+    template: &AdoptionTemplate,
+    app_data_dir: &Path,
 ) -> Result<Option<&'a AdoptionFact>, String> {
     let mut existing = None;
     for fact in facts {
-        let state = classify_fact(fact, template_id)?;
+        let state = classify_fact(fact, template, app_data_dir)?;
         match state {
             AdoptionFactState::IgnoredAbandoned => continue,
             AdoptionFactState::Adopted | AdoptionFactState::Retryable if existing.is_none() => {
@@ -441,14 +452,15 @@ fn reservation_from_fact(
 
 fn load_stable_reservation(
     storage: &Arc<Mutex<Storage>>,
-    template_id: &str,
+    app_data_dir: &Path,
+    template: &AdoptionTemplate,
     expected: &AdoptionReservation,
 ) -> Result<StableReservation, String> {
     let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
-    let facts = adoption_facts(&storage.db, template_id)?;
+    let facts = adoption_facts(&storage.db, &template.template_id)?;
     let mut live = facts
         .iter()
-        .filter_map(|fact| match classify_fact(fact, template_id) {
+        .filter_map(|fact| match classify_fact(fact, template, app_data_dir) {
             Ok(AdoptionFactState::IgnoredAbandoned) => None,
             result => Some(result.map(|_| fact)),
         })
@@ -460,7 +472,7 @@ fn load_stable_reservation(
     if fact.pet_id != expected.pet_id || fact.session_id.as_deref() != Some(&expected.session_id) {
         return Err("adoption reservation changed before candidate publication".into());
     }
-    match classify_fact(fact, template_id)? {
+    match classify_fact(fact, template, app_data_dir)? {
         AdoptionFactState::Adopted => {
             return Err(format!(
                 "adoption template already adopted by petId={}",
@@ -643,11 +655,12 @@ fn verify_candidate_database_paths(
 
 fn project_facts(
     facts: &[AdoptionFact],
-    template_id: &str,
+    template: &AdoptionTemplate,
+    app_data_dir: &Path,
 ) -> Result<(Option<String>, Option<String>), String> {
     let mut projection = None;
     for fact in facts {
-        let next = match classify_fact(fact, template_id)? {
+        let next = match classify_fact(fact, template, app_data_dir)? {
             AdoptionFactState::IgnoredAbandoned => continue,
             AdoptionFactState::Adopted => (Some(fact.pet_id.clone()), None),
             AdoptionFactState::Retryable => (
@@ -666,13 +679,18 @@ fn project_facts(
     Ok(projection.unwrap_or((None, None)))
 }
 
-fn classify_fact(fact: &AdoptionFact, template_id: &str) -> Result<AdoptionFactState, String> {
+fn classify_fact(
+    fact: &AdoptionFact,
+    template: &AdoptionTemplate,
+    app_data_dir: &Path,
+) -> Result<AdoptionFactState, String> {
+    let template_id = &template.template_id;
     validate_identifier(&fact.pet_id, "adoption pet id")?;
     if fact.pet_schema_version != 1
         || fact.species != "cat"
         || fact.identity_mode != "adopted"
         || fact.creation_method != "adoption"
-        || fact.source_template_id.as_deref() != Some(template_id)
+        || fact.source_template_id.as_deref() != Some(template_id.as_str())
     {
         return Err(format!(
             "contradictory adoption metadata for pet {}",
@@ -695,10 +713,41 @@ fn classify_fact(fact: &AdoptionFact, template_id: &str) -> Result<AdoptionFactS
         .status
         .as_deref()
         .ok_or("contradictory adoption facts: adoption session has no status")?;
+    let provenance_missing = fact.provenance_session_id.is_none()
+        && fact.provenance_source_template_id.is_none()
+        && fact.provenance_source_template_version.is_none()
+        && fact.provenance_runtime_schema_version.is_none()
+        && fact.provenance_body_sha256.is_none()
+        && fact.provenance_motion_profile_sha256.is_none();
+    let provenance_hashes_are_valid = match (
+        fact.provenance_body_sha256.as_deref(),
+        fact.provenance_motion_profile_sha256.as_deref(),
+    ) {
+        (Some(body), Some(profile)) => {
+            validate_sha256(body, "adoption fact provenance body")?;
+            validate_sha256(profile, "adoption fact provenance motion profile")?;
+            true
+        }
+        _ => false,
+    };
     let provenance_matches = fact.provenance_session_id.as_deref() == Some(session_id)
-        && fact.provenance_source_template_id.as_deref() == Some(template_id)
+        && fact.provenance_source_template_id.as_deref() == Some(template_id.as_str())
         && fact.provenance_source_template_version == Some(fact.source_template_version)
-        && fact.provenance_runtime_schema_version == Some(RUNTIME_SCHEMA_VERSION);
+        && fact.provenance_runtime_schema_version == Some(RUNTIME_SCHEMA_VERSION)
+        && provenance_hashes_are_valid
+        && (fact.provenance_source_template_version != Some(template.template_version)
+            || (fact.provenance_body_sha256.as_deref() == Some(template.body_sha256.as_str())
+                && fact.provenance_motion_profile_sha256.as_deref()
+                    == Some(template.motion_profile_sha256.as_str())));
+    let candidate_relationships_match = fact.session_candidate_count == fact.candidate_count
+        && fact.pet_candidate_count == fact.candidate_count
+        && fact.unaccepted_count + fact.accepted_count == fact.candidate_count;
+    if !candidate_relationships_match {
+        return Err(format!(
+            "contradictory adoption candidate ownership for pet {} and session {session_id}",
+            fact.pet_id
+        ));
+    }
     if fact.lifecycle == "abandoned" || status == "abandoned" {
         let abandoned = fact.lifecycle == "abandoned"
             && status == "abandoned"
@@ -706,9 +755,12 @@ fn classify_fact(fact: &AdoptionFact, template_id: &str) -> Result<AdoptionFactS
             && fact.pet_completed_at.is_none()
             && fact.session_completed_at.is_none()
             && fact.candidate_count == 0
+            && fact.unaccepted_count == 0
             && fact.accepted_count == 0
             && fact.accepted_runtime_count == 0
-            && (fact.provenance_session_id.is_none() || provenance_matches);
+            && fact.accepted_owned_runtime_count == 0
+            && fact.accepted_animated_runtime_count == 0
+            && (provenance_missing || provenance_matches);
         return if abandoned {
             Ok(AdoptionFactState::IgnoredAbandoned)
         } else {
@@ -729,10 +781,19 @@ fn classify_fact(fact: &AdoptionFact, template_id: &str) -> Result<AdoptionFactS
         && fact.pet_completed_at.is_some()
         && fact.accepted_count == 1
         && fact.accepted_runtime_count == 1
+        && fact.accepted_owned_runtime_count == 1
+        && fact.accepted_animated_runtime_count == 1
         && fact.candidate_count == 1
+        && fact.unaccepted_count == 0
         && status == "completed"
         && fact.last_stable_status.as_deref() == Some("completed")
-        && fact.session_completed_at.is_some();
+        && fact.session_completed_at.is_some()
+        && fact.accepted_runtime_manifest_path.as_deref()
+            == app_data_dir
+                .join("pets")
+                .join(&fact.pet_id)
+                .join("assets/manifest.json")
+                .to_str();
     if durable {
         return Ok(AdoptionFactState::Adopted);
     }
@@ -759,6 +820,8 @@ fn classify_fact(fact: &AdoptionFact, template_id: &str) -> Result<AdoptionFactS
         && fact.session_completed_at.is_none()
         && fact.accepted_count == 0
         && fact.accepted_runtime_count == 0
+        && fact.accepted_owned_runtime_count == 0
+        && fact.accepted_animated_runtime_count == 0
         && pending_candidate_count_is_valid;
     if pending {
         Ok(AdoptionFactState::Retryable)
@@ -773,25 +836,54 @@ fn classify_fact(fact: &AdoptionFact, template_id: &str) -> Result<AdoptionFactS
 fn adoption_facts(db: &Connection, template_id: &str) -> Result<Vec<AdoptionFact>, String> {
     let mut statement = db
         .prepare(
-            "SELECT p.pet_id, p.schema_version, p.species, p.identity_mode,
-                    p.creation_method, p.source_template_id, p.source_template_version,
-                    p.lifecycle, p.completed_at,
+            "WITH relevant_pairs(pet_id, session_id) AS (
+               SELECT p.pet_id, cs.session_id
+               FROM pets p
+               LEFT JOIN creation_sessions cs ON cs.pet_id=p.pet_id
+               WHERE p.source_template_id=?1
+               UNION
+               SELECT cs.pet_id, cap.session_id
+               FROM creation_adoption_provenance cap
+               LEFT JOIN creation_sessions cs ON cs.session_id=cap.session_id
+               WHERE cap.source_template_id=?1
+             )
+             SELECT COALESCE(p.pet_id, ''), COALESCE(p.schema_version, 0),
+                    COALESCE(p.species, ''), COALESCE(p.identity_mode, ''),
+                    COALESCE(p.creation_method, ''), p.source_template_id,
+                    p.source_template_version,
+                    COALESCE(p.lifecycle, ''), p.completed_at,
                     cs.session_id, cs.method, cs.status, cs.last_stable_status,
                     cs.schema_version, cs.completed_at,
                     cap.session_id, cap.source_template_id, cap.source_template_version,
-                    cap.runtime_schema_version,
+                    cap.runtime_schema_version, cap.body_sha256, cap.motion_profile_sha256,
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     WHERE av.session_id=cs.session_id),
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     WHERE av.pet_id=p.pet_id),
                     (SELECT COUNT(*) FROM appearance_variants av
                      WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id),
                     (SELECT COUNT(*) FROM appearance_variants av
+                     WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=0),
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1),
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     JOIN variants rv ON rv.variant_id=av.variant_id
                      WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1),
                     (SELECT COUNT(*) FROM appearance_variants av
                      JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
+                     WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1),
+                    (SELECT COUNT(*) FROM appearance_variants av
+                     JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
+                     WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1
+                       AND rv.style_id='animated-image-v1'),
+                    (SELECT MIN(rv.manifest_path) FROM appearance_variants av
+                     JOIN variants rv ON rv.variant_id=av.variant_id AND rv.pet_id=av.pet_id
                      WHERE av.pet_id=p.pet_id AND av.session_id=cs.session_id AND av.accepted=1)
-             FROM pets p
-             LEFT JOIN creation_sessions cs ON cs.pet_id=p.pet_id
+             FROM relevant_pairs rp
+             LEFT JOIN pets p ON p.pet_id=rp.pet_id
+             LEFT JOIN creation_sessions cs ON cs.session_id=rp.session_id
              LEFT JOIN creation_adoption_provenance cap ON cap.session_id=cs.session_id
-             WHERE p.source_template_id=?1
-             ORDER BY p.rowid, cs.rowid",
+             ORDER BY p.rowid, cs.rowid, cap.rowid",
         )
         .map_err(|error| error.to_string())?;
     let rows = statement
@@ -823,9 +915,17 @@ fn adoption_facts(db: &Connection, template_id: &str) -> Result<Vec<AdoptionFact
                     .map(|value| u32::try_from(value).unwrap_or_default()),
                 provenance_runtime_schema_version: provenance_runtime_version
                     .map(|value| u32::try_from(value).unwrap_or_default()),
-                candidate_count: row.get(19)?,
-                accepted_count: row.get(20)?,
-                accepted_runtime_count: row.get(21)?,
+                provenance_body_sha256: row.get(19)?,
+                provenance_motion_profile_sha256: row.get(20)?,
+                session_candidate_count: row.get(21)?,
+                pet_candidate_count: row.get(22)?,
+                candidate_count: row.get(23)?,
+                unaccepted_count: row.get(24)?,
+                accepted_count: row.get(25)?,
+                accepted_runtime_count: row.get(26)?,
+                accepted_owned_runtime_count: row.get(27)?,
+                accepted_animated_runtime_count: row.get(28)?,
+                accepted_runtime_manifest_path: row.get(29)?,
             })
         })
         .map_err(|error| error.to_string())?;
@@ -1491,6 +1591,20 @@ mod tests {
             serde_json::from_slice(&std::fs::read(self.catalog_path()).unwrap()).unwrap()
         }
 
+        fn template(&self, template_id: &str) -> super::AdoptionTemplate {
+            let catalog = self.catalog_json();
+            serde_json::from_value(
+                catalog["templates"]
+                    .as_array()
+                    .unwrap()
+                    .iter()
+                    .find(|template| template["templateId"] == template_id)
+                    .unwrap()
+                    .clone(),
+            )
+            .unwrap()
+        }
+
         fn write_catalog_json(&self, catalog: &serde_json::Value) {
             std::fs::write(
                 self.catalog_path(),
@@ -1522,12 +1636,19 @@ mod tests {
                     |row| row.get(0),
                 )
                 .unwrap();
+            let manifest_path = self
+                .root
+                .join("pets")
+                .join(&session.pet_id)
+                .join("assets/manifest.json")
+                .to_string_lossy()
+                .into_owned();
             storage
                 .db
                 .execute(
                     "INSERT INTO variants (variant_id, pet_id, style_id, manifest_path, created_at)
-                     VALUES (?1, ?2, 'animated-image-v1', 'manifest.json', '1')",
-                    rusqlite::params![candidate_id, session.pet_id],
+                     VALUES (?1, ?2, 'animated-image-v1', ?3, '1')",
+                    rusqlite::params![candidate_id, session.pet_id, manifest_path],
                 )
                 .unwrap();
             storage
@@ -2206,9 +2327,144 @@ mod tests {
     }
 
     #[test]
+    fn catalog_rejects_a_pet_hidden_by_a_ghost_source_when_provenance_still_names_the_template() {
+        let test = AdoptionHarness::with_templates();
+        let session = test.service.start_adoption("cat-misty", "ghost").unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE pets SET source_template_id='ghost-template' WHERE pet_id=?1",
+                [&session.pet_id],
+            )
+            .unwrap();
+
+        let projected = test.service.adoption_catalog();
+
+        assert!(
+            projected.is_err(),
+            "ghost source pet disappeared from durable facts: {projected:?}"
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_a_candidate_linked_to_the_session_but_owned_by_another_pet() {
+        let test = AdoptionHarness::with_templates();
+        let session = test
+            .service
+            .start_adoption("cat-misty", "cross-owned")
+            .unwrap();
+        let storage = test.storage.lock().unwrap();
+        storage
+            .db
+            .execute(
+                "INSERT INTO pets
+                 (pet_id, schema_version, species, identity_mode, display_name,
+                  creation_method, source_template_id, source_template_version,
+                  lifecycle, completed_at, created_at, updated_at)
+                 VALUES ('pet-cross-owner', 1, 'cat', 'realPet', 'other',
+                         'upload', NULL, NULL, 'ready', '1', '1', '1')",
+                [],
+            )
+            .unwrap();
+        storage
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='draft', last_stable_status='draft' WHERE session_id=?1",
+                [&session.session_id],
+            )
+            .unwrap();
+        storage
+            .db
+            .execute(
+                "UPDATE appearance_variants SET pet_id=?2 WHERE session_id=?1",
+                rusqlite::params![session.session_id, "pet-cross-owner"],
+            )
+            .unwrap();
+        drop(storage);
+
+        let projected = test.service.adoption_catalog();
+
+        assert!(
+            projected.is_err(),
+            "cross-owned candidate was hidden by the exact-key count: {projected:?}"
+        );
+    }
+
+    #[test]
+    fn catalog_rejects_same_version_provenance_hash_tampering() {
+        let mut unexpected_successes = Vec::new();
+        for column in ["body_sha256", "motion_profile_sha256"] {
+            let test = AdoptionHarness::with_templates();
+            let session = test
+                .service
+                .start_adoption("cat-misty", "hash-check")
+                .unwrap();
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute(
+                    &format!(
+                        "UPDATE creation_adoption_provenance SET {column}=?2 WHERE session_id=?1"
+                    ),
+                    rusqlite::params![session.session_id, "0".repeat(64)],
+                )
+                .unwrap();
+            if test.service.adoption_catalog().is_ok() {
+                unexpected_successes.push(column);
+            }
+        }
+
+        assert!(
+            unexpected_successes.is_empty(),
+            "same-version provenance hash tampering was projected: {unexpected_successes:?}"
+        );
+    }
+
+    #[test]
+    fn adopted_projection_requires_the_animated_runtime_manifest_contract() {
+        let mut unexpected_successes = Vec::new();
+        for (label, mutation) in [
+            (
+                "static-png runtime",
+                "UPDATE variants SET style_id='static-png'",
+            ),
+            (
+                "nonstandard manifest path",
+                "UPDATE variants SET manifest_path='manifest.json'",
+            ),
+        ] {
+            let test = AdoptionHarness::with_templates();
+            let session = test
+                .service
+                .start_adoption("cat-misty", "runtime-check")
+                .unwrap();
+            test.complete(&session);
+            test.storage
+                .lock()
+                .unwrap()
+                .db
+                .execute_batch(mutation)
+                .unwrap();
+            if test.service.adoption_catalog().is_ok() {
+                unexpected_successes.push(label);
+            }
+        }
+
+        assert!(
+            unexpected_successes.is_empty(),
+            "invalid accepted runtimes were projected: {unexpected_successes:?}"
+        );
+    }
+
+    #[test]
     fn durable_fact_projection_rejects_metadata_and_lifecycle_contradictions() {
         let test = AdoptionHarness::with_templates();
         let session = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+        let template = test.template("cat-misty");
         let cases = [
             (
                 "wrong species",
@@ -2282,7 +2538,7 @@ mod tests {
             let storage = test.storage.lock().unwrap();
             storage.db.execute_batch(mutate).unwrap();
             let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
-            if project_facts(&facts, "cat-misty").is_ok() {
+            if project_facts(&facts, &template, &test.root).is_ok() {
                 unexpected_successes.push(label);
             }
             storage.db.execute_batch(restore).unwrap();
@@ -2299,7 +2555,7 @@ mod tests {
                 )
                 .unwrap();
             let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
-            if project_facts(&facts, "cat-misty").is_ok() {
+            if project_facts(&facts, &template, &test.root).is_ok() {
                 unexpected_successes.push("wrong pet creation method");
             }
             storage
@@ -2324,7 +2580,7 @@ mod tests {
                 )
                 .unwrap();
             let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
-            if project_facts(&facts, "cat-misty").is_ok() {
+            if project_facts(&facts, &template, &test.root).is_ok() {
                 unexpected_successes.push("ready accepted pet with finalizing session");
             }
         }
@@ -2339,6 +2595,7 @@ mod tests {
     fn coherent_abandoned_facts_are_ignored_but_abandoned_candidates_are_not() {
         let test = AdoptionHarness::with_templates();
         let session = test.service.start_adoption("cat-misty", "闆鹃浘").unwrap();
+        let template = test.template("cat-misty");
         let storage = test.storage.lock().unwrap();
         storage
             .db
@@ -2358,7 +2615,7 @@ mod tests {
             .unwrap();
 
         let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
-        assert!(project_facts(&facts, "cat-misty").is_err());
+        assert!(project_facts(&facts, &template, &test.root).is_err());
 
         storage
             .db
@@ -2368,7 +2625,10 @@ mod tests {
             )
             .unwrap();
         let facts = adoption_facts(&storage.db, "cat-misty").unwrap();
-        assert_eq!(project_facts(&facts, "cat-misty").unwrap(), (None, None));
+        assert_eq!(
+            project_facts(&facts, &template, &test.root).unwrap(),
+            (None, None)
+        );
     }
 
     #[test]
