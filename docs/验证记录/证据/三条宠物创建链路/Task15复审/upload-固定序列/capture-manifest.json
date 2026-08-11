@@ -1,0 +1,3144 @@
+{
+  "schemaVersion": 1,
+  "protocol": {
+    "frameCount": 92,
+    "targetIntervalMs": 400,
+    "combinedCycleMs": 36400,
+    "maxJitterMs": 150,
+    "rawCapture": "Sky get_window_state normal returned pet window",
+    "whiteComposite": "replace pixels whose max-channel distance from the fixed self-owned settings background RGB(231,241,242) is <=18 with white; same frozen 18 for every frame",
+    "analysisForegroundRgbDistanceFromWhite": 18
+  },
+  "capture": {
+    "mode": "debug_assertions + DESKTOP_PET_TASK15_CAPTURE=1",
+    "label": "pet",
+    "petId": "pet-61dc-18caba5f44e19394-3",
+    "renderer": "animated-image-v1",
+    "pid": 18584,
+    "windowId": 70059754,
+    "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+    "title": "Desktop Pet Task15 8e5480bf",
+    "viewport": {
+      "width": 420,
+      "height": 520,
+      "dpr": 1,
+      "dpi": 96
+    },
+    "position": {
+      "x": 1491,
+      "y": 460
+    },
+    "monitor": {
+      "left": 0,
+      "top": 0,
+      "right": 1920,
+      "bottom": 1080
+    },
+    "wallStart": "2026-08-11T11:54:54.931Z",
+    "wallEnd": "2026-08-11T11:55:31.449Z",
+    "maxJitterMs": 65.391,
+    "noReloadSwitchRebuildDuringSequence": true
+  },
+  "assets": {
+    "manifestSha256": "6bb76d09475821b9c8403d00f7f7f828dc19eb1fc4582a4793e353944c31a7de",
+    "bodySha256": "1975c8b5f5234efdde207dd0a6b34d87981120567241854cff78e9157168f7f0",
+    "motionProfileSha256": "36361e27af3c4d28dd0d01ef123a478668ef476c8315c9078b4445766e511ddd"
+  },
+  "dragPersistence": {
+    "before": {
+      "x": 1573,
+      "y": 460,
+      "width": 420,
+      "height": 520,
+      "dpi": 96,
+      "dpr": 1
+    },
+    "largeAttempt": {
+      "deltaX": -140,
+      "effective": false,
+      "reason": "Sky ownership preflight rejected before input"
+    },
+    "successfulSteps": [
+      {
+        "x": 1555,
+        "y": 460
+      },
+      {
+        "x": 1538,
+        "y": 460
+      },
+      {
+        "x": 1522,
+        "y": 460
+      },
+      {
+        "x": 1506,
+        "y": 460
+      },
+      {
+        "x": 1491,
+        "y": 460
+      }
+    ],
+    "restartRestored": {
+      "x": 1491,
+      "y": 460,
+      "width": 420,
+      "height": 520,
+      "dpi": 96,
+      "dpr": 1,
+      "wgcWidth": 420,
+      "wgcHeight": 520
+    }
+  },
+  "frames": [
+    {
+      "index": 0,
+      "rawFile": "raw/raw-000.jpg",
+      "targetMs": 0,
+      "actualMs": 65.391,
+      "captureDurationMs": 130.765,
+      "rawSha256": "87cc50e58479789a98145d8035d6c35f39ae05863ed58dcb0134d7aa29432c00",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-000.jpg",
+      "sha256": "fbf46fd12c1635654c61dc0bec5871af4e5cfa849837920a3c21b5ad3950a090",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148962
+      }
+    },
+    {
+      "index": 1,
+      "rawFile": "raw/raw-001.jpg",
+      "targetMs": 400,
+      "actualMs": 443.716,
+      "captureDurationMs": 73.428,
+      "rawSha256": "569c6f807021b8f28980fcadd2d1ab7458ce67d358a1f3c6613edd2f67c38ff6",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-001.jpg",
+      "sha256": "9059eb987c5eb4447d264de6a738e4283584783489bea9f30fbda9f7abcadca3",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148913
+      }
+    },
+    {
+      "index": 2,
+      "rawFile": "raw/raw-002.jpg",
+      "targetMs": 800,
+      "actualMs": 850.012,
+      "captureDurationMs": 95.37,
+      "rawSha256": "0a39dbc96226867b97ed990a52ddd2c00c89e81ca83732525718b1e3804c6d23",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-002.jpg",
+      "sha256": "2722f4d427b03a4b6598782d3efed0987de8b6483c6d7620e38393e818b0420f",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148933
+      }
+    },
+    {
+      "index": 3,
+      "rawFile": "raw/raw-003.jpg",
+      "targetMs": 1200,
+      "actualMs": 1252.195,
+      "captureDurationMs": 92.34,
+      "rawSha256": "5cc599f4b8c44f81db30e2023f104dbdeff2286b49a823d22ed9b4c5f1248949",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-003.jpg",
+      "sha256": "fc3e23a7c5b890b4a4c1dab030ae0aeba69e4dfdf2a1445adc8d83f6548eae30",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149021
+      }
+    },
+    {
+      "index": 4,
+      "rawFile": "raw/raw-004.jpg",
+      "targetMs": 1600,
+      "actualMs": 1649.961,
+      "captureDurationMs": 89.929,
+      "rawSha256": "74ebf515f87e30688b55abee18b3c5a7583494cdb284015be3639c4c4ab448b9",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-004.jpg",
+      "sha256": "45660398f8d9eeb765ce2a982f9ebf892ddc8bfb81b658fa20aef4aa15ba25b4",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149109
+      }
+    },
+    {
+      "index": 5,
+      "rawFile": "raw/raw-005.jpg",
+      "targetMs": 2000,
+      "actualMs": 2051.284,
+      "captureDurationMs": 88.079,
+      "rawSha256": "fc7e1c61a126dec505d8c58bdbb248458a74d300c994995570e4b92f383a51b3",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-005.jpg",
+      "sha256": "1f6fce18cb2b8038d132df7e79bf0a2563d9c27a8542177fdb637ff9ba7e171a",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149056
+      }
+    },
+    {
+      "index": 6,
+      "rawFile": "raw/raw-006.jpg",
+      "targetMs": 2400,
+      "actualMs": 2448.5,
+      "captureDurationMs": 87.862,
+      "rawSha256": "72af6860afcc71e4d5e833148e560471b918640d1dea77f2542054d6052556b3",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-006.jpg",
+      "sha256": "2f39de125b411ba68727dc14eb9674f041da41d46db13a95eb3b1024a4ae57be",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148927
+      }
+    },
+    {
+      "index": 7,
+      "rawFile": "raw/raw-007.jpg",
+      "targetMs": 2800,
+      "actualMs": 2838.407,
+      "captureDurationMs": 67.028,
+      "rawSha256": "e5898bd76242cd2e95d547d2f35c9b2b49b674017351af48ca59169677a997c9",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-007.jpg",
+      "sha256": "4780292d16e64297a3e17df679c9e784957c4850b0bd8cc1022aa1efaff9f7e8",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149007
+      }
+    },
+    {
+      "index": 8,
+      "rawFile": "raw/raw-008.jpg",
+      "targetMs": 3200,
+      "actualMs": 3251.993,
+      "captureDurationMs": 89.776,
+      "rawSha256": "7464cc9a1548507403b42896ff49c89e4d4ee9f6b0ba7a387ed831d3470bf599",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-008.jpg",
+      "sha256": "b4403268d07bfafa48270d6bd0d4601886836cc846f9ba19632b5c576068ab05",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148948
+      }
+    },
+    {
+      "index": 9,
+      "rawFile": "raw/raw-009.jpg",
+      "targetMs": 3600,
+      "actualMs": 3652.189,
+      "captureDurationMs": 92.842,
+      "rawSha256": "a3709392cd629f6fd11ee0c4e86eae160a3273bbff7a89571371a1b6c0751cc3",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-009.jpg",
+      "sha256": "855ab745da79885398a0a68ffb97c1d16235ead686e5836a09e95de7d6e9ca2a",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149070
+      }
+    },
+    {
+      "index": 10,
+      "rawFile": "raw/raw-010.jpg",
+      "targetMs": 4000,
+      "actualMs": 4048.285,
+      "captureDurationMs": 83.934,
+      "rawSha256": "ca3bd6f7c46132b02e179c591fb9ee05c1f947b5691387274b675a34d9261d4a",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-010.jpg",
+      "sha256": "85a771170311c816bde924960453622fa74545869cc42225da1a524cad541307",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149112
+      }
+    },
+    {
+      "index": 11,
+      "rawFile": "raw/raw-011.jpg",
+      "targetMs": 4400,
+      "actualMs": 4438.627,
+      "captureDurationMs": 71.061,
+      "rawSha256": "bf5e5cb06825059bfe7d7e01947116b71939c2183a8b8e82389bc375857f2e31",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-011.jpg",
+      "sha256": "df777a5ddad84c4f828df81b42322cbefefcfc6248005d37e36a25e4f8cf2fbb",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149101
+      }
+    },
+    {
+      "index": 12,
+      "rawFile": "raw/raw-012.jpg",
+      "targetMs": 4800,
+      "actualMs": 4848.603,
+      "captureDurationMs": 87.688,
+      "rawSha256": "9f74992a5db5d736b7d42e8a61c52738b750d40ba1868a6f9608cb2b1acbc5ac",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-012.jpg",
+      "sha256": "35d175ca6234145d2cc1adafc7fc4c15d8f414a9857762d97bf83a25f2007334",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149010
+      }
+    },
+    {
+      "index": 13,
+      "rawFile": "raw/raw-013.jpg",
+      "targetMs": 5200,
+      "actualMs": 5252.374,
+      "captureDurationMs": 96.972,
+      "rawSha256": "64283a922a282b7d0ca18a62c88cecd510671890e98dc20fd1a8c67fde085e3b",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-013.jpg",
+      "sha256": "93976df98b408714b4f36450fb12937850bb7dfe8d4877397cbe72d3fa884168",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148988
+      }
+    },
+    {
+      "index": 14,
+      "rawFile": "raw/raw-014.jpg",
+      "targetMs": 5600,
+      "actualMs": 5640.568,
+      "captureDurationMs": 75.349,
+      "rawSha256": "d6a3248f5141b1987b4154cba6166a404d8f93b12cc0376b05bacd4b7958bedf",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-014.jpg",
+      "sha256": "6c3a79906cdee7edbbeeaafd08c7fd02e4a93578d8b47d47554ef06333f5ac44",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148945
+      }
+    },
+    {
+      "index": 15,
+      "rawFile": "raw/raw-015.jpg",
+      "targetMs": 6000,
+      "actualMs": 6050.497,
+      "captureDurationMs": 89.515,
+      "rawSha256": "aeb3a5098a77b4c76b6f88c1e89eb7bae8ade3a52cd1f050e1019350b22d5ae5",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-015.jpg",
+      "sha256": "75de37dfd251cf50318b440ea9c9150da5d6fc8dd3ce3bf714c18d851af20e59",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148933
+      }
+    },
+    {
+      "index": 16,
+      "rawFile": "raw/raw-016.jpg",
+      "targetMs": 6400,
+      "actualMs": 6448.861,
+      "captureDurationMs": 89.275,
+      "rawSha256": "81aed3aa65fd3850387b12a165c2ad87cad3656a5acd6bdc88e7c46c033616bc",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-016.jpg",
+      "sha256": "2c1a3d9c8cdc7e8d7fa1a0d9cc81e645140860de77d0332d718f59a836fe86cd",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148996
+      }
+    },
+    {
+      "index": 17,
+      "rawFile": "raw/raw-017.jpg",
+      "targetMs": 6800,
+      "actualMs": 6839.881,
+      "captureDurationMs": 64.056,
+      "rawSha256": "7052a850822cb7f36f679bc4def04bb96608340a17ebd4f9a9d82f77f3a68f11",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-017.jpg",
+      "sha256": "9b05245041c5f51cb053c0b87e10f8de1bed7f4dde5b9b9e64da41c7e86be964",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149072
+      }
+    },
+    {
+      "index": 18,
+      "rawFile": "raw/raw-018.jpg",
+      "targetMs": 7200,
+      "actualMs": 7247.445,
+      "captureDurationMs": 89.294,
+      "rawSha256": "77c8a66b0ddcaa403b289603ecf01f83fcea5614faf71ff32933bb40852e607a",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-018.jpg",
+      "sha256": "ddc1f188c087b87606b1ca9a01195751cd3ab988ce9a7cae43f87f1ba1de2e34",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149044
+      }
+    },
+    {
+      "index": 19,
+      "rawFile": "raw/raw-019.jpg",
+      "targetMs": 7600,
+      "actualMs": 7639.266,
+      "captureDurationMs": 70.683,
+      "rawSha256": "05d5f6901f5888c83d41cb8a393038f842091814d12061ea183acaa0f9b683dd",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-019.jpg",
+      "sha256": "a29b619c1e0fd0b3317a9304641c6ba1e362b42bc8280e9a362685d6026c1e20",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148954
+      }
+    },
+    {
+      "index": 20,
+      "rawFile": "raw/raw-020.jpg",
+      "targetMs": 8000,
+      "actualMs": 8049.576,
+      "captureDurationMs": 91.093,
+      "rawSha256": "dad8f638d16a31ba0d564086ce766457d33965ac26b535b79c74f0d1aa561937",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-020.jpg",
+      "sha256": "2dfeceb5e7d73efd972259573750521761f240b2bcc4788038ddbd3c75d7f339",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149246
+      }
+    },
+    {
+      "index": 21,
+      "rawFile": "raw/raw-021.jpg",
+      "targetMs": 8400,
+      "actualMs": 8449.92,
+      "captureDurationMs": 88.776,
+      "rawSha256": "d0f5b2dd81fddfab3152c66123ca62842f40df2184fafe80c74b7ce0f0f22ec1",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-021.jpg",
+      "sha256": "dafbf498d3c465a9afa8d6cb0abb035f2c1a1723d419d9dfd22d92df34b7e362",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148952
+      }
+    },
+    {
+      "index": 22,
+      "rawFile": "raw/raw-022.jpg",
+      "targetMs": 8800,
+      "actualMs": 8838.065,
+      "captureDurationMs": 76.467,
+      "rawSha256": "4328f6e4344a25b220475cbb4f9be4c8709a738faf1bc4870d4bde4ef3877356",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-022.jpg",
+      "sha256": "eee2e73786fc5db6b199a39beecfba273b1809e8ad1d36d5307c1b10c3019fd1",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149045
+      }
+    },
+    {
+      "index": 23,
+      "rawFile": "raw/raw-023.jpg",
+      "targetMs": 9200,
+      "actualMs": 9241.971,
+      "captureDurationMs": 72.659,
+      "rawSha256": "c75b4f7bbf5b208cdb8539825e4dc40f0f6d0c3ff5d21837697f70b2758dd7e0",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-023.jpg",
+      "sha256": "6dfb8f8396458e8994b38cc3fd2baafa16fed7bcd30e9b19c7f0b0c164566403",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149111
+      }
+    },
+    {
+      "index": 24,
+      "rawFile": "raw/raw-024.jpg",
+      "targetMs": 9600,
+      "actualMs": 9649.879,
+      "captureDurationMs": 89.874,
+      "rawSha256": "731684e14617cb7a5640997cc66cb930e495b29bf03912d329a29932d71eb90b",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-024.jpg",
+      "sha256": "a77541268ab32d8f35ab9a186bef546a1b53dd4492987bf1fd5c3d234d715983",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149098
+      }
+    },
+    {
+      "index": 25,
+      "rawFile": "raw/raw-025.jpg",
+      "targetMs": 10000,
+      "actualMs": 10040.793,
+      "captureDurationMs": 73.568,
+      "rawSha256": "016a3cb1a414c5addd78c367c94b3337b3f0c28bd9b0960b1e63dd1a13cda51b",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-025.jpg",
+      "sha256": "96309ec5243e473a044031d8130458fef8b46f9216a10740c5dcb5c86363454a",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149014
+      }
+    },
+    {
+      "index": 26,
+      "rawFile": "raw/raw-026.jpg",
+      "targetMs": 10400,
+      "actualMs": 10446.407,
+      "captureDurationMs": 81.838,
+      "rawSha256": "c4bf16dc2b7f554b6132cbe479202844fab52b5cd3cecc7a6d90d4aa57d3c504",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-026.jpg",
+      "sha256": "9fb438b7f30572b2863a6ed9c3b754f6ef1c9fef7706ac8a4dd6f7c932f06c94",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149002
+      }
+    },
+    {
+      "index": 27,
+      "rawFile": "raw/raw-027.jpg",
+      "targetMs": 10800,
+      "actualMs": 10840.003,
+      "captureDurationMs": 71.615,
+      "rawSha256": "77a50d3a2ccb1960e3dd98f92c40fe5c50ea7e6e46ab2e764d1fa6b85e847e2f",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-027.jpg",
+      "sha256": "98a7fbcf47e756bb6737cd9b544a4df964ba1a2a1d7f039da2013d6fabb2de80",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148957
+      }
+    },
+    {
+      "index": 28,
+      "rawFile": "raw/raw-028.jpg",
+      "targetMs": 11200,
+      "actualMs": 11248.465,
+      "captureDurationMs": 85.112,
+      "rawSha256": "8308c46d9268c094945effb229c698f516943774a5948127225cf57d6fa2cee1",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-028.jpg",
+      "sha256": "79e001e770258cd3415e41d280bf0c5bab196ae7979fa565e0490989409d5565",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148950
+      }
+    },
+    {
+      "index": 29,
+      "rawFile": "raw/raw-029.jpg",
+      "targetMs": 11600,
+      "actualMs": 11641.054,
+      "captureDurationMs": 70.195,
+      "rawSha256": "b5267b1f4829c256eb70952afe31a38984d6c5dd16d454e42a057d8d6cda8545",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-029.jpg",
+      "sha256": "98d2eed2f75bff521c8dcc3234af8f923704b4894229eb6c642586c68ff4e41a",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149000
+      }
+    },
+    {
+      "index": 30,
+      "rawFile": "raw/raw-030.jpg",
+      "targetMs": 12000,
+      "actualMs": 12052.449,
+      "captureDurationMs": 90.634,
+      "rawSha256": "a9d2d87cb93c42674e3053487c11bf43dd659b584d2103f106b2f6e9d5d4c3ae",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-030.jpg",
+      "sha256": "4576d2d887fcd92feadaef2e21e438d889a6d79c10917fdb0cc48e5de53c0842",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149060
+      }
+    },
+    {
+      "index": 31,
+      "rawFile": "raw/raw-031.jpg",
+      "targetMs": 12400,
+      "actualMs": 12449.149,
+      "captureDurationMs": 89.336,
+      "rawSha256": "39d524fcdf28a89a738140ae7df155c4386109f2948d7a176d2c84f63b0266ef",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-031.jpg",
+      "sha256": "caea65a8c6e20af277bc6388ea98e206e191bddd41c4b52ee9dceb659ecc4d5b",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149016
+      }
+    },
+    {
+      "index": 32,
+      "rawFile": "raw/raw-032.jpg",
+      "targetMs": 12800,
+      "actualMs": 12848.074,
+      "captureDurationMs": 83.815,
+      "rawSha256": "d9ac39ccd1674f2b6905b0733e19a4eaff4481e5993fd4d7603ee62487fbca18",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-032.jpg",
+      "sha256": "a291353e84593706c2e6d521e8aeb4536fa9b5163ab615ae46f507e11a414353",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148926
+      }
+    },
+    {
+      "index": 33,
+      "rawFile": "raw/raw-033.jpg",
+      "targetMs": 13200,
+      "actualMs": 13249.205,
+      "captureDurationMs": 87.066,
+      "rawSha256": "f4f8015e94f1839a86e7af39ca8544a4ca971ef160957b67b91fbd577207e2a3",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-033.jpg",
+      "sha256": "4b33ca88ac7243d975428d4459e8728f09535dc0481b51e0e10dcc0e6e4b612e",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149258
+      }
+    },
+    {
+      "index": 34,
+      "rawFile": "raw/raw-034.jpg",
+      "targetMs": 13600,
+      "actualMs": 13651.981,
+      "captureDurationMs": 93.649,
+      "rawSha256": "da49aac3e3c9f515be6168f0e852cf18fa49684542ca822480769527792273da",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-034.jpg",
+      "sha256": "daf97c65c3255c508b88febf0a194933f7a37ff95156f8abbfc6d90da3968aad",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148979
+      }
+    },
+    {
+      "index": 35,
+      "rawFile": "raw/raw-035.jpg",
+      "targetMs": 14000,
+      "actualMs": 14043.164,
+      "captureDurationMs": 72.559,
+      "rawSha256": "b36844779e3012d61524d5b20080a69cc5378cf63b8ca62d13ce51de59629af4",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-035.jpg",
+      "sha256": "58a426d59000fd5727f7b139abc163ab6e5e75a0373e4e976cc5187bb7f79bcf",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149052
+      }
+    },
+    {
+      "index": 36,
+      "rawFile": "raw/raw-036.jpg",
+      "targetMs": 14400,
+      "actualMs": 14446.413,
+      "captureDurationMs": 93.406,
+      "rawSha256": "33c8b8a9720e726e0954385f232028b8d4d7e903492e0d3aa46ed095400fa8f4",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-036.jpg",
+      "sha256": "2cd213b2bf589faa47654ff4f0823a316be038cb859af14a8eed029fe53d116f",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149107
+      }
+    },
+    {
+      "index": 37,
+      "rawFile": "raw/raw-037.jpg",
+      "targetMs": 14800,
+      "actualMs": 14841.831,
+      "captureDurationMs": 70.383,
+      "rawSha256": "ce79b14621f8c9fd2dab255468f7af118a6facd021ebfb32dbc8f60526413b07",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-037.jpg",
+      "sha256": "b46140bf554687811e61a27df46c94852d0e518e92599679d5ef4d26f8a91fa6",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149097
+      }
+    },
+    {
+      "index": 38,
+      "rawFile": "raw/raw-038.jpg",
+      "targetMs": 15200,
+      "actualMs": 15239.317,
+      "captureDurationMs": 72.968,
+      "rawSha256": "587613329dfd9437018f0870fe762fb0136dce56830bf87b2e0b3eb7c074f6ba",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-038.jpg",
+      "sha256": "f6834f4ea15492cd71a50941e706a07160fa22bada39458c592929474a07878a",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149005
+      }
+    },
+    {
+      "index": 39,
+      "rawFile": "raw/raw-039.jpg",
+      "targetMs": 15600,
+      "actualMs": 15649.385,
+      "captureDurationMs": 83.991,
+      "rawSha256": "31699a13f701aee0489eacf03d167e0022e57c335a79f2d6e644e7d0127d810b",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-039.jpg",
+      "sha256": "7509b2c91b092046357d047ecb9d63b9da2a4916bf73a513f759523a60d843cd",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148987
+      }
+    },
+    {
+      "index": 40,
+      "rawFile": "raw/raw-040.jpg",
+      "targetMs": 16000,
+      "actualMs": 16048.741,
+      "captureDurationMs": 87.436,
+      "rawSha256": "16d6dc6b41cb019184b44b21f2e1df670d1e503a21a6cbe36877ac2563aef714",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-040.jpg",
+      "sha256": "95ef17ceedd80cedb8f99055f05e31d20afd742b9616a074e96b6f9dc1f9a49f",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148978
+      }
+    },
+    {
+      "index": 41,
+      "rawFile": "raw/raw-041.jpg",
+      "targetMs": 16400,
+      "actualMs": 16439.358,
+      "captureDurationMs": 74.922,
+      "rawSha256": "28e414ec0d3836047df22af47006690c5c47586c456744a441dc171566cd8662",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-041.jpg",
+      "sha256": "3f1e8538b44df4c414b5b14964987290781a03e01e9ff923827c88da2d40dc71",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148975
+      }
+    },
+    {
+      "index": 42,
+      "rawFile": "raw/raw-042.jpg",
+      "targetMs": 16800,
+      "actualMs": 16852.296,
+      "captureDurationMs": 84.629,
+      "rawSha256": "67c98a0e6bf855bd7571909251ec059bfc83c7eb00a593e417777e506d46a912",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-042.jpg",
+      "sha256": "ac44ab5ad3ebee1082e02d5837cff223e9208431a4a8539b9756e151c57d0535",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149021
+      }
+    },
+    {
+      "index": 43,
+      "rawFile": "raw/raw-043.jpg",
+      "targetMs": 17200,
+      "actualMs": 17250.054,
+      "captureDurationMs": 85.717,
+      "rawSha256": "a5b86eda03a7d20264b779819590d7058e04d6e403038276d17f67ba039bdede",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-043.jpg",
+      "sha256": "e401632bbeaf66e1e62ab18dfda5b4660523df290de1402f041da93a8d296297",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149059
+      }
+    },
+    {
+      "index": 44,
+      "rawFile": "raw/raw-044.jpg",
+      "targetMs": 17600,
+      "actualMs": 17652.515,
+      "captureDurationMs": 84.603,
+      "rawSha256": "36e6d8f494c9979007316da8d5b5f2c22f60ef9d71bc2b40403f2661d4ba887e",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-044.jpg",
+      "sha256": "79625dec02fcce55529cddab4caaebb8a136ae53bef4fdb83163cd5704ca74f6",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148993
+      }
+    },
+    {
+      "index": 45,
+      "rawFile": "raw/raw-045.jpg",
+      "targetMs": 18000,
+      "actualMs": 18047.965,
+      "captureDurationMs": 88.286,
+      "rawSha256": "f24577611f3ddd3abaa474a747c09c63155ff91516db115b6a4ac361d7b6e5bd",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-045.jpg",
+      "sha256": "5ccfd20a855f0df9406e745a6cbe2bf1948c38d775191ee8484ca5aad152f1bd",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148909
+      }
+    },
+    {
+      "index": 46,
+      "rawFile": "raw/raw-046.jpg",
+      "targetMs": 18400,
+      "actualMs": 18463.768,
+      "captureDurationMs": 100.119,
+      "rawSha256": "3c2c4f03c81bf31373000669acdf07f582140329f71832a78e4c3622f2529f9f",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-046.jpg",
+      "sha256": "95d7029a863bf10fc8b5e42515f20e8839996aa739586894b6b9e99bf1fba003",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149246
+      }
+    },
+    {
+      "index": 47,
+      "rawFile": "raw/raw-047.jpg",
+      "targetMs": 18800,
+      "actualMs": 18846.196,
+      "captureDurationMs": 78.6,
+      "rawSha256": "4089eeddb8bb74214f5ffc1e1e7e4366c6749a1d58cf6755410b90c24ebdea9d",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-047.jpg",
+      "sha256": "544e4fbea95e65a4ab3fbb3a2fe90475ae3b4c65da6e8f0a6823e9fd85b451d7",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148998
+      }
+    },
+    {
+      "index": 48,
+      "rawFile": "raw/raw-048.jpg",
+      "targetMs": 19200,
+      "actualMs": 19251.263,
+      "captureDurationMs": 91.771,
+      "rawSha256": "6c1e80348fe1894a8a8e062cdbec85daea6d5e71f7e659fd99b49de697855372",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-048.jpg",
+      "sha256": "134de88d3197e6d13649ee995501f24ba5ed91f11f9a6b59bafde6b966dc43dc",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149079
+      }
+    },
+    {
+      "index": 49,
+      "rawFile": "raw/raw-049.jpg",
+      "targetMs": 19600,
+      "actualMs": 19640.695,
+      "captureDurationMs": 72.344,
+      "rawSha256": "a40cbd8d9e9040077a2a33c914540b9db6bde1e6a38107f213cd961b33f8cb8a",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-049.jpg",
+      "sha256": "8b866f7bdeed28170e4af4621de44dfa800366b5efae18ca23469c55d3dce4e7",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149112
+      }
+    },
+    {
+      "index": 50,
+      "rawFile": "raw/raw-050.jpg",
+      "targetMs": 20000,
+      "actualMs": 20059.62,
+      "captureDurationMs": 104.755,
+      "rawSha256": "e453df352afe65f5b5d0b3aaabc50029863fedcf143c95efb7abfab4f6eda7ee",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-050.jpg",
+      "sha256": "c8d3af33be45dbc67a7d9ff27c8c698a9e3fef930c1d1da156b7868dd1d4d208",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149100
+      }
+    },
+    {
+      "index": 51,
+      "rawFile": "raw/raw-051.jpg",
+      "targetMs": 20400,
+      "actualMs": 20449.052,
+      "captureDurationMs": 85.424,
+      "rawSha256": "b0d276609fb3c5f7f0fa53d55997972a49dcf79f56ef1605527b0aaf3acad14e",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-051.jpg",
+      "sha256": "ec355882156ab1da94d582588500923b0dfc98801b781b607f383970bf389be1",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148982
+      }
+    },
+    {
+      "index": 52,
+      "rawFile": "raw/raw-052.jpg",
+      "targetMs": 20800,
+      "actualMs": 20848.989,
+      "captureDurationMs": 89.196,
+      "rawSha256": "434be20888daeb55aad767a74d06f070d5692ce222e61e72e84b38781c79bb99",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-052.jpg",
+      "sha256": "9a68eb38f9f2c7633a69706c3fee0ce1ca6f675561dd06ee7f9e693e0b5b9450",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148960
+      }
+    },
+    {
+      "index": 53,
+      "rawFile": "raw/raw-053.jpg",
+      "targetMs": 21200,
+      "actualMs": 21239.903,
+      "captureDurationMs": 67.941,
+      "rawSha256": "d96423363a55a9dfc102bebea7e50d28dfd5faafd1b1738300bbc7261365ac0a",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-053.jpg",
+      "sha256": "4678f11326043b8642d23a2ace0eee810a2c2fc787b4ecf4e573c52d8a6080f5",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148949
+      }
+    },
+    {
+      "index": 54,
+      "rawFile": "raw/raw-054.jpg",
+      "targetMs": 21600,
+      "actualMs": 21651.115,
+      "captureDurationMs": 92.679,
+      "rawSha256": "354a943703ca1b6d10b81d984eb67fec0b286edd63d44ef9a2b257f3e834f2d2",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-054.jpg",
+      "sha256": "98ba75b51f7ca9098b06bb60949cf886d9e229d85225227888ed9f8cd5d152df",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148991
+      }
+    },
+    {
+      "index": 55,
+      "rawFile": "raw/raw-055.jpg",
+      "targetMs": 22000,
+      "actualMs": 22052.762,
+      "captureDurationMs": 93.49,
+      "rawSha256": "c76b36b697df1cafff52da8ae7ddb8f58f30e92480c3248bf530cf4b44a40f77",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-055.jpg",
+      "sha256": "9558f012d8e040a6c7cb3eaa96277c7aeee990d02c87c546611828963ab6d2e8",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149048
+      }
+    },
+    {
+      "index": 56,
+      "rawFile": "raw/raw-056.jpg",
+      "targetMs": 22400,
+      "actualMs": 22451.875,
+      "captureDurationMs": 93.743,
+      "rawSha256": "fa43af238bd3d8dee3d3d8de11c3b0a9669818f807269f3e8cf1b4027c59fe51",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-056.jpg",
+      "sha256": "dc3e8b350ea42450ec8451fd58b529ee0c10d2bbbf3dee5a1a6d4c036bd7d617",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149079
+      }
+    },
+    {
+      "index": 57,
+      "rawFile": "raw/raw-057.jpg",
+      "targetMs": 22800,
+      "actualMs": 22844.522,
+      "captureDurationMs": 87.379,
+      "rawSha256": "05a9e45171bd0c68384ec87bcc57ced7eee7823becd48afff08d59d64095e819",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-057.jpg",
+      "sha256": "c5cba35a5a7a8f27a4c0ea2b2ca0afbf11f60fee77a4187e0aff7af02546bb92",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148991
+      }
+    },
+    {
+      "index": 58,
+      "rawFile": "raw/raw-058.jpg",
+      "targetMs": 23200,
+      "actualMs": 23252.019,
+      "captureDurationMs": 93.243,
+      "rawSha256": "17b30c1ca1c0572b5949ce2c6da114f809485acd3fd212a8f2de63a5881834a4",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-058.jpg",
+      "sha256": "127a281e587243187aff89be40d91127a22e3d46ac8116ee675676173c19ed66",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148884
+      }
+    },
+    {
+      "index": 59,
+      "rawFile": "raw/raw-059.jpg",
+      "targetMs": 23600,
+      "actualMs": 23640.258,
+      "captureDurationMs": 66.521,
+      "rawSha256": "73e46c0b28ec45b9299fe5baef610aaa5413620fe30064ab6b6c168ddeafaeb6",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-059.jpg",
+      "sha256": "8420efa8d6476e66470594c874e998a8cd2f639b6b84725f351133db99bf8f90",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148996
+      }
+    },
+    {
+      "index": 60,
+      "rawFile": "raw/raw-060.jpg",
+      "targetMs": 24000,
+      "actualMs": 24048.333,
+      "captureDurationMs": 85.262,
+      "rawSha256": "447a6b3e2d4e67503c91979b30c4d04a31e9cdef954ff32a0f22f8fbcb078fb9",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-060.jpg",
+      "sha256": "2504cedcf96bb544e9231d1e696655d5f8cc930688d737e2526be9f1cdb5d873",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148973
+      }
+    },
+    {
+      "index": 61,
+      "rawFile": "raw/raw-061.jpg",
+      "targetMs": 24400,
+      "actualMs": 24440.84,
+      "captureDurationMs": 76.49,
+      "rawSha256": "d08d9eb7b23fa065c20c157a43abd8e4320ba3fa1c6f6cf014ebaa6105e7e516",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-061.jpg",
+      "sha256": "9f2dea87df33093bc546744c707e29f9537a3c612e83066f1b676c610ef58aee",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149065
+      }
+    },
+    {
+      "index": 62,
+      "rawFile": "raw/raw-062.jpg",
+      "targetMs": 24800,
+      "actualMs": 24852.028,
+      "captureDurationMs": 87.905,
+      "rawSha256": "f7605febca39ae4269bae869dbe167e229fa63733957b78b6737518d22faa0e8",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-062.jpg",
+      "sha256": "565854d3acbb0a7a132e044efe552a9f6e6c06e32b4162171f5979db29e76290",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149120
+      }
+    },
+    {
+      "index": 63,
+      "rawFile": "raw/raw-063.jpg",
+      "targetMs": 25200,
+      "actualMs": 25240.329,
+      "captureDurationMs": 75.343,
+      "rawSha256": "1c21679a0bf9546dde6321d4bd43c57e3832d70fb583f2c79ab28524995ce603",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-063.jpg",
+      "sha256": "ba855e49871430105caf23a78bb2ef77c27c4512b6efed034c53027736ba1b51",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149106
+      }
+    },
+    {
+      "index": 64,
+      "rawFile": "raw/raw-064.jpg",
+      "targetMs": 25600,
+      "actualMs": 25653.39,
+      "captureDurationMs": 85.841,
+      "rawSha256": "a82d0d17f88451f128b6e624882d86b627132cac36adc999401fd162035809fe",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-064.jpg",
+      "sha256": "70e9535d06a0cc7a2ffcd64120b2740edaa101c15cba700ad9b9e3fefddf28c2",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148981
+      }
+    },
+    {
+      "index": 65,
+      "rawFile": "raw/raw-065.jpg",
+      "targetMs": 26000,
+      "actualMs": 26037.702,
+      "captureDurationMs": 75.745,
+      "rawSha256": "e16e66f06eb9957c33f3a38f92443ebc010fb76bb6bd034e8473cc48a3a23a82",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-065.jpg",
+      "sha256": "61ad132d4f18e4b9284b76d2ea7050403a17c6a716fe771cd8875d9a06fcb618",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148924
+      }
+    },
+    {
+      "index": 66,
+      "rawFile": "raw/raw-066.jpg",
+      "targetMs": 26400,
+      "actualMs": 26452.484,
+      "captureDurationMs": 92.234,
+      "rawSha256": "ff367fe5d952f35cc1ef44c417e99ff7579f92ca829b233dc0cf67b7268a6abc",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-066.jpg",
+      "sha256": "130fac6037d9b623d0ecf80edd293b69981fc7e69a89cff9ea4bcb31595c32e8",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148939
+      }
+    },
+    {
+      "index": 67,
+      "rawFile": "raw/raw-067.jpg",
+      "targetMs": 26800,
+      "actualMs": 26842.299,
+      "captureDurationMs": 76.433,
+      "rawSha256": "71a1541a8b45e432691ab60d812b6eaad0e916ffe22a3bbb3bb4bd1fb7b44ee6",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-067.jpg",
+      "sha256": "7339124de6855158345d86b81223adc0a2ba2142f6e3d2ec71ab4a5b2aaf88d5",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148966
+      }
+    },
+    {
+      "index": 68,
+      "rawFile": "raw/raw-068.jpg",
+      "targetMs": 27200,
+      "actualMs": 27249.546,
+      "captureDurationMs": 88.345,
+      "rawSha256": "55d339e8e89d14e3e4e17c0d961ee3fe8d82c862eef70373b2b3d4d1e78dc54e",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-068.jpg",
+      "sha256": "5182716079545fe648ba6e8578db9206e512d2e94b9ef8ce7b1ba3c1aa28663e",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149068
+      }
+    },
+    {
+      "index": 69,
+      "rawFile": "raw/raw-069.jpg",
+      "targetMs": 27600,
+      "actualMs": 27639.885,
+      "captureDurationMs": 69.828,
+      "rawSha256": "adbfe7a249ffd82463aca761b58d21b5873d37d82e2c5a1b7c4f8656b9c33efb",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-069.jpg",
+      "sha256": "f92c2790a6e19b660bbf3b196e546ea03f6fe754ebbc6b1dd3549eb4592aa519",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149109
+      }
+    },
+    {
+      "index": 70,
+      "rawFile": "raw/raw-070.jpg",
+      "targetMs": 28000,
+      "actualMs": 28049.496,
+      "captureDurationMs": 89.878,
+      "rawSha256": "9dac2be807691b383b17bce8938ebd94cfc674460fac2e71df680ecf2edf28c5",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-070.jpg",
+      "sha256": "688a53c17203c65f37a161867d976540443165f1e170f0b1aaaac4444342719b",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149020
+      }
+    },
+    {
+      "index": 71,
+      "rawFile": "raw/raw-071.jpg",
+      "targetMs": 28400,
+      "actualMs": 28451.34,
+      "captureDurationMs": 88.809,
+      "rawSha256": "528c5fc942ef1768ff6c5ce2f88dc56694a74620f5b90bf4326221e771332e43",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-071.jpg",
+      "sha256": "641ee8b1f493eee3c2cf923ebf873c4c1b1c42196273adca6a1da2d7d8e34372",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148888
+      }
+    },
+    {
+      "index": 72,
+      "rawFile": "raw/raw-072.jpg",
+      "targetMs": 28800,
+      "actualMs": 28851.015,
+      "captureDurationMs": 87.045,
+      "rawSha256": "8a84d322bde5ad2a81cfc0031187790803ff6d41d1016046c3eb3cbdd3c2d367",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-072.jpg",
+      "sha256": "fb51c532f8cd55f78aa83e7c86b4d8e4f8c9bfc31f7129ecf26dc7223bcb6d0d",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149194
+      }
+    },
+    {
+      "index": 73,
+      "rawFile": "raw/raw-073.jpg",
+      "targetMs": 29200,
+      "actualMs": 29247.872,
+      "captureDurationMs": 82.721,
+      "rawSha256": "0e284c2b68956428d9495d8a81a31c016fb213c82d7496be66b9a49aa8dd963e",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-073.jpg",
+      "sha256": "77e984268868dd1c49ab4cddca8b224f31c256b678ab6f1e1863e3183e951ebb",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148952
+      }
+    },
+    {
+      "index": 74,
+      "rawFile": "raw/raw-074.jpg",
+      "targetMs": 29600,
+      "actualMs": 29651.872,
+      "captureDurationMs": 93.713,
+      "rawSha256": "bf32fb8f8d1c5b20a16c3fa5e87f5f13670b6f5cd9c825a7e95eaaff38a74c74",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-074.jpg",
+      "sha256": "98a97dbf18339491bfdc41266e31fff2b850d960ae7fdc56c5f13f13d0f63c65",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149076
+      }
+    },
+    {
+      "index": 75,
+      "rawFile": "raw/raw-075.jpg",
+      "targetMs": 30000,
+      "actualMs": 30055.005,
+      "captureDurationMs": 96.452,
+      "rawSha256": "c10fde0f969eecdf646da6baaf0cbc769b1e0a1cf7d527310d33dd6271777886",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-075.jpg",
+      "sha256": "4817aaccfdbaf3e68525d5c0fd32e1b10ed33e8ef772d3900b145db466a5a755",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149117
+      }
+    },
+    {
+      "index": 76,
+      "rawFile": "raw/raw-076.jpg",
+      "targetMs": 30400,
+      "actualMs": 30447.547,
+      "captureDurationMs": 84.276,
+      "rawSha256": "425992431eb7431be7bf1bd234566c043cdfcfa034d4794fd86391e69216da5c",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-076.jpg",
+      "sha256": "284b1dddf4e3990135c6fbc6d48c9ca947bf5315bb9b29a06ac16466794586a2",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149101
+      }
+    },
+    {
+      "index": 77,
+      "rawFile": "raw/raw-077.jpg",
+      "targetMs": 30800,
+      "actualMs": 30838.987,
+      "captureDurationMs": 66.381,
+      "rawSha256": "998ecf368733600075b5997bbc5ec145cc15ced658ed54968048c13656c71b57",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-077.jpg",
+      "sha256": "e7c620deb8719d2b26af2b88b75dce7d42c8ed049c5b76dc544cf6d8ef32c538",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149011
+      }
+    },
+    {
+      "index": 78,
+      "rawFile": "raw/raw-078.jpg",
+      "targetMs": 31200,
+      "actualMs": 31260.54,
+      "captureDurationMs": 108.231,
+      "rawSha256": "582a497276b802f335c4cd6ce07226009787c229ff0da17b84477507e93f20c3",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-078.jpg",
+      "sha256": "d7f2087c5004e9a8ae0b490c36ff824bddc89288a6a2399f67f82bfa63d60594",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148945
+      }
+    },
+    {
+      "index": 79,
+      "rawFile": "raw/raw-079.jpg",
+      "targetMs": 31600,
+      "actualMs": 31639.486,
+      "captureDurationMs": 69.181,
+      "rawSha256": "fd40db32d2680e873f08c161978749926dc69ddb2e776bb035446c2fabc264a2",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-079.jpg",
+      "sha256": "3fcc1b47e2c2f69647522f6bca529097c4ed11a1be73d27da9427454783ce2f0",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148903
+      }
+    },
+    {
+      "index": 80,
+      "rawFile": "raw/raw-080.jpg",
+      "targetMs": 32000,
+      "actualMs": 32050.598,
+      "captureDurationMs": 88.72,
+      "rawSha256": "6b7c346ce8147e49ca109344a83ed218f82df4f1aef01bd8d8eb4d638dfd445c",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-080.jpg",
+      "sha256": "423179801701953491628a02d7826126f636e01fb22d397b3a2328656cdce665",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148952
+      }
+    },
+    {
+      "index": 81,
+      "rawFile": "raw/raw-081.jpg",
+      "targetMs": 32400,
+      "actualMs": 32449.635,
+      "captureDurationMs": 83.172,
+      "rawSha256": "f951b72d14c76ff6a7b909ed2f1d1d7cead5785ee5ee412d742c366dc169de27",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-081.jpg",
+      "sha256": "9240241e817246d595689c6c70fc7b92cd8a3dd166a5ae7f7f0d4e3b5778c471",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149044
+      }
+    },
+    {
+      "index": 82,
+      "rawFile": "raw/raw-082.jpg",
+      "targetMs": 32800,
+      "actualMs": 32849.425,
+      "captureDurationMs": 83.002,
+      "rawSha256": "9dd1a138499a8aadc16c1a11786a3d0c43f64a21266143ecca7e194bbea94ed5",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-082.jpg",
+      "sha256": "50e33e6c508895185108863856fe4a72bbfee2bda147dc86125dc14d80544ad3",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149122
+      }
+    },
+    {
+      "index": 83,
+      "rawFile": "raw/raw-083.jpg",
+      "targetMs": 33200,
+      "actualMs": 33248.662,
+      "captureDurationMs": 85.177,
+      "rawSha256": "1126e21fcf99fde75b7d13556abf8091271127ebd15a7eaa57fe91c5155abbec",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-083.jpg",
+      "sha256": "8a08291025cc0042758e2e0fc123bde2d43d09c477fe91bdad48d7b8fb1ed611",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149047
+      }
+    },
+    {
+      "index": 84,
+      "rawFile": "raw/raw-084.jpg",
+      "targetMs": 33600,
+      "actualMs": 33651.615,
+      "captureDurationMs": 92.312,
+      "rawSha256": "442c2eb230ac284089afd576cb37edcb091ba138df9f90fa4563c6828902eb0a",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-084.jpg",
+      "sha256": "618bba42454a34f4e88264de2ca8efe524427880df6179056bc473a9bfbd3388",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148909
+      }
+    },
+    {
+      "index": 85,
+      "rawFile": "raw/raw-085.jpg",
+      "targetMs": 34000,
+      "actualMs": 34041.725,
+      "captureDurationMs": 77.851,
+      "rawSha256": "de8d4072d9fe7bdc15def7da865dba09c0e0fb21d85d7419dc990ec7f9f5dfd0",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-085.jpg",
+      "sha256": "97eafab0a8531ffd29ab1628f4a016af25969c54593600ea36e675e819cd1761",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148986
+      }
+    },
+    {
+      "index": 86,
+      "rawFile": "raw/raw-086.jpg",
+      "targetMs": 34400,
+      "actualMs": 34449.074,
+      "captureDurationMs": 91.242,
+      "rawSha256": "eaab7300f23d22d147110db9d66b712141123e03c1bc666ff924ba9027a19152",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-086.jpg",
+      "sha256": "a6a88b73cd445278998c716f3370c45719575dd99f22b94b8c969ab2aaf477c6",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148943
+      }
+    },
+    {
+      "index": 87,
+      "rawFile": "raw/raw-087.jpg",
+      "targetMs": 34800,
+      "actualMs": 34842.72,
+      "captureDurationMs": 74.602,
+      "rawSha256": "e11084410056e7a6c397ff8335af89cc012d52ba49c66828280b95d2ad75d049",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-087.jpg",
+      "sha256": "12f71277c2bcfc7d3fbe5321bed91afbefd3faaafc34d81f4b8ddb41b4994bb4",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149052
+      }
+    },
+    {
+      "index": 88,
+      "rawFile": "raw/raw-088.jpg",
+      "targetMs": 35200,
+      "actualMs": 35254.769,
+      "captureDurationMs": 96.838,
+      "rawSha256": "ebb1f248d2f17d0d7bf4e5e7f58bcff1ef0e6efedd8d5e51371769a0c7ee5bf2",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-088.jpg",
+      "sha256": "8878a3c3ed9261d88a03f97f17f2eff5e490b6ded0ac3d986433ad8f7a519fbc",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149116
+      }
+    },
+    {
+      "index": 89,
+      "rawFile": "raw/raw-089.jpg",
+      "targetMs": 35600,
+      "actualMs": 35635.436,
+      "captureDurationMs": 71.698,
+      "rawSha256": "1ec3246e59c39e985d89029836ef3df5f8e3632af918cf87e6ddf1cf72d67296",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-089.jpg",
+      "sha256": "77ef03b798170bb5e8ceab3c93734390cc93101184ce813a825366c4981188bf",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149105
+      }
+    },
+    {
+      "index": 90,
+      "rawFile": "raw/raw-090.jpg",
+      "targetMs": 36000,
+      "actualMs": 36051.704,
+      "captureDurationMs": 95.436,
+      "rawSha256": "a7fc8c3828d1dae3727808806d3bc844428c53545f263f1f741710e8cedd4dfb",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-090.jpg",
+      "sha256": "caa7a0bad0058d3decde1db1ea64589cc2fe040928419f297a0cacc4b4c9f642",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 149001
+      }
+    },
+    {
+      "index": 91,
+      "rawFile": "raw/raw-091.jpg",
+      "targetMs": 36400,
+      "actualMs": 36454.457,
+      "captureDurationMs": 92.866,
+      "rawSha256": "17ebaaaf2de5df2f282eaed6b0ed00851c1a218890c3b7640b2d166dbcd12628",
+      "windowId": 70059754,
+      "pid": 18584,
+      "path": "D:\\petBaby\\desktop-pet\\.worktrees\\three-creation-paths-design\\apps\\desktop\\src-tauri\\target\\debug\\desktop-pet.exe",
+      "title": "Desktop Pet Task15 8e5480bf",
+      "width": 420,
+      "height": 520,
+      "originX": 1491,
+      "originY": 460,
+      "file": "frame-091.jpg",
+      "sha256": "b4e02cc694917cf0841b1adb8cf8de53d41a910c24f6a54c6c4c9f22fe380226",
+      "whiteComposite": {
+        "sourceBackgroundRgb": [
+          231,
+          241,
+          242
+        ],
+        "backgroundDistanceThreshold": 18,
+        "distanceMetric": "max-channel-absolute",
+        "replacementRgb": [
+          255,
+          255,
+          255
+        ],
+        "pixelsReplaced": 148961
+      }
+    }
+  ],
+  "neutralReference": {
+    "file": "neutral-body-reference.jpg",
+    "sha256": "cbf7db3e15c366cb7972626a36aba714ce4daf47e269c8c3a0eb3e716555a24f",
+    "sourceBodySha256": "1975c8b5f5234efdde207dd0a6b34d87981120567241854cff78e9157168f7f0",
+    "layout": "formal renderer contain: 1254x1254 body -> 420x420 at x=0,y=50 on 420x520 white canvas",
+    "resampler": "Lanczos3 (sharp resize default)",
+    "jpeg": {
+      "quality": 100,
+      "chromaSubsampling": "4:4:4",
+      "densityDpi": 96
+    }
+  }
+}

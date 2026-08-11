@@ -1,0 +1,967 @@
+{
+    "protocol":  {
+                     "frameCount":  92,
+                     "targetIntervalMs":  400,
+                     "combinedCycleMs":  36400,
+                     "foregroundRgbDistanceThreshold":  18,
+                     "rigidDxRangePixels":  [
+                                                -4,
+                                                4
+                                            ],
+                     "rigidDyRangePixels":  [
+                                                -4,
+                                                4
+                                            ],
+                     "rigidRotationRangeDegrees":  [
+                                                       -0.8,
+                                                       0.8
+                                                   ],
+                     "rigidRotationStepDegrees":  0.1,
+                     "faceBoundaryP95Maximum":  0.03,
+                     "breathBoundaryMedianMinimum":  0.01,
+                     "breathToFaceMedianMinimum":  1.5
+                 },
+    "dimensions":  {
+                       "width":  420,
+                       "height":  520
+                   },
+    "captureManifest":  {
+                            "path":  "capture-manifest.json",
+                            "maxJitterMs":  65.391
+                        },
+    "neutralReference":  {
+                             "path":  "neutral-body-reference.jpg",
+                             "sha256":  "cbf7db3e15c366cb7972626a36aba714ce4daf47e269c8c3a0eb3e716555a24f"
+                         },
+    "summary":  {
+                    "faceBoundaryMedian":  0.012809564474807855,
+                    "faceBoundaryP95":  0.026711185308848084,
+                    "breathBoundaryMedian":  0.04587155963302747,
+                    "requiredBreathBoundaryMedian":  0.019214346712211783,
+                    "faceSafetyPassed":  true,
+                    "breathZonePassed":  true,
+                    "passed":  true
+                },
+    "frames":  [
+                   {
+                       "Frame":  "frame-000.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0,
+                       "FaceBoundaryResidual":  0,
+                       "BreathBoundaryResidual":  0,
+                       "FaceLumaResidual":  0,
+                       "BreathLumaResidual":  0
+                   },
+                   {
+                       "Frame":  "frame-001.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.0067911714770797493,
+                       "BreathBoundaryResidual":  0.08256880733944949,
+                       "FaceLumaResidual":  0.015981078587925149,
+                       "BreathLumaResidual":  0.010871784217371087
+                   },
+                   {
+                       "Frame":  "frame-002.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.021533161068044815,
+                       "BreathBoundaryResidual":  0.30188679245283023,
+                       "FaceLumaResidual":  0.019432952183366853,
+                       "BreathLumaResidual":  0.013079404555938165
+                   },
+                   {
+                       "Frame":  "frame-003.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0093457943925233655,
+                       "BreathBoundaryResidual":  0.15207373271889402,
+                       "FaceLumaResidual":  0.017119800558478736,
+                       "BreathLumaResidual":  0.010402905935457589
+                   },
+                   {
+                       "Frame":  "frame-004.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0033783783783783994,
+                       "BreathBoundaryResidual":  0.0046082949308755561,
+                       "FaceLumaResidual":  0.016424001711602153,
+                       "BreathLumaResidual":  0.0069616657851945245
+                   },
+                   {
+                       "Frame":  "frame-005.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.012809564474807855,
+                       "BreathBoundaryResidual":  0.013824884792626779,
+                       "FaceLumaResidual":  0.02120855542052939,
+                       "BreathLumaResidual":  0.0073327476650421426
+                   },
+                   {
+                       "Frame":  "frame-006.jpg",
+                       "Dx":  -1,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.018691588785046731,
+                       "FaceLumaResidual":  0.017159208564604518,
+                       "BreathLumaResidual":  0.0068012517086720077
+                   },
+                   {
+                       "Frame":  "frame-007.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.011945392491467532,
+                       "BreathBoundaryResidual":  0.018691588785046731,
+                       "FaceLumaResidual":  0.020201213054777543,
+                       "BreathLumaResidual":  0.0087290464910209919
+                   },
+                   {
+                       "Frame":  "frame-008.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.34272300469483563,
+                       "FaceLumaResidual":  0.021430055837858619,
+                       "BreathLumaResidual":  0.01379160259916839
+                   },
+                   {
+                       "Frame":  "frame-009.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.0085034013605441716,
+                       "BreathBoundaryResidual":  0.041095890410958957,
+                       "FaceLumaResidual":  0.015119498494951693,
+                       "BreathLumaResidual":  0.011751610907660774
+                   },
+                   {
+                       "Frame":  "frame-010.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.026711185308848084,
+                       "BreathBoundaryResidual":  0.063063063063063085,
+                       "FaceLumaResidual":  0.024155501401474447,
+                       "BreathLumaResidual":  0.011105593426931846
+                   },
+                   {
+                       "Frame":  "frame-011.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.016006739679865212,
+                       "BreathBoundaryResidual":  0.02777777777777779,
+                       "FaceLumaResidual":  0.022149190389971214,
+                       "BreathLumaResidual":  0.0091527849578626874
+                   },
+                   {
+                       "Frame":  "frame-012.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.054545454545454564,
+                       "FaceLumaResidual":  0.021460256083462664,
+                       "BreathLumaResidual":  0.00691525199168539
+                   },
+                   {
+                       "Frame":  "frame-013.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.3,
+                       "FaceBoundaryResidual":  0.0093617021276595214,
+                       "BreathBoundaryResidual":  0.028301886792452824,
+                       "FaceLumaResidual":  0.014048788335845186,
+                       "BreathLumaResidual":  0.0083161318218551456
+                   },
+                   {
+                       "Frame":  "frame-014.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.0076465590484282586,
+                       "BreathBoundaryResidual":  0.0092592592592593,
+                       "FaceLumaResidual":  0.01404401406042579,
+                       "BreathLumaResidual":  0.0089146428038498048
+                   },
+                   {
+                       "Frame":  "frame-015.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.021533161068044815,
+                       "BreathBoundaryResidual":  0.31132075471698117,
+                       "FaceLumaResidual":  0.019424440807417259,
+                       "BreathLumaResidual":  0.013052723578515855
+                   },
+                   {
+                       "Frame":  "frame-016.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0093457943925233655,
+                       "BreathBoundaryResidual":  0.21818181818181814,
+                       "FaceLumaResidual":  0.017119800558478736,
+                       "BreathLumaResidual":  0.012297190366582823
+                   },
+                   {
+                       "Frame":  "frame-017.jpg",
+                       "Dx":  -3,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.3,
+                       "FaceBoundaryResidual":  0.0025359256128486551,
+                       "BreathBoundaryResidual":  0.30805687203791465,
+                       "FaceLumaResidual":  0.023530053907920005,
+                       "BreathLumaResidual":  0.012521989841311022
+                   },
+                   {
+                       "Frame":  "frame-018.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.012809564474807855,
+                       "BreathBoundaryResidual":  0.05555555555555558,
+                       "FaceLumaResidual":  0.02120855542052939,
+                       "BreathLumaResidual":  0.00819887740207257
+                   },
+                   {
+                       "Frame":  "frame-019.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.033175355450236976,
+                       "FaceLumaResidual":  0.023145541373451994,
+                       "BreathLumaResidual":  0.0090712960540746974
+                   },
+                   {
+                       "Frame":  "frame-020.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0,
+                       "FaceBoundaryResidual":  0.0033613445378151141,
+                       "BreathBoundaryResidual":  0,
+                       "FaceLumaResidual":  0.010731814318224566,
+                       "BreathLumaResidual":  0.005821563951374671
+                   },
+                   {
+                       "Frame":  "frame-021.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.30516431924882625,
+                       "FaceLumaResidual":  0.021430055837858619,
+                       "BreathLumaResidual":  0.012089714345331418
+                   },
+                   {
+                       "Frame":  "frame-022.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.5,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.07623318385650224,
+                       "FaceLumaResidual":  0.024021332050199427,
+                       "BreathLumaResidual":  0.012088382317217735
+                   },
+                   {
+                       "Frame":  "frame-023.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.021812080536912748,
+                       "BreathBoundaryResidual":  0.049773755656108642,
+                       "FaceLumaResidual":  0.023413684399755628,
+                       "BreathLumaResidual":  0.012506941528624414
+                   },
+                   {
+                       "Frame":  "frame-024.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.010933557611438216,
+                       "BreathBoundaryResidual":  0.041095890410958957,
+                       "FaceLumaResidual":  0.020886406138384078,
+                       "BreathLumaResidual":  0.010839770707575512
+                   },
+                   {
+                       "Frame":  "frame-025.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.5,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.00917431192660545,
+                       "FaceLumaResidual":  0.020434973793083282,
+                       "BreathLumaResidual":  0.0079152376415186684
+                   },
+                   {
+                       "Frame":  "frame-026.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.3,
+                       "FaceBoundaryResidual":  0.0093617021276595214,
+                       "BreathBoundaryResidual":  0.028301886792452824,
+                       "FaceLumaResidual":  0.014048788335845186,
+                       "BreathLumaResidual":  0.0076732557807089874
+                   },
+                   {
+                       "Frame":  "frame-027.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.0067911714770797493,
+                       "BreathBoundaryResidual":  0.0092592592592593,
+                       "FaceLumaResidual":  0.015981078587925149,
+                       "BreathLumaResidual":  0.0062455449577402877
+                   },
+                   {
+                       "Frame":  "frame-028.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.021533161068044815,
+                       "BreathBoundaryResidual":  0.22641509433962259,
+                       "FaceLumaResidual":  0.019432952183366853,
+                       "BreathLumaResidual":  0.011038072008138122
+                   },
+                   {
+                       "Frame":  "frame-029.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.4,
+                       "FaceBoundaryResidual":  0.0076465590484282586,
+                       "BreathBoundaryResidual":  0.13084112149532712,
+                       "FaceLumaResidual":  0.019612498485002832,
+                       "BreathLumaResidual":  0.011491062590448209
+                   },
+                   {
+                       "Frame":  "frame-030.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0033783783783783994,
+                       "BreathBoundaryResidual":  0.15740740740740744,
+                       "FaceLumaResidual":  0.016416280188338645,
+                       "BreathLumaResidual":  0.011960205334576769
+                   },
+                   {
+                       "Frame":  "frame-031.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.012809564474807855,
+                       "BreathBoundaryResidual":  0.16666666666666663,
+                       "FaceLumaResidual":  0.02120855542052939,
+                       "BreathLumaResidual":  0.010978768567917843
+                   },
+                   {
+                       "Frame":  "frame-032.jpg",
+                       "Dx":  -1,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.023474178403755874,
+                       "FaceLumaResidual":  0.017159208564604518,
+                       "BreathLumaResidual":  0.00700158534702457
+                   },
+                   {
+                       "Frame":  "frame-033.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0,
+                       "FaceBoundaryResidual":  0.0033613445378151141,
+                       "BreathBoundaryResidual":  0.0045662100456621557,
+                       "FaceLumaResidual":  0.010731814318224566,
+                       "BreathLumaResidual":  0.0049847353703279676
+                   },
+                   {
+                       "Frame":  "frame-034.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.15492957746478875,
+                       "FaceLumaResidual":  0.021430055837858619,
+                       "BreathLumaResidual":  0.0098375831019090077
+                   },
+                   {
+                       "Frame":  "frame-035.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.5,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.031963470319634757,
+                       "FaceLumaResidual":  0.024021332050199427,
+                       "BreathLumaResidual":  0.010070966159807232
+                   },
+                   {
+                       "Frame":  "frame-036.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.026711185308848084,
+                       "BreathBoundaryResidual":  0.058823529411764719,
+                       "FaceLumaResidual":  0.024155501401474447,
+                       "BreathLumaResidual":  0.012458376029406221
+                   },
+                   {
+                       "Frame":  "frame-037.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.016006739679865212,
+                       "BreathBoundaryResidual":  0.03669724770642202,
+                       "FaceLumaResidual":  0.022149190389971214,
+                       "BreathLumaResidual":  0.012416369241788705
+                   },
+                   {
+                       "Frame":  "frame-038.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.5,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.050228310502283158,
+                       "FaceLumaResidual":  0.020434973793083282,
+                       "BreathLumaResidual":  0.010706184787538285
+                   },
+                   {
+                       "Frame":  "frame-039.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.3,
+                       "FaceBoundaryResidual":  0.0093617021276595214,
+                       "BreathBoundaryResidual":  0.033175355450236976,
+                       "FaceLumaResidual":  0.014048788335845186,
+                       "BreathLumaResidual":  0.0085023217340615843
+                   },
+                   {
+                       "Frame":  "frame-040.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.0076465590484282586,
+                       "BreathBoundaryResidual":  0.0092592592592593,
+                       "FaceLumaResidual":  0.01404401406042579,
+                       "BreathLumaResidual":  0.0068225273639041404
+                   },
+                   {
+                       "Frame":  "frame-041.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.018900343642611728,
+                       "BreathBoundaryResidual":  0.028301886792452824,
+                       "FaceLumaResidual":  0.02034910644704635,
+                       "BreathLumaResidual":  0.0088945134734355717
+                   },
+                   {
+                       "Frame":  "frame-042.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0093457943925233655,
+                       "BreathBoundaryResidual":  0.13888888888888884,
+                       "FaceLumaResidual":  0.017119800558478736,
+                       "BreathLumaResidual":  0.010106859547961382
+                   },
+                   {
+                       "Frame":  "frame-043.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0033783783783783994,
+                       "BreathBoundaryResidual":  0.15207373271889402,
+                       "FaceLumaResidual":  0.016416280188338645,
+                       "BreathLumaResidual":  0.011868015861914832
+                   },
+                   {
+                       "Frame":  "frame-044.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.012809564474807855,
+                       "BreathBoundaryResidual":  0.26851851851851849,
+                       "FaceLumaResidual":  0.02120855542052939,
+                       "BreathLumaResidual":  0.012861765794829477
+                   },
+                   {
+                       "Frame":  "frame-045.jpg",
+                       "Dx":  -1,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.041860465116279055,
+                       "FaceLumaResidual":  0.017159208564604518,
+                       "BreathLumaResidual":  0.00995787677262812
+                   },
+                   {
+                       "Frame":  "frame-046.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0,
+                       "FaceBoundaryResidual":  0.0033613445378151141,
+                       "BreathBoundaryResidual":  0,
+                       "FaceLumaResidual":  0.010731814318224566,
+                       "BreathLumaResidual":  0.0061194570135743509
+                   },
+                   {
+                       "Frame":  "frame-047.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.08333333333333337,
+                       "FaceLumaResidual":  0.021430055837858619,
+                       "BreathLumaResidual":  0.0093516526309921581
+                   },
+                   {
+                       "Frame":  "frame-048.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.0085034013605441716,
+                       "BreathBoundaryResidual":  0.0046082949308755561,
+                       "FaceLumaResidual":  0.015119498494951693,
+                       "BreathLumaResidual":  0.0072436406995222448
+                   },
+                   {
+                       "Frame":  "frame-049.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.021812080536912748,
+                       "BreathBoundaryResidual":  0.03669724770642202,
+                       "FaceLumaResidual":  0.023413684399755628,
+                       "BreathLumaResidual":  0.010548611785170881
+                   },
+                   {
+                       "Frame":  "frame-050.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.010933557611438216,
+                       "BreathBoundaryResidual":  0.045454545454545414,
+                       "FaceLumaResidual":  0.020886406138384078,
+                       "BreathLumaResidual":  0.012194415282902878
+                   },
+                   {
+                       "Frame":  "frame-051.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.14814814814814814,
+                       "FaceLumaResidual":  0.021460256083462664,
+                       "BreathLumaResidual":  0.01239890034860212
+                   },
+                   {
+                       "Frame":  "frame-052.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.3,
+                       "FaceBoundaryResidual":  0.0093617021276595214,
+                       "BreathBoundaryResidual":  0.2018779342723005,
+                       "FaceLumaResidual":  0.014048788335845186,
+                       "BreathLumaResidual":  0.01122553526467121
+                   },
+                   {
+                       "Frame":  "frame-053.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.0067911714770797493,
+                       "BreathBoundaryResidual":  0.0046082949308755561,
+                       "FaceLumaResidual":  0.015981078587925149,
+                       "BreathLumaResidual":  0.0067835310103730442
+                   },
+                   {
+                       "Frame":  "frame-054.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.021533161068044815,
+                       "BreathBoundaryResidual":  0.033175355450236976,
+                       "FaceLumaResidual":  0.019424440807417259,
+                       "BreathLumaResidual":  0.00805819296019811
+                   },
+                   {
+                       "Frame":  "frame-055.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0093457943925233655,
+                       "BreathBoundaryResidual":  0.013824884792626779,
+                       "FaceLumaResidual":  0.017119800558478736,
+                       "BreathLumaResidual":  0.00717292524199094
+                   },
+                   {
+                       "Frame":  "frame-056.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0033783783783783994,
+                       "BreathBoundaryResidual":  0.12727272727272732,
+                       "FaceLumaResidual":  0.016416280188338645,
+                       "BreathLumaResidual":  0.0097342322205603987
+                   },
+                   {
+                       "Frame":  "frame-057.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.012809564474807855,
+                       "BreathBoundaryResidual":  0.25,
+                       "FaceLumaResidual":  0.02120855542052939,
+                       "BreathLumaResidual":  0.012780468755864981
+                   },
+                   {
+                       "Frame":  "frame-058.jpg",
+                       "Dx":  -1,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.1348837209302326,
+                       "FaceLumaResidual":  0.017159208564604518,
+                       "BreathLumaResidual":  0.011955521472390923
+                   },
+                   {
+                       "Frame":  "frame-059.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.011945392491467532,
+                       "BreathBoundaryResidual":  0.013953488372092981,
+                       "FaceLumaResidual":  0.020201213054777543,
+                       "BreathLumaResidual":  0.00980866667721025
+                   },
+                   {
+                       "Frame":  "frame-060.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.19811320754716977,
+                       "FaceLumaResidual":  0.021430055837858619,
+                       "BreathLumaResidual":  0.0099661120338701316
+                   },
+                   {
+                       "Frame":  "frame-061.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.5,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.0045662100456621557,
+                       "FaceLumaResidual":  0.024021332050199427,
+                       "BreathLumaResidual":  0.007233821252754697
+                   },
+                   {
+                       "Frame":  "frame-062.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.026711185308848084,
+                       "BreathBoundaryResidual":  0.032258064516129004,
+                       "FaceLumaResidual":  0.024155501401474447,
+                       "BreathLumaResidual":  0.0091333209928367888
+                   },
+                   {
+                       "Frame":  "frame-063.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.016006739679865212,
+                       "BreathBoundaryResidual":  0.023041474654377891,
+                       "FaceLumaResidual":  0.022154487204178234,
+                       "BreathLumaResidual":  0.010476530188371197
+                   },
+                   {
+                       "Frame":  "frame-064.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.15207373271889402,
+                       "FaceLumaResidual":  0.021460256083462664,
+                       "BreathLumaResidual":  0.012268192163929029
+                   },
+                   {
+                       "Frame":  "frame-065.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.3,
+                       "FaceBoundaryResidual":  0.0025359256128486551,
+                       "BreathBoundaryResidual":  0.323943661971831,
+                       "FaceLumaResidual":  0.017861446894820429,
+                       "BreathLumaResidual":  0.013509376799222686
+                   },
+                   {
+                       "Frame":  "frame-066.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.0076465590484282586,
+                       "BreathBoundaryResidual":  0.0092592592592593,
+                       "FaceLumaResidual":  0.01404401406042579,
+                       "BreathLumaResidual":  0.00924365442457241
+                   },
+                   {
+                       "Frame":  "frame-067.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.018900343642611728,
+                       "BreathBoundaryResidual":  0.071090047393364886,
+                       "FaceLumaResidual":  0.02034910644704635,
+                       "BreathLumaResidual":  0.0093519301529302618
+                   },
+                   {
+                       "Frame":  "frame-068.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0093457943925233655,
+                       "BreathBoundaryResidual":  0.0092592592592593,
+                       "FaceLumaResidual":  0.017122850613901463,
+                       "BreathLumaResidual":  0.0064515642952661561
+                   },
+                   {
+                       "Frame":  "frame-069.jpg",
+                       "Dx":  -3,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.3,
+                       "FaceBoundaryResidual":  0.0025359256128486551,
+                       "BreathBoundaryResidual":  0.033175355450236976,
+                       "FaceLumaResidual":  0.023528448549877002,
+                       "BreathLumaResidual":  0.0096813725490184754
+                   },
+                   {
+                       "Frame":  "frame-070.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.012809564474807855,
+                       "BreathBoundaryResidual":  0.14814814814814814,
+                       "FaceLumaResidual":  0.02120855542052939,
+                       "BreathLumaResidual":  0.010746950417309827
+                   },
+                   {
+                       "Frame":  "frame-071.jpg",
+                       "Dx":  -1,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.12962962962962965,
+                       "FaceLumaResidual":  0.017159208564604518,
+                       "BreathLumaResidual":  0.01192755947426544
+                   },
+                   {
+                       "Frame":  "frame-072.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0,
+                       "FaceBoundaryResidual":  0.0033613445378151141,
+                       "BreathBoundaryResidual":  0.11711711711711714,
+                       "FaceLumaResidual":  0.010731814318224566,
+                       "BreathLumaResidual":  0.011713383541932227
+                   },
+                   {
+                       "Frame":  "frame-073.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.31455399061032863,
+                       "FaceLumaResidual":  0.021430055837858619,
+                       "BreathLumaResidual":  0.012322528153810679
+                   },
+                   {
+                       "Frame":  "frame-074.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.0085034013605441716,
+                       "BreathBoundaryResidual":  0.01834862385321101,
+                       "FaceLumaResidual":  0.015119498494951693,
+                       "BreathLumaResidual":  0.0073945106469774863
+                   },
+                   {
+                       "Frame":  "frame-075.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.026711185308848084,
+                       "BreathBoundaryResidual":  0.013824884792626779,
+                       "FaceLumaResidual":  0.024155501401474447,
+                       "BreathLumaResidual":  0.0088076917578730953
+                   },
+                   {
+                       "Frame":  "frame-076.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.010933557611438216,
+                       "BreathBoundaryResidual":  0.01851851851851849,
+                       "FaceLumaResidual":  0.020886406138384078,
+                       "BreathLumaResidual":  0.008626487782815882
+                   },
+                   {
+                       "Frame":  "frame-077.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.5,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.02752293577981646,
+                       "FaceLumaResidual":  0.020434973793083282,
+                       "BreathLumaResidual":  0.00973801032308436
+                   },
+                   {
+                       "Frame":  "frame-078.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.3,
+                       "FaceBoundaryResidual":  0.0085034013605441716,
+                       "BreathBoundaryResidual":  0.30516431924882625,
+                       "FaceLumaResidual":  0.014087502181640992,
+                       "BreathLumaResidual":  0.012942873079395534
+                   },
+                   {
+                       "Frame":  "frame-079.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.0067911714770797493,
+                       "BreathBoundaryResidual":  0.091743119266055051,
+                       "FaceLumaResidual":  0.015981078587925149,
+                       "BreathLumaResidual":  0.011257463759279775
+                   },
+                   {
+                       "Frame":  "frame-080.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.021533161068044815,
+                       "BreathBoundaryResidual":  0.24528301886792447,
+                       "FaceLumaResidual":  0.019433258798013442,
+                       "BreathLumaResidual":  0.011326054026759411
+                   },
+                   {
+                       "Frame":  "frame-081.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0093457943925233655,
+                       "BreathBoundaryResidual":  0.032258064516129004,
+                       "FaceLumaResidual":  0.017119800558478736,
+                       "BreathLumaResidual":  0.0074135145187780461
+                   },
+                   {
+                       "Frame":  "frame-082.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.0033783783783783994,
+                       "BreathBoundaryResidual":  0.0045662100456621557,
+                       "FaceLumaResidual":  0.016416280188338645,
+                       "BreathLumaResidual":  0.0059968507450646026
+                   },
+                   {
+                       "Frame":  "frame-083.jpg",
+                       "Dx":  -2,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.6,
+                       "FaceBoundaryResidual":  0.012809564474807855,
+                       "BreathBoundaryResidual":  0.04629629629629628,
+                       "FaceLumaResidual":  0.02120855542052939,
+                       "BreathLumaResidual":  0.0079779849154219332
+                   },
+                   {
+                       "Frame":  "frame-084.jpg",
+                       "Dx":  -1,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.041860465116279055,
+                       "FaceLumaResidual":  0.017159208564604518,
+                       "BreathLumaResidual":  0.0096601191806487512
+                   },
+                   {
+                       "Frame":  "frame-085.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  -0.2,
+                       "FaceBoundaryResidual":  0.011945392491467532,
+                       "BreathBoundaryResidual":  0.09259259259259256,
+                       "FaceLumaResidual":  0.020201213054777543,
+                       "BreathLumaResidual":  0.011164456568866832
+                   },
+                   {
+                       "Frame":  "frame-086.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.018025751072961338,
+                       "BreathBoundaryResidual":  0.37383177570093462,
+                       "FaceLumaResidual":  0.021430055837858619,
+                       "BreathLumaResidual":  0.013899255271096856
+                   },
+                   {
+                       "Frame":  "frame-087.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.5,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.04587155963302747,
+                       "FaceLumaResidual":  0.023997112955608593,
+                       "BreathLumaResidual":  0.010969862436726234
+                   },
+                   {
+                       "Frame":  "frame-088.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.026711185308848084,
+                       "BreathBoundaryResidual":  0.02752293577981646,
+                       "FaceLumaResidual":  0.024155501401474447,
+                       "BreathLumaResidual":  0.0092152874811219278
+                   },
+                   {
+                       "Frame":  "frame-089.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.7,
+                       "FaceBoundaryResidual":  0.016006739679865212,
+                       "BreathBoundaryResidual":  0.013953488372092981,
+                       "FaceLumaResidual":  0.022149190389971214,
+                       "BreathLumaResidual":  0.00852703377943024
+                   },
+                   {
+                       "Frame":  "frame-090.jpg",
+                       "Dx":  1,
+                       "Dy":  0,
+                       "RotationDegrees":  0.4,
+                       "FaceBoundaryResidual":  0.023295944779982758,
+                       "BreathBoundaryResidual":  0.05555555555555558,
+                       "FaceLumaResidual":  0.021460256083462664,
+                       "BreathLumaResidual":  0.0076289680747941534
+                   },
+                   {
+                       "Frame":  "frame-091.jpg",
+                       "Dx":  0,
+                       "Dy":  0,
+                       "RotationDegrees":  0.3,
+                       "FaceBoundaryResidual":  0.0085034013605441716,
+                       "BreathBoundaryResidual":  0.18309859154929575,
+                       "FaceLumaResidual":  0.014087502181640992,
+                       "BreathLumaResidual":  0.010882796149643667
+                   }
+               ]
+}

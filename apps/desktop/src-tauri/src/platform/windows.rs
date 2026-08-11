@@ -95,6 +95,10 @@ pub(crate) fn is_reparse_point(metadata: &std::fs::Metadata) -> bool {
     metadata.file_attributes() & FILE_ATTRIBUTE_REPARSE_POINT != 0
 }
 
+fn should_apply_pet_stealth_styles(debug_assertions: bool, capture_env: Option<&str>) -> bool {
+    !(debug_assertions && capture_env == Some("1"))
+}
+
 #[cfg(test)]
 pub(crate) fn create_directory_junction(target: &std::path::Path, link: &std::path::Path) {
     let output = std::process::Command::new("cmd")
@@ -114,12 +118,17 @@ impl PlatformAdapter for WindowsPlatformAdapter {
     fn configure_pet_window(&self, hwnd: isize) -> Result<(), PlatformError> {
         unsafe {
             let style = GetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE);
+            let capture_env = std::env::var("DESKTOP_PET_TASK15_CAPTURE").ok();
+            let stealth_styles = if should_apply_pet_stealth_styles(
+                cfg!(debug_assertions),
+                capture_env.as_deref(),
+            ) {
+                WS_EX_NOACTIVATE as isize | WS_EX_TOOLWINDOW as isize
+            } else {
+                0
+            };
             SetLastError(0);
-            let previous = SetWindowLongPtrW(
-                hwnd as HWND,
-                GWL_EXSTYLE,
-                style | WS_EX_NOACTIVATE as isize | WS_EX_TOOLWINDOW as isize,
-            );
+            let previous = SetWindowLongPtrW(hwnd as HWND, GWL_EXSTYLE, style | stealth_styles);
             if previous == 0 && GetLastError() != 0 {
                 return Err(last_error("SetWindowLongPtrW"));
             }
@@ -250,5 +259,18 @@ fn last_error(operation: &'static str) -> PlatformError {
     PlatformError::WindowsApi {
         operation,
         code: unsafe { GetLastError() },
+    }
+}
+
+#[cfg(test)]
+mod tests {
+    use super::should_apply_pet_stealth_styles;
+
+    #[test]
+    fn pet_window_stealth_style_policy_requires_exact_debug_capture_opt_in() {
+        assert!(should_apply_pet_stealth_styles(true, None));
+        assert!(!should_apply_pet_stealth_styles(true, Some("1")));
+        assert!(should_apply_pet_stealth_styles(true, Some("true")));
+        assert!(should_apply_pet_stealth_styles(false, Some("1")));
     }
 }

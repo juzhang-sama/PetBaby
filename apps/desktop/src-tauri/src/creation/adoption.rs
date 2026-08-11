@@ -182,14 +182,72 @@ impl std::fmt::Display for CatalogSecurityError {
     }
 }
 
+#[derive(Debug)]
+struct CatalogFileIoError {
+    kind: std::io::ErrorKind,
+    reason: String,
+}
+
+impl CatalogFileIoError {
+    fn new(kind: std::io::ErrorKind, reason: impl Into<String>) -> Self {
+        Self {
+            kind,
+            reason: reason.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for CatalogFileIoError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+#[derive(Debug)]
+enum CatalogReadFailure {
+    Security(CatalogSecurityError),
+    FileIo(CatalogFileIoError),
+}
+
+impl From<CatalogSecurityError> for CatalogReadFailure {
+    fn from(error: CatalogSecurityError) -> Self {
+        Self::Security(error)
+    }
+}
+
+impl From<CatalogFileIoError> for CatalogReadFailure {
+    fn from(error: CatalogFileIoError) -> Self {
+        Self::FileIo(error)
+    }
+}
+
+impl std::fmt::Display for CatalogReadFailure {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        match self {
+            Self::Security(error) => error.fmt(formatter),
+            Self::FileIo(error) => error.fmt(formatter),
+        }
+    }
+}
+
 enum TemplateAssetFailure {
     Security(CatalogSecurityError),
+    FileIo(CatalogFileIoError),
     Content(String),
 }
 
 impl From<CatalogSecurityError> for TemplateAssetFailure {
     fn from(error: CatalogSecurityError) -> Self {
         Self::Security(error)
+    }
+}
+
+impl From<CatalogReadFailure> for TemplateAssetFailure {
+    fn from(error: CatalogReadFailure) -> Self {
+        match error {
+            CatalogReadFailure::Security(error) => Self::Security(error),
+            CatalogReadFailure::FileIo(error) => Self::FileIo(error),
+        }
     }
 }
 
@@ -204,6 +262,10 @@ fn template_asset_failure_scope(failure: &TemplateAssetFailure) -> TemplateAsset
         TemplateAssetFailure::Security(error) => {
             let _kind = error.kind;
             TemplateAssetFailureScope::WholeCatalog
+        }
+        TemplateAssetFailure::FileIo(error) => {
+            let _kind = error.kind;
+            TemplateAssetFailureScope::SingleTemplate
         }
         TemplateAssetFailure::Content(_) => TemplateAssetFailureScope::SingleTemplate,
     }
@@ -1190,6 +1252,10 @@ fn load_catalog(content_root: &ContentRoot) -> Result<Vec<LoadedTemplate>, Strin
                 Err(TemplateAssetFailure::Content(reason)) => {
                     LoadedTemplate::Unavailable { template, reason }
                 }
+                Err(TemplateAssetFailure::FileIo(error)) => LoadedTemplate::Unavailable {
+                    template,
+                    reason: error.to_string(),
+                },
                 Err(TemplateAssetFailure::Security(_)) => {
                     unreachable!("security failures are handled as whole-catalog failures")
                 }
@@ -1468,7 +1534,7 @@ impl ReadOnlyDirectoryGuard {
         name: &str,
         label: &str,
         limit: u64,
-    ) -> Result<Vec<u8>, CatalogSecurityError> {
+    ) -> Result<Vec<u8>, CatalogReadFailure> {
         if validate_relative_path(name, label)
             .map_err(|error| CatalogSecurityError::new(CatalogSecurityFailure::InvalidPath, error))?
             .len()
@@ -1477,7 +1543,8 @@ impl ReadOnlyDirectoryGuard {
             return Err(CatalogSecurityError::new(
                 CatalogSecurityFailure::InvalidPath,
                 format!("{label} must be a direct child file"),
-            ));
+            )
+            .into());
         }
         read_bounded_regular_file(&self.path.join(name), &self.path, label, limit)
     }
@@ -1487,7 +1554,7 @@ impl ReadOnlyDirectoryGuard {
         relative: &str,
         label: &str,
         limit: u64,
-    ) -> Result<Vec<u8>, CatalogSecurityError> {
+    ) -> Result<Vec<u8>, CatalogReadFailure> {
         let parts = validate_relative_path(relative, label).map_err(|error| {
             CatalogSecurityError::new(CatalogSecurityFailure::InvalidPath, error)
         })?;
@@ -1499,7 +1566,8 @@ impl ReadOnlyDirectoryGuard {
                 return Err(CatalogSecurityError::new(
                     CatalogSecurityFailure::PathContainment,
                     format!("{label} directory escapes its template"),
-                ));
+                )
+                .into());
             }
             parent = directory.path.clone();
             directories.push(directory);
@@ -1544,7 +1612,7 @@ fn read_bounded_regular_file(
     expected_parent: &Path,
     label: &str,
     limit: u64,
-) -> Result<Vec<u8>, CatalogSecurityError> {
+) -> Result<Vec<u8>, CatalogReadFailure> {
     use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -1557,10 +1625,7 @@ fn read_bounded_regular_file(
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN)
         .open(path)
         .map_err(|error| {
-            CatalogSecurityError::new(
-                CatalogSecurityFailure::Access,
-                format!("open read-only {label}: {error}"),
-            )
+            CatalogFileIoError::new(error.kind(), format!("open read-only {label}: {error}"))
         })?;
     let (before_identity, before_attributes) = handle_identity(&file, label)?;
     if before_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
@@ -1569,19 +1634,18 @@ fn read_bounded_regular_file(
         return Err(CatalogSecurityError::new(
             CatalogSecurityFailure::ReparsePoint,
             format!("{label} must be a regular non-reparse file"),
-        ));
+        )
+        .into());
     }
     let metadata = file.metadata().map_err(|error| {
-        CatalogSecurityError::new(
-            CatalogSecurityFailure::Access,
-            format!("inspect {label}: {error}"),
-        )
+        CatalogFileIoError::new(error.kind(), format!("inspect {label}: {error}"))
     })?;
     if metadata.len() == 0 || metadata.len() > limit {
         return Err(CatalogSecurityError::new(
             CatalogSecurityFailure::BoundedRead,
             format!("{label} exceeds its bounded size"),
-        ));
+        )
+        .into());
     }
     let canonical = path.canonicalize().map_err(|error| {
         CatalogSecurityError::new(
@@ -1593,29 +1657,22 @@ fn read_bounded_regular_file(
         return Err(CatalogSecurityError::new(
             CatalogSecurityFailure::PathContainment,
             format!("{label} escapes its read-only template directory"),
-        ));
-    }
-    file.seek(std::io::SeekFrom::Start(0)).map_err(|error| {
-        CatalogSecurityError::new(
-            CatalogSecurityFailure::Access,
-            format!("seek {label}: {error}"),
         )
-    })?;
+        .into());
+    }
+    file.seek(std::io::SeekFrom::Start(0))
+        .map_err(|error| CatalogFileIoError::new(error.kind(), format!("seek {label}: {error}")))?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.by_ref()
         .take(limit + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| {
-            CatalogSecurityError::new(
-                CatalogSecurityFailure::Access,
-                format!("read {label}: {error}"),
-            )
-        })?;
+        .map_err(|error| CatalogFileIoError::new(error.kind(), format!("read {label}: {error}")))?;
     if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > limit {
         return Err(CatalogSecurityError::new(
             CatalogSecurityFailure::IdentityChanged,
             format!("{label} changed while it was read"),
-        ));
+        )
+        .into());
     }
     let (after_identity, after_attributes) = handle_identity(&file, label)?;
     if after_identity != before_identity
@@ -1630,7 +1687,8 @@ fn read_bounded_regular_file(
         return Err(CatalogSecurityError::new(
             CatalogSecurityFailure::IdentityChanged,
             format!("{label} identity changed while it was read"),
-        ));
+        )
+        .into());
     }
     Ok(bytes)
 }
@@ -1641,11 +1699,12 @@ fn read_bounded_regular_file(
     _expected_parent: &Path,
     _label: &str,
     _limit: u64,
-) -> Result<Vec<u8>, CatalogSecurityError> {
+) -> Result<Vec<u8>, CatalogReadFailure> {
     Err(CatalogSecurityError::new(
         CatalogSecurityFailure::Access,
         "secure adoption catalog file access currently requires Windows handles",
-    ))
+    )
+    .into())
 }
 
 #[cfg(test)]
@@ -2092,6 +2151,38 @@ mod tests {
     }
 
     #[test]
+    fn one_missing_template_asset_disables_only_that_card_and_preserves_the_other_seven() {
+        for asset in ["thumbnail.png", "body.png", "motion-profile.json"] {
+            let test = AdoptionHarness::with_templates();
+            let missing = test.content_root.join("adoption/cat-misty").join(asset);
+            assert!(missing.starts_with(&test.root));
+            std::fs::remove_file(&missing).unwrap();
+
+            let catalog = test
+                .service
+                .adoption_catalog()
+                .unwrap_or_else(|error| panic!("missing {asset} blocked the catalog: {error}"));
+
+            assert_eq!(catalog.len(), 8);
+            let misty = catalog
+                .iter()
+                .find(|entry| entry.template.template_id == "cat-misty")
+                .unwrap();
+            assert!(misty.unavailable_reason.is_some(), "missing {asset}");
+            assert_eq!(
+                catalog
+                    .iter()
+                    .filter(|entry| entry.unavailable_reason.is_none())
+                    .count(),
+                7,
+                "missing {asset}"
+            );
+            let healthy = test.service.start_adoption("cat-sunny", "健康模板");
+            assert!(healthy.is_ok(), "missing {asset}: {healthy:?}");
+        }
+    }
+
+    #[test]
     fn one_corrupt_template_is_disabled_without_blocking_healthy_templates() {
         let test = AdoptionHarness::with_templates();
         let corrupt_body = test.content_root.join("adoption/cat-misty/body.png");
@@ -2142,6 +2233,19 @@ mod tests {
     #[test]
     fn template_content_corruption_remains_scoped_to_one_template_by_type() {
         let failure = super::TemplateAssetFailure::Content("invalid PNG role".into());
+
+        assert_eq!(
+            super::template_asset_failure_scope(&failure),
+            super::TemplateAssetFailureScope::SingleTemplate,
+        );
+    }
+
+    #[test]
+    fn template_file_io_remains_scoped_to_one_template_by_type() {
+        let failure = super::TemplateAssetFailure::FileIo(super::CatalogFileIoError::new(
+            std::io::ErrorKind::NotFound,
+            "missing trusted template asset",
+        ));
 
         assert_eq!(
             super::template_asset_failure_scope(&failure),
