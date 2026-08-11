@@ -23,9 +23,9 @@
       "thumbnailPath": "thumbnail.png",
       "bodyPath": "body.png",
       "motionProfilePath": "motion-profile.json",
-      "thumbnailSha256": "9d9a33d9316e69e23333ede79e099031b26a14752e1327fd4acb499bc3368be9",
-      "bodySha256": "4da2d164c2ec5bb048b1adcbb70f33e8009c2f2788af6aa264420a01f3d345f8",
-      "motionProfileSha256": "aa9dc2da5b9363ba9a070dd60396e0154ea68f73cfe7c58d7391d0fdc988e3dd"
+      "thumbnailSha256": "5ab4aea4be8f58250bf46c0a9e9665d4c18d0eff35eba486557d9463069bff1d",
+      "bodySha256": "55aee13b9d5b45b18968f2bc3dd6429c5a56a0e6f24717ccd56a59c68145fd10",
+      "motionProfileSha256": "ce799378c516a4a7429f59c67f11190d5cffac7522b9035ad43abe1f83c433d1"
     },
     {
       "templateId": "cat-dumpling",
@@ -88,9 +88,9 @@
       "thumbnailPath": "thumbnail.png",
       "bodyPath": "body.png",
       "motionProfilePath": "motion-profile.json",
-      "thumbnailSha256": "a4553a112c45a997d26acacf1a0751974a2c2b7b1d6c510879e4387f8ceed46b",
-      "bodySha256": "2d1f95d0925a3b30f0a8a27021e3a47900dc664235e27e2217c87f8a7f2820b0",
-      "motionProfileSha256": "e3b344e3ad8ca3dd2f52f868974069264202302b53445f2b08043259dc8d2cf4"
+      "thumbnailSha256": "ad56d2c0130d761b9224dde4e5df4c8fbcae761486d29e4fac8150b484a236de",
+      "bodySha256": "f371f4f7ee8f0ed34c2e090d3d44a010cc39c71f6112a9012afbde5ff981ea98",
+      "motionProfileSha256": "36eb8edd6e0c3e11e5ff1af73bd49e063fe9736240385e486cb4deffbaf104bb"
     },
     {
       "templateId": "cat-starlight",
