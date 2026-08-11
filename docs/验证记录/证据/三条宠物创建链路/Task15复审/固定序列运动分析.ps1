@@ -25,6 +25,7 @@ using System.Runtime.InteropServices;
 public sealed class FixedSequenceFrameMetric
 {
     public string Frame { get; set; }
+    public string ComparisonFrame { get; set; }
     public double Dx { get; set; }
     public double Dy { get; set; }
     public double RotationDegrees { get; set; }
@@ -37,6 +38,9 @@ public sealed class FixedSequenceFrameMetric
 public static class FixedSequenceMotionAnalyzer
 {
     private const int ForegroundThreshold = 18;
+    // 39 frames = three 5.2 s sway periods and 4/7 of a 2.8 s breath period.
+    // That keeps sway phase fixed while giving the closest sampled offset to opposed breath.
+    private const int SameSwayOpposedBreathStride = 39;
 
     private sealed class Raster
     {
@@ -58,6 +62,14 @@ public static class FixedSequenceMotionAnalyzer
         {
             return x >= Left && x < Right && y >= Top && y < Bottom;
         }
+    }
+
+    private sealed class ActualFrameResiduals
+    {
+        public double FaceBoundary;
+        public double BreathBoundary;
+        public double FaceLuma;
+        public double BreathLuma;
     }
 
     public static FixedSequenceFrameMetric[] Analyze(
@@ -84,25 +96,46 @@ public static class FixedSequenceMotionAnalyzer
         var metrics = new List<FixedSequenceFrameMetric>(paths.Length);
         for (int index = 0; index < paths.Length; index++)
         {
-            Raster current = index == 0 ? reference : Load(paths[index]);
+            Raster current = Load(paths[index]);
+            int comparisonIndex = index + SameSwayOpposedBreathStride < paths.Length
+                ? index + SameSwayOpposedBreathStride
+                : index - SameSwayOpposedBreathStride;
+            Raster comparison = Load(paths[comparisonIndex]);
             if (current.Width != reference.Width || current.Height != reference.Height)
                 throw new InvalidOperationException("all frames must have the same dimensions");
+            if (comparison.Width != reference.Width || comparison.Height != reference.Height)
+                throw new InvalidOperationException("all comparison frames must have the same dimensions");
 
             double bestDx = 0;
             double bestDy = 0;
             double bestRotation = 0;
-            if (index > 0)
-                FitRigid(referenceFaceEdges, current, pivotX, pivotY, out bestDx, out bestDy, out bestRotation);
+            FitRigid(referenceFaceEdges, current, pivotX, pivotY, out bestDx, out bestDy, out bestRotation);
+            double comparisonDx = 0;
+            double comparisonDy = 0;
+            double comparisonRotation = 0;
+            FitRigid(
+                referenceFaceEdges,
+                comparison,
+                pivotX,
+                pivotY,
+                out comparisonDx,
+                out comparisonDy,
+                out comparisonRotation);
+            ActualFrameResiduals residuals = CompareActualFrames(comparison, current,
+                face, breath, pivotX, pivotY,
+                comparisonDx, comparisonDy, comparisonRotation,
+                bestDx, bestDy, bestRotation);
 
             metrics.Add(new FixedSequenceFrameMetric {
                 Frame = System.IO.Path.GetFileName(paths[index]),
+                ComparisonFrame = System.IO.Path.GetFileName(paths[comparisonIndex]),
                 Dx = bestDx,
                 Dy = bestDy,
                 RotationDegrees = bestRotation,
-                FaceBoundaryResidual = BoundaryResidual(reference, current, face, pivotX, pivotY, bestDx, bestDy, bestRotation),
-                BreathBoundaryResidual = BoundaryResidual(reference, current, breath, pivotX, pivotY, bestDx, bestDy, bestRotation),
-                FaceLumaResidual = LumaResidual(reference, current, face, pivotX, pivotY, bestDx, bestDy, bestRotation),
-                BreathLumaResidual = LumaResidual(reference, current, breath, pivotX, pivotY, bestDx, bestDy, bestRotation),
+                FaceBoundaryResidual = residuals.FaceBoundary,
+                BreathBoundaryResidual = residuals.BreathBoundary,
+                FaceLumaResidual = residuals.FaceLuma,
+                BreathLumaResidual = residuals.BreathLuma,
             });
         }
         return metrics.ToArray();
@@ -221,35 +254,72 @@ public static class FixedSequenceMotionAnalyzer
         }
     }
 
+    private static ActualFrameResiduals CompareActualFrames(
+        Raster comparison,
+        Raster current,
+        Region face,
+        Region breath,
+        double pivotX,
+        double pivotY,
+        double comparisonDx,
+        double comparisonDy,
+        double comparisonRotation,
+        double currentDx,
+        double currentDy,
+        double currentRotation)
+    {
+        return new ActualFrameResiduals {
+            FaceBoundary = BoundaryResidual(comparison, current, face, pivotX, pivotY,
+                comparisonDx, comparisonDy, comparisonRotation, currentDx, currentDy, currentRotation),
+            BreathBoundary = BoundaryResidual(comparison, current, breath, pivotX, pivotY,
+                comparisonDx, comparisonDy, comparisonRotation, currentDx, currentDy, currentRotation),
+            FaceLuma = LumaResidual(comparison, current, face, pivotX, pivotY,
+                comparisonDx, comparisonDy, comparisonRotation, currentDx, currentDy, currentRotation),
+            BreathLuma = LumaResidual(comparison, current, breath, pivotX, pivotY,
+                comparisonDx, comparisonDy, comparisonRotation, currentDx, currentDy, currentRotation),
+        };
+    }
+
     private static double BoundaryResidual(
-        Raster reference,
+        Raster comparison,
         Raster current,
         Region region,
         double pivotX,
         double pivotY,
-        double dx,
-        double dy,
-        double rotationDegrees)
+        double comparisonDx,
+        double comparisonDy,
+        double comparisonRotationDegrees,
+        double currentDx,
+        double currentDy,
+        double currentRotationDegrees)
     {
-        double radians = rotationDegrees * Math.PI / 180.0;
-        double cosine = Math.Cos(radians);
-        double sine = Math.Sin(radians);
-        int referenceCount = 0;
+        double comparisonRadians = comparisonRotationDegrees * Math.PI / 180.0;
+        double comparisonCosine = Math.Cos(comparisonRadians);
+        double comparisonSine = Math.Sin(comparisonRadians);
+        double currentRadians = currentRotationDegrees * Math.PI / 180.0;
+        double currentCosine = Math.Cos(currentRadians);
+        double currentSine = Math.Sin(currentRadians);
+        int comparisonCount = 0;
         int currentCount = 0;
         int matches = 0;
-        for (int y = 1; y < reference.Height - 1; y++)
+        for (int y = 1; y < comparison.Height - 1; y++)
         {
-            for (int x = 1; x < reference.Width - 1; x++)
+            for (int x = 1; x < comparison.Width - 1; x++)
             {
-                if (!region.Contains(x, y)) continue;
-                if (reference.Edge[y * reference.Width + x])
-                {
-                    referenceCount++;
-                    double tx;
-                    double ty;
-                    Transform(x, y, pivotX, pivotY, dx, dy, cosine, sine, out tx, out ty);
-                    if (HasEdge(current, (int)Math.Round(tx), (int)Math.Round(ty), 1)) matches++;
-                }
+                if (!comparison.Edge[y * comparison.Width + x]) continue;
+                double neutralX;
+                double neutralY;
+                InverseTransform(x, y, pivotX, pivotY,
+                    comparisonDx, comparisonDy, comparisonCosine, comparisonSine,
+                    out neutralX, out neutralY);
+                if (!region.Contains(neutralX, neutralY)) continue;
+                comparisonCount++;
+                double currentX;
+                double currentY;
+                Transform(neutralX, neutralY, pivotX, pivotY,
+                    currentDx, currentDy, currentCosine, currentSine,
+                    out currentX, out currentY);
+                if (HasEdge(current, (int)Math.Round(currentX), (int)Math.Round(currentY), 1)) matches++;
             }
         }
         for (int y = 1; y < current.Height - 1; y++)
@@ -257,46 +327,64 @@ public static class FixedSequenceMotionAnalyzer
             for (int x = 1; x < current.Width - 1; x++)
             {
                 if (!current.Edge[y * current.Width + x]) continue;
-                double rx;
-                double ry;
-                InverseTransform(x, y, pivotX, pivotY, dx, dy, cosine, sine, out rx, out ry);
-                if (region.Contains(rx, ry)) currentCount++;
+                double neutralX;
+                double neutralY;
+                InverseTransform(x, y, pivotX, pivotY,
+                    currentDx, currentDy, currentCosine, currentSine,
+                    out neutralX, out neutralY);
+                if (region.Contains(neutralX, neutralY)) currentCount++;
             }
         }
-        if (referenceCount + currentCount == 0) return 0;
-        matches = Math.Min(matches, Math.Min(referenceCount, currentCount));
-        return 1.0 - 2.0 * matches / (referenceCount + currentCount);
+        if (comparisonCount + currentCount == 0) return 0;
+        matches = Math.Min(matches, Math.Min(comparisonCount, currentCount));
+        return 1.0 - 2.0 * matches / (comparisonCount + currentCount);
     }
 
     private static double LumaResidual(
-        Raster reference,
+        Raster comparison,
         Raster current,
         Region region,
         double pivotX,
         double pivotY,
-        double dx,
-        double dy,
-        double rotationDegrees)
+        double comparisonDx,
+        double comparisonDy,
+        double comparisonRotationDegrees,
+        double currentDx,
+        double currentDy,
+        double currentRotationDegrees)
     {
-        double radians = rotationDegrees * Math.PI / 180.0;
-        double cosine = Math.Cos(radians);
-        double sine = Math.Sin(radians);
+        double comparisonRadians = comparisonRotationDegrees * Math.PI / 180.0;
+        double comparisonCosine = Math.Cos(comparisonRadians);
+        double comparisonSine = Math.Sin(comparisonRadians);
+        double currentRadians = currentRotationDegrees * Math.PI / 180.0;
+        double currentCosine = Math.Cos(currentRadians);
+        double currentSine = Math.Sin(currentRadians);
         double sum = 0;
         int count = 0;
-        for (int y = Math.Max(0, (int)Math.Floor(region.Top)); y < Math.Min(reference.Height, (int)Math.Ceiling(region.Bottom)); y++)
+        for (int y = Math.Max(0, (int)Math.Floor(region.Top)); y < Math.Min(comparison.Height, (int)Math.Ceiling(region.Bottom)); y++)
         {
-            for (int x = Math.Max(0, (int)Math.Floor(region.Left)); x < Math.Min(reference.Width, (int)Math.Ceiling(region.Right)); x++)
+            for (int x = Math.Max(0, (int)Math.Floor(region.Left)); x < Math.Min(comparison.Width, (int)Math.Ceiling(region.Right)); x++)
             {
-                double tx;
-                double ty;
-                Transform(x, y, pivotX, pivotY, dx, dy, cosine, sine, out tx, out ty);
-                int cx = (int)Math.Round(tx);
-                int cy = (int)Math.Round(ty);
+                double comparisonX;
+                double comparisonY;
+                Transform(x, y, pivotX, pivotY,
+                    comparisonDx, comparisonDy, comparisonCosine, comparisonSine,
+                    out comparisonX, out comparisonY);
+                double currentX;
+                double currentY;
+                Transform(x, y, pivotX, pivotY,
+                    currentDx, currentDy, currentCosine, currentSine,
+                    out currentX, out currentY);
+                int bx = (int)Math.Round(comparisonX);
+                int by = (int)Math.Round(comparisonY);
+                int cx = (int)Math.Round(currentX);
+                int cy = (int)Math.Round(currentY);
+                if (bx < 0 || by < 0 || bx >= comparison.Width || by >= comparison.Height) continue;
                 if (cx < 0 || cy < 0 || cx >= current.Width || cy >= current.Height) continue;
-                int referenceIndex = y * reference.Width + x;
+                int comparisonIndex = by * comparison.Width + bx;
                 int currentIndex = cy * current.Width + cx;
-                if (!reference.Foreground[referenceIndex] && !current.Foreground[currentIndex]) continue;
-                sum += Math.Abs(reference.Luma[referenceIndex] - current.Luma[currentIndex]) / 255.0;
+                if (!comparison.Foreground[comparisonIndex] && !current.Foreground[currentIndex]) continue;
+                sum += Math.Abs(comparison.Luma[comparisonIndex] - current.Luma[currentIndex]) / 255.0;
                 count++;
             }
         }
@@ -407,7 +495,7 @@ function Percentile([double[]] $values, [double] $fraction) {
     return [double] $sorted[$index]
 }
 
-$comparisons = @($metrics | Select-Object -Skip 1)
+$comparisons = @($metrics)
 $faceBoundary = [double[]] @($comparisons.FaceBoundaryResidual)
 $breathBoundary = [double[]] @($comparisons.BreathBoundaryResidual)
 $faceMedian = Percentile $faceBoundary 0.5

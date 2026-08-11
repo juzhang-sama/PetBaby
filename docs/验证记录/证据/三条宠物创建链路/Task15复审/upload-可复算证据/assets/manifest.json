@@ -1,0 +1,20 @@
+{
+  "schemaVersion": 3,
+  "renderer": "animated-image-v1",
+  "petId": "pet-331c-18cac1b9f166524c-3",
+  "variantId": "candidate-331c-18cac1eeebc4933c-6",
+  "image": "body.png",
+  "motionProfile": "motion-profile.json",
+  "files": [
+    {
+      "role": "main",
+      "relativePath": "body.png",
+      "sha256": "d45919e07af9d581f83d5a1379627b8632d630dedc6dc6579004d8287fd13784"
+    },
+    {
+      "role": "motion-profile",
+      "relativePath": "motion-profile.json",
+      "sha256": "88701189506555676149ba46032550ce676df54d5ac987fe44066b039fbf9135"
+    }
+  ]
+}

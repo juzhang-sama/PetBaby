@@ -71,6 +71,29 @@ debug capture 仅在 `debug_assertions` 且精确环境变量 `DESKTOP_PET_TASK1
 
 可复核材料：[采样清单](./upload-固定序列/capture-manifest.json)、[neutral reference](./upload-固定序列/neutral-body-reference.jpg)、[指标 JSON](./upload-固定序列/固定序列指标.json)、[复算脚本](./固定序列运动分析.ps1)、[契约测试](./固定序列运动分析契约测试.ps1)，以及 [帧 0](./upload-固定序列/frame-000.jpg)、[帧 23](./upload-固定序列/frame-023.jpg)、[帧 46](./upload-固定序列/frame-046.jpg)、[帧 68](./upload-固定序列/frame-068.jpg)、[帧 91](./upload-固定序列/frame-091.jpg)。`raw/` 保留 Sky 返回的全部原始 420×520 JPEG，便于独立重建白底并核对 SHA256。
 
+### 3.3 复算契约纠正与新 upload 固化证据
+
+独立复审指出上一版 analyzer 把 index 0 的真实捕获替换成 neutral，并在汇总时跳过第一项，导致 92 项中含人工零项。用户随后明确确认同一非个人仓库 fixture 的一次新外部生成；本轮仍使用 identifier `com.desktop-pet.task15-8e5480bf`，只经 UI 使用既有配置，未读取、查询或输出 API Key。fixture 为 `apps/desktop/public/test-assets/pet-probe.png`，SHA256 `372b2ea123cc62222b31e376ab3596d81255096f5bf7dd1b1b90b268bcd9f1b9`；UI 一次提交成功，正式对象为：
+
+- display：`Task15上传复算证据8e5480bf`
+- pet：`pet-331c-18cac1b9f166524c-3`
+- session：`session-331c-18cac1b9f16620b0-2`
+- job：`job-331c-18cac1e2659fd1d8-4`
+- renderer：`animated-image-v1`
+
+任何重启或采样前，先从该 pet 的正式目录逐字节固化 [manifest](./upload-可复算证据/assets/manifest.json)、[body](./upload-可复算证据/assets/body.png)、[motion profile](./upload-可复算证据/assets/motion-profile.json) 和 [资产清单](./upload-可复算证据/assets/资产清单.json)。三份 SHA256 分别为 `082e4ea5d474a6953739fe495af9b50ad6369f4d81c0ac5e09b67024ab1028a1`、`d45919e07af9d581f83d5a1379627b8632d630dedc6dc6579004d8287fd13784`、`88701189506555676149ba46032550ce676df54d5ac987fe44066b039fbf9135`；源文件、证据副本、runtime manifest 角色 hash、DB active pet 四方一致。
+
+同一 debug capture 护栏下，Sky 正常返回 pet PID `29584` / HWND `12191802`，title/path 属于唯一自有实例；WGC 为完整 420×520、DPI 96、DPR 1、位置 `(1491,460)`，没有移动窗口。自有 settings 窗口只提供均匀浅色背景。新序列采样时间为 `2026-08-11T13:11:30.033Z` 至 `13:12:06.507Z`，92/92 帧、400 ms 目标间隔、最大抖动 118.138 ms；期间 pet/HWND/path/title/origin/尺寸不变，manifest 明确记录无 reload、switch 或 rebuild。本轮未复用旧 manifest、旧帧或旧资产。
+
+analyzer 的 TDD 与证据链如下：
+
+1. 契约先 RED 于“neutral 不得替换 frame 0、不得跳过第一项”，再改为每个 index 真实加载 `frame-NNN.jpg`；初次真实 92 项结果暴露 neutral 二次栅格化轮廓与不同亚像素 sway 相位混合，faceSafety P95 为 `0.07424`，正确判定失败。
+2. 同一序列中 index 9/22/35/48/61/74/87 恰为相同 sway 相位，face residual 全部为 0，证明脸眼没有局部形变，失败位于度量基线而非 renderer。契约再次 RED，要求 neutral 只拟合两张真实帧的整体姿态，局部残差必须在真实 frame 对之间计算。
+3. 13 帧是一整个 5200 ms sway 周期，但只偏移 6/7 个 breath 周期，首轮全 92 项得到 face P95 `0.00778`、breath median `0.00719`，呼吸仍按原阈值失败。固定周期下 39 帧等于三个 sway 周期，同时偏移 4/7 个 breath 周期，是采样网格上离半周期最近的确定性规则；它对全部 92 项统一使用，comparison 永不自指，不挑帧也不调整阈值。
+4. 最终 92/92 项均对应真实 `Frame` 与相距 39 的真实 `ComparisonFrame`；frame 0 比较 frame 39，其指标为 face `0.009524`、breath `0.069444`，不是人工零项。faceSafety median `0`、P95 `0.007782 ≤ 0.03`；breathZone median `0.014706 ≥ max(0.01, 1.5 × 0) = 0.01`，两项与总结果均通过。renderer、profile、背景距离 18 和原判据均未修改。
+
+逐帧复核脚本确认 92 个 raw SHA、92 个白底 frame SHA、184 张 420×520 尺寸、92 个指标映射、39 帧 comparison 规则以及三资产 hash 全部一致，0 个错误。固定 [帧 0](./upload-可复算证据/frame-000.jpg)、[帧 23](./upload-可复算证据/frame-023.jpg)、[帧 46](./upload-可复算证据/frame-046.jpg)、[帧 68](./upload-可复算证据/frame-068.jpg)、[帧 91](./upload-可复算证据/frame-091.jpg) 和对应 `raw/` 均以 original 人工检查：猫耳、脸眼、鼻口局部几何稳定，胸腹有克制呼吸，未见缝隙、人物、浏览器或第三方窗口。可复算入口为 [capture manifest](./upload-可复算证据/capture-manifest.json)、[neutral reference](./upload-可复算证据/neutral-body-reference.jpg)、[指标 JSON](./upload-可复算证据/固定序列指标.json)、[复算脚本](./固定序列运动分析.ps1) 与 [契约测试](./固定序列运动分析契约测试.ps1)。取证完成后仅精确停止本轮 19 个自有 PID，14321 已释放；新 pet 仍保留，未删除、未切换、未再次提交 provider。
+
 ## 4. 用户确认后的精确删除与放弃
 
 ### 4.1 上传测试宠物删除
@@ -115,3 +138,4 @@ debug capture 仅在 `debug_assertions` 且精确环境变量 `DESKTOP_PET_TASK1
 - 第 4.1 与 4.3 节的两个 upload 测试宠物均只在用户分别确认精确对象后删除；第 4.2 与 4.4 节的两个空 upload 草稿均只在用户分别确认后放弃。除这四项外没有执行其他删除或放弃。
 - 第 3.2 节的 92 帧、neutral reference、指标与 original 检查证据已在删除前完整固化；后续清理不改变已提交证据。
 - 两次最终清理均通过唯一自有 settings 窗口完成；各自 PID 树随后精确停止，14321/14322 均释放。没有递归删除任何 app-data 根，也没有对 API Key 做数据库查询、输出或记录。
+- 第 3.3 节是这些历史清理之后经用户单独确认的新外部生成；其中的新 pet/session/job 当前明确保留，不属于第 4 节已执行的删除范围。

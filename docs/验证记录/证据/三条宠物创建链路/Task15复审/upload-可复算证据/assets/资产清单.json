@@ -1,0 +1,50 @@
+{
+  "schemaVersion": 1,
+  "identifier": "com.desktop-pet.task15-8e5480bf",
+  "displayName": "Task15上传复算证据8e5480bf",
+  "petId": "pet-331c-18cac1b9f166524c-3",
+  "sessionId": "session-331c-18cac1b9f16620b0-2",
+  "jobId": "job-331c-18cac1e2659fd1d8-4",
+  "sourceRootRelativeToAppData": "pets/pet-331c-18cac1b9f166524c-3/assets",
+  "files": [
+    {
+      "role": "runtime-manifest",
+      "sourceRelativePath": "pets/pet-331c-18cac1b9f166524c-3/assets/manifest.json",
+      "evidenceRelativePath": "assets/manifest.json",
+      "sha256": "082e4ea5d474a6953739fe495af9b50ad6369f4d81c0ac5e09b67024ab1028a1"
+    },
+    {
+      "role": "main",
+      "sourceRelativePath": "pets/pet-331c-18cac1b9f166524c-3/assets/body.png",
+      "evidenceRelativePath": "assets/body.png",
+      "sha256": "d45919e07af9d581f83d5a1379627b8632d630dedc6dc6579004d8287fd13784"
+    },
+    {
+      "role": "motion-profile",
+      "sourceRelativePath": "pets/pet-331c-18cac1b9f166524c-3/assets/motion-profile.json",
+      "evidenceRelativePath": "assets/motion-profile.json",
+      "sha256": "88701189506555676149ba46032550ce676df54d5ac987fe44066b039fbf9135"
+    }
+  ],
+  "runtimeManifest": {
+    "schemaVersion": 3,
+    "renderer": "animated-image-v1",
+    "petId": "pet-331c-18cac1b9f166524c-3",
+    "variantId": "candidate-331c-18cac1eeebc4933c-6",
+    "image": "body.png",
+    "motionProfile": "motion-profile.json",
+    "mainSha256": "d45919e07af9d581f83d5a1379627b8632d630dedc6dc6579004d8287fd13784",
+    "motionProfileSha256": "88701189506555676149ba46032550ce676df54d5ac987fe44066b039fbf9135"
+  },
+  "database": {
+    "petLifecycle": "ready",
+    "sessionStatus": "completed",
+    "jobStatus": "success",
+    "activePetId": "pet-331c-18cac1b9f166524c-3"
+  },
+  "fixture": {
+    "repositoryPath": "apps/desktop/public/test-assets/pet-probe.png",
+    "sha256": "372b2ea123cc62222b31e376ab3596d81255096f5bf7dd1b1b90b268bcd9f1b9",
+    "personalData": false
+  }
+}
