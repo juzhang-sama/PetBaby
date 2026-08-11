@@ -3,6 +3,7 @@ import type { AdoptionCatalogEntry, CreationSnapshot } from "../creation/contrac
 import type { MotionProfileV1 } from "../runtime/animated-image-manifest";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 import { AdoptionCreationView, type AdoptionCreationPorts } from "./adoption-creation-view";
+import { CreationPageActivity } from "./creation-page-run";
 
 const profile: MotionProfileV1 = {
   profileVersion: 1,
@@ -185,7 +186,10 @@ function adoptionPorts(options: {
   start?: () => Promise<CreationSnapshot>;
   snapshot?: () => Promise<CreationSnapshot>;
   finalize?: (sessionId: string) => Promise<PetSwitchResult>;
+  switchPet?: (petId: string) => Promise<PetSwitchResult>;
   loadMotionProfile?: (url: string) => Promise<unknown>;
+  activity?: AdoptionCreationPorts["activity"];
+  onBusyChange?: (busy: boolean) => void;
 } = {}) {
   const catalogs = options.catalogs ?? [catalog()];
   let catalogIndex = 0;
@@ -213,13 +217,19 @@ function adoptionPorts(options: {
     finalize: vi.fn(options.finalize ?? (async (_sessionId: string): Promise<PetSwitchResult> => ({
       ok: true as const, requestId: "request-1", petId: "pet-adoption",
     }))),
-    switchPet: vi.fn(async (petId: string): Promise<PetSwitchResult> => ({
+    switchPet: vi.fn(options.switchPet ?? (async (petId: string): Promise<PetSwitchResult> => ({
       ok: true as const, requestId: "switch-1", petId,
-    })),
+    }))),
     refreshPets: vi.fn(async () => undefined),
-    onBusyChange: vi.fn(),
+    onBusyChange: vi.fn((busy: boolean) => options.onBusyChange?.(busy)),
+    activity: options.activity,
   } satisfies AdoptionCreationPorts;
   return { ports, view: new AdoptionCreationView(ports) };
+}
+
+function blurCatalogFocusOnBusy(dom: ReturnType<typeof adoptionDomElements>, busy: boolean): void {
+  const active = dom.document.activeElement;
+  if (busy && active && dom.raw.catalog.contains(active)) dom.document.activeElement = null;
 }
 
 describe("AdoptionCreationView", () => {
@@ -335,8 +345,11 @@ describe("AdoptionCreationView", () => {
     const withoutMisty = [...reordered.filter(
       (item) => item.template.templateId !== "cat-misty",
     ), replacement];
-    const test = adoptionPorts({ catalogs: [initial, reordered, withoutMisty] });
     const dom = adoptionDomElements();
+    const test = adoptionPorts({
+      catalogs: [initial, reordered, withoutMisty],
+      onBusyChange: (busy) => blurCatalogFocusOnBusy(dom, busy),
+    });
     test.view.mount(dom.typed);
     await test.view.open();
     const firstNode = dom.raw.catalog.children[0]!;
@@ -394,6 +407,120 @@ describe("AdoptionCreationView", () => {
     expect(test.view.busy()).toBe(false);
     expect(test.ports.onBusyChange).toHaveBeenLastCalledWith(false);
   });
+
+  it("captures catalog focus before shared activity clears it and restores after activation", async () => {
+    const dom = adoptionDomElements();
+    const blurOnBusy = (busy: boolean) => blurCatalogFocusOnBusy(dom, busy);
+    const test = adoptionPorts({
+      catalogs: [catalog(entry({ adoptedPetId: "pet-existing" }))],
+      activity: new CreationPageActivity(blurOnBusy),
+      onBusyChange: blurOnBusy,
+    });
+    test.view.mount(dom.typed);
+    await test.view.open();
+    const focusedCard = dom.raw.catalog.children[0]!;
+    focusedCard.focus();
+
+    await test.view.activate("cat-misty");
+
+    expect(dom.document.activeElement).toBe(focusedCard);
+  });
+
+  it("restores catalog focus when activation throws after global busy cleared it", async () => {
+    const dom = adoptionDomElements();
+    const blurOnBusy = (busy: boolean) => blurCatalogFocusOnBusy(dom, busy);
+    const test = adoptionPorts({
+      catalogs: [catalog(entry({ adoptedPetId: "pet-existing" })), catalog(entry({ adoptedPetId: "pet-existing" }))],
+      switchPet: async (): Promise<PetSwitchResult> => ({
+        ok: false,
+        requestId: "switch-failed",
+        petId: "pet-existing",
+        code: "pet-window-unavailable",
+        message: "宠物窗口没有响应",
+      }),
+      activity: new CreationPageActivity(blurOnBusy),
+      onBusyChange: blurOnBusy,
+    });
+    test.view.mount(dom.typed);
+    await test.view.open();
+    const focusedCard = dom.raw.catalog.children[0]!;
+    focusedCard.focus();
+
+    await expect(test.view.activate("cat-misty")).rejects.toThrow(/没有响应/);
+
+    expect(dom.document.activeElement).toBe(focusedCard);
+  });
+
+  it("does not replace focus that was outside the adoption catalog", async () => {
+    const dom = adoptionDomElements();
+    const blurOnBusy = (busy: boolean) => blurCatalogFocusOnBusy(dom, busy);
+    const test = adoptionPorts({
+      catalogs: [catalog(entry({ adoptedPetId: "pet-existing" }))],
+      activity: new CreationPageActivity(blurOnBusy),
+      onBusyChange: blurOnBusy,
+    });
+    test.view.mount(dom.typed);
+    await test.view.open();
+    const external = dom.document.createElement("button");
+    external.focus();
+
+    await test.view.activate("cat-misty");
+
+    expect(dom.document.activeElement).toBe(external);
+  });
+
+  it("does not steal focus moved outside the catalog while activation is pending", async () => {
+    const switching = deferred<PetSwitchResult>();
+    const dom = adoptionDomElements();
+    const blurOnBusy = (busy: boolean) => blurCatalogFocusOnBusy(dom, busy);
+    const test = adoptionPorts({
+      catalogs: [catalog(entry({ adoptedPetId: "pet-existing" }))],
+      switchPet: () => switching.promise,
+      activity: new CreationPageActivity(blurOnBusy),
+      onBusyChange: blurOnBusy,
+    });
+    test.view.mount(dom.typed);
+    await test.view.open();
+    dom.raw.catalog.children[0]!.focus();
+    const activation = test.view.activate("cat-misty");
+    await vi.waitFor(() => expect(test.ports.switchPet).toHaveBeenCalledOnce());
+    const external = dom.document.createElement("button");
+    external.focus();
+
+    switching.resolve({ ok: true, requestId: "switch-1", petId: "pet-existing" });
+    await activation;
+
+    expect(dom.document.activeElement).toBe(external);
+  });
+
+  it.each(["leave", "destroy"] as const)(
+    "does not restore hidden adoption focus after %s",
+    async (exit) => {
+      const switching = deferred<PetSwitchResult>();
+      const dom = adoptionDomElements();
+      const blurOnBusy = (busy: boolean) => blurCatalogFocusOnBusy(dom, busy);
+      const test = adoptionPorts({
+        catalogs: [catalog(entry({ adoptedPetId: "pet-existing" }))],
+        switchPet: () => switching.promise,
+        activity: new CreationPageActivity(blurOnBusy),
+        onBusyChange: blurOnBusy,
+      });
+      test.view.mount(dom.typed);
+      await test.view.open();
+      const focusedCard = dom.raw.catalog.children[0]!;
+      focusedCard.focus();
+      const activation = test.view.activate("cat-misty");
+      await vi.waitFor(() => expect(test.ports.switchPet).toHaveBeenCalledOnce());
+
+      test.view[exit]();
+      const external = dom.document.createElement("button");
+      external.focus();
+      switching.resolve({ ok: true, requestId: "switch-1", petId: "pet-existing" });
+      await activation;
+
+      expect(dom.document.activeElement).toBe(external);
+    },
+  );
 
   it("coalesces catalog refresh and exposes one shared busy interval", async () => {
     const pending = deferred<AdoptionCatalogEntry[]>();

@@ -111,6 +111,7 @@ export class AdoptionCreationView {
   refresh(): Promise<void> {
     if (this.refreshFlight) return this.refreshFlight;
     const operation = this.open();
+    this.captureCatalogFocus();
     const tracked = operation.finally(() => {
       if (this.refreshFlight === tracked) this.refreshFlight = null;
       this.setBusy(false);
@@ -164,6 +165,7 @@ export class AdoptionCreationView {
     if (this.activationFlight) return this.activationFlight;
     const visit = this.visit;
     const entry = this.requireEntry(templateId);
+    this.captureCatalogFocus();
     const execute = () => this.activateOnce(templateId, displayName, visit);
     const operation = this.ports.activity
       ? this.ports.activity.run({
@@ -413,6 +415,18 @@ export class AdoptionCreationView {
     this.render();
   }
 
+  private captureCatalogFocus(): void {
+    const catalog = this.elements?.catalog;
+    if (!catalog) return;
+    const activeElement = catalog.ownerDocument.activeElement;
+    const activeButton = activeElement instanceof Element
+      ? activeElement.closest<HTMLButtonElement>("[data-adoption-template]")
+      : null;
+    if (activeButton && catalog.contains(activeButton)) {
+      this.pendingCatalogFocusId = activeButton.dataset.adoptionTemplate ?? null;
+    }
+  }
+
   private clearPreview(): void {
     this.ports.preview.clear();
     this.previewCleared = true;
@@ -507,11 +521,16 @@ export class AdoptionCreationView {
       button.tabIndex = button.dataset.adoptionTemplate === this.focusTemplateId ? 0 : -1;
     }
     if (!this.busyValue && this.pendingCatalogFocusId) {
+      const canRestoreFocus = this.active && (
+        !document.activeElement
+        || document.activeElement === document.body
+        || root.contains(document.activeElement)
+      );
       const focusedId = desiredIds.has(this.pendingCatalogFocusId)
         ? this.pendingCatalogFocusId
         : this.focusTemplateId;
       const target = buttons.find((button) => button.dataset.adoptionTemplate === focusedId);
-      if (target && document.activeElement !== target) target.focus();
+      if (canRestoreFocus && target && document.activeElement !== target) target.focus();
       this.pendingCatalogFocusId = null;
     }
   }
