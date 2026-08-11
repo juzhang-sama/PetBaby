@@ -103,6 +103,7 @@ describe("settings upload creation assembly", () => {
     expect(html).toContain("按完整字素计");
     expect(html).toContain("原图会仅在本机临时保存用于失败恢复");
     expect(html).toContain("完成或放弃后删除");
+    expect(html).toContain('id="upload-abandon"');
   });
 
   it("loads source and candidate contracts from strongly typed backend commands", () => {

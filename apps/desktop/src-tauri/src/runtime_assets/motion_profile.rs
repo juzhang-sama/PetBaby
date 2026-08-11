@@ -260,15 +260,12 @@ fn move_to_unique_backup(path: &Path, parent: &Path, file_name: &str) -> Result<
 }
 
 fn rename_without_replacing(source: &Path, destination: &Path) -> std::io::Result<()> {
-    use std::{iter::once, os::windows::ffi::OsStrExt};
     use windows_sys::Win32::Storage::FileSystem::MoveFileExW;
 
-    let source: Vec<u16> = source.as_os_str().encode_wide().chain(once(0)).collect();
-    let destination: Vec<u16> = destination
-        .as_os_str()
-        .encode_wide()
-        .chain(once(0))
-        .collect();
+    let invalid_path = |error| std::io::Error::new(std::io::ErrorKind::InvalidInput, error);
+    let source = crate::platform::windows::encode_windows_path(source).map_err(invalid_path)?;
+    let destination =
+        crate::platform::windows::encode_windows_path(destination).map_err(invalid_path)?;
     if unsafe { MoveFileExW(source.as_ptr(), destination.as_ptr(), 0) } == 0 {
         return Err(std::io::Error::last_os_error());
     }
@@ -430,6 +427,41 @@ mod tests {
         );
         assert_eq!(std::fs::read_dir(&root).unwrap().count(), 1);
         let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[cfg(target_os = "windows")]
+    #[test]
+    fn atomically_writes_a_motion_profile_beyond_the_legacy_windows_path_limit() {
+        use std::os::windows::ffi::OsStrExt;
+
+        static COUNTER: std::sync::atomic::AtomicU32 = std::sync::atomic::AtomicU32::new(0);
+        let n = COUNTER.fetch_add(1, std::sync::atomic::Ordering::SeqCst);
+        let root = std::env::temp_dir().join(format!(
+            "desktop-pet-motion-profile-long-{}-{n}",
+            std::process::id()
+        ));
+        let mut parent = root.clone();
+        while parent.as_os_str().encode_wide().count() + 1 + "extended-length-segment".len() < 230 {
+            parent = parent.join("extended-length-segment");
+        }
+        let parent_length = parent.as_os_str().encode_wide().count();
+        parent = parent.join("x".repeat(230 - parent_length - 1));
+        std::fs::create_dir_all(&parent).unwrap();
+        let path = parent.join("motion-profile.json");
+        assert!(path.as_os_str().encode_wide().count() < 260);
+
+        let mut image = image::RgbaImage::new(64, 64);
+        for pixel in image.pixels_mut() {
+            *pixel = image::Rgba([80, 90, 100, 255]);
+        }
+        let profile = generate_motion_profile(&image).unwrap();
+        let result = write_motion_profile_atomic(&path, &profile).and_then(|_| {
+            let json = std::fs::read_to_string(&path).map_err(|error| error.to_string())?;
+            parse_motion_profile(&json)
+        });
+        let _ = std::fs::remove_dir_all(&root);
+
+        assert_eq!(result.unwrap(), profile);
     }
 
     #[test]

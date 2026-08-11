@@ -56,6 +56,7 @@ export interface UploadCreationElements {
   nextButton: HTMLButtonElement;
   cancelButton: HTMLButtonElement;
   retryButton: HTMLButtonElement;
+  uploadAbandonButton: HTMLButtonElement;
   abandonButton: HTMLButtonElement;
   finishButton: HTMLButtonElement;
 }
@@ -84,6 +85,7 @@ export function queryUploadCreationElements(root: Document): UploadCreationEleme
     nextButton: get<HTMLButtonElement>("wizard-next"),
     cancelButton: get<HTMLButtonElement>("wizard-cancel"),
     retryButton: get<HTMLButtonElement>("review-retry"),
+    uploadAbandonButton: get<HTMLButtonElement>("upload-abandon"),
     abandonButton: get<HTMLButtonElement>("review-abandon"),
     finishButton: get<HTMLButtonElement>("review-accept"),
   };
@@ -177,6 +179,7 @@ export class UploadCreationView {
     this.dom.elements.saveKeyButton.addEventListener("click", this.onSaveKeyClick);
     this.dom.elements.cancelButton.addEventListener("click", this.onCancelClick);
     this.dom.elements.retryButton.addEventListener("click", this.onRetryClick);
+    this.dom.elements.uploadAbandonButton.addEventListener("click", this.onAbandonClick);
     this.dom.elements.abandonButton.addEventListener("click", this.onAbandonClick);
     this.render();
   }
@@ -191,6 +194,7 @@ export class UploadCreationView {
     this.dom.elements.saveKeyButton.removeEventListener("click", this.onSaveKeyClick);
     this.dom.elements.cancelButton.removeEventListener("click", this.onCancelClick);
     this.dom.elements.retryButton.removeEventListener("click", this.onRetryClick);
+    this.dom.elements.uploadAbandonButton.removeEventListener("click", this.onAbandonClick);
     this.dom.elements.abandonButton.removeEventListener("click", this.onAbandonClick);
     this.mounted = false;
   }
@@ -812,6 +816,7 @@ export class UploadCreationView {
     const mutating = this.run.isMutating(this.state.sessionId);
     elements.nextButton.disabled = mutating;
     elements.retryButton.disabled = mutating;
+    elements.uploadAbandonButton.disabled = mutating;
     elements.abandonButton.disabled = mutating;
     elements.finishButton.disabled = this.state.step !== "review"
       || !this.dynamicReady

@@ -130,6 +130,7 @@ function domPorts(overrides: Partial<UploadCreationDomPorts> = {}) {
     nextButton: new FakeElement(),
     cancelButton: new FakeElement(),
     retryButton: new FakeElement(),
+    uploadAbandonButton: new FakeElement(),
     abandonButton: new FakeElement(),
     finishButton: new FakeElement(),
   };
@@ -515,6 +516,23 @@ describe("UploadCreationView", () => {
     dom.elements.abandonButton.dispatch("click");
     dom.elements.abandonButton.dispatch("click");
     await vi.waitFor(() => expect(core.creation.abandon).toHaveBeenCalledOnce());
+    await vi.waitFor(() => expect(dom.ports.onAbandoned).toHaveBeenCalledOnce());
+  });
+
+  it("abandons an initial upload draft directly without selecting a file or calling provider", async () => {
+    const core = uploadPorts();
+    const dom = domPorts();
+    const view = new UploadCreationView(core, dom.ports);
+    view.mount();
+    await view.enter();
+
+    dom.elements.uploadAbandonButton.dispatch("click");
+
+    await vi.waitFor(() => expect(core.creation.abandon).toHaveBeenCalledOnce());
+    expect(core.creation.abandon).toHaveBeenCalledWith("session-1");
+    expect(dom.ports.confirm).toHaveBeenCalledOnce();
+    expect(core.creation.uploadStart).not.toHaveBeenCalled();
+    expect(core.creation.uploadRetry).not.toHaveBeenCalled();
     await vi.waitFor(() => expect(dom.ports.onAbandoned).toHaveBeenCalledOnce());
   });
 

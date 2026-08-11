@@ -151,6 +151,64 @@ enum LoadedTemplate {
     },
 }
 
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum CatalogSecurityFailure {
+    Access,
+    InvalidPath,
+    ReparsePoint,
+    PathContainment,
+    IdentityChanged,
+    BoundedRead,
+}
+
+#[derive(Debug)]
+struct CatalogSecurityError {
+    kind: CatalogSecurityFailure,
+    reason: String,
+}
+
+impl CatalogSecurityError {
+    fn new(kind: CatalogSecurityFailure, reason: impl Into<String>) -> Self {
+        Self {
+            kind,
+            reason: reason.into(),
+        }
+    }
+}
+
+impl std::fmt::Display for CatalogSecurityError {
+    fn fmt(&self, formatter: &mut std::fmt::Formatter<'_>) -> std::fmt::Result {
+        formatter.write_str(&self.reason)
+    }
+}
+
+enum TemplateAssetFailure {
+    Security(CatalogSecurityError),
+    Content(String),
+}
+
+impl From<CatalogSecurityError> for TemplateAssetFailure {
+    fn from(error: CatalogSecurityError) -> Self {
+        Self::Security(error)
+    }
+}
+
+#[derive(Debug, Clone, Copy, PartialEq, Eq)]
+enum TemplateAssetFailureScope {
+    WholeCatalog,
+    SingleTemplate,
+}
+
+fn template_asset_failure_scope(failure: &TemplateAssetFailure) -> TemplateAssetFailureScope {
+    match failure {
+        TemplateAssetFailure::Security(error) => {
+            let _kind = error.kind;
+            TemplateAssetFailureScope::WholeCatalog
+        }
+        TemplateAssetFailure::Content(_) => TemplateAssetFailureScope::SingleTemplate,
+    }
+}
+
 impl LoadedTemplate {
     fn template(&self) -> &AdoptionTemplate {
         match self {
@@ -1031,16 +1089,25 @@ fn parse_status(value: &str) -> Result<CreationSessionStatus, String> {
 
 fn load_catalog(content_root: &ContentRoot) -> Result<Vec<LoadedTemplate>, String> {
     (|| {
-        let content_guard = ReadOnlyDirectoryGuard::open(content_root.as_path(), "content root")?;
+        let content_guard = ReadOnlyDirectoryGuard::open(content_root.as_path(), "content root")
+            .map_err(|error| error.to_string())?;
         if content_guard.path != content_root.as_path() {
-            return Err("content root identity changed after setup".into());
+            return Err(CatalogSecurityError::new(
+                CatalogSecurityFailure::IdentityChanged,
+                "content root identity changed after setup",
+            )
+            .to_string());
         }
-        let adoption_guard = content_guard.child("adoption", "adoption catalog directory")?;
-        let catalog_bytes = adoption_guard.read_file(
-            "catalog.json",
-            "adoption catalog manifest",
-            MAX_CATALOG_BYTES,
-        )?;
+        let adoption_guard = content_guard
+            .child("adoption", "adoption catalog directory")
+            .map_err(|error| error.to_string())?;
+        let catalog_bytes = adoption_guard
+            .read_file(
+                "catalog.json",
+                "adoption catalog manifest",
+                MAX_CATALOG_BYTES,
+            )
+            .map_err(|error| error.to_string())?;
         let manifest: AdoptionCatalogManifest = serde_json::from_slice(&catalog_bytes)
             .map_err(|error| format!("adoption catalog JSON is invalid: {error}"))?;
         if manifest.schema_version != CATALOG_SCHEMA_VERSION {
@@ -1073,15 +1140,19 @@ fn load_catalog(content_root: &ContentRoot) -> Result<Vec<LoadedTemplate>, Strin
                     "adoption thumbnail",
                     MAX_THUMBNAIL_BYTES,
                 )?;
-                verify_hash(&thumbnail, &template.thumbnail_sha256, "adoption thumbnail")?;
-                validate_png(&thumbnail, 512, 512, false, "adoption thumbnail")?;
+                verify_hash(&thumbnail, &template.thumbnail_sha256, "adoption thumbnail")
+                    .map_err(TemplateAssetFailure::Content)?;
+                validate_png(&thumbnail, 512, 512, false, "adoption thumbnail")
+                    .map_err(TemplateAssetFailure::Content)?;
                 let body = template_guard.read_relative_file(
                     &template.body_path,
                     "adoption body",
                     MAX_BODY_BYTES,
                 )?;
-                verify_hash(&body, &template.body_sha256, "adoption body")?;
-                validate_png(&body, 1024, 1024, true, "adoption body")?;
+                verify_hash(&body, &template.body_sha256, "adoption body")
+                    .map_err(TemplateAssetFailure::Content)?;
+                validate_png(&body, 1024, 1024, true, "adoption body")
+                    .map_err(TemplateAssetFailure::Content)?;
                 let motion_profile = template_guard.read_relative_file(
                     &template.motion_profile_path,
                     "adoption motion profile",
@@ -1091,11 +1162,15 @@ fn load_catalog(content_root: &ContentRoot) -> Result<Vec<LoadedTemplate>, Strin
                     &motion_profile,
                     &template.motion_profile_sha256,
                     "adoption motion profile",
-                )?;
-                let motion_json = std::str::from_utf8(&motion_profile)
-                    .map_err(|error| format!("adoption motion profile is not UTF-8: {error}"))?;
-                parse_strict_motion_profile(motion_json)?;
-                Ok::<_, String>((body, motion_profile))
+                )
+                .map_err(TemplateAssetFailure::Content)?;
+                let motion_json = std::str::from_utf8(&motion_profile).map_err(|error| {
+                    TemplateAssetFailure::Content(format!(
+                        "adoption motion profile is not UTF-8: {error}"
+                    ))
+                })?;
+                parse_strict_motion_profile(motion_json).map_err(TemplateAssetFailure::Content)?;
+                Ok::<_, TemplateAssetFailure>((body, motion_profile))
             })();
             validated.push(match assets {
                 Ok((body, motion_profile)) => LoadedTemplate::Available(ValidatedTemplate {
@@ -1103,8 +1178,21 @@ fn load_catalog(content_root: &ContentRoot) -> Result<Vec<LoadedTemplate>, Strin
                     body,
                     motion_profile,
                 }),
-                Err(reason) if reason.contains("reparse") => return Err(reason),
-                Err(reason) => LoadedTemplate::Unavailable { template, reason },
+                Err(failure)
+                    if template_asset_failure_scope(&failure)
+                        == TemplateAssetFailureScope::WholeCatalog =>
+                {
+                    let TemplateAssetFailure::Security(error) = failure else {
+                        unreachable!("whole-catalog template failures are security failures")
+                    };
+                    return Err(error.to_string());
+                }
+                Err(TemplateAssetFailure::Content(reason)) => {
+                    LoadedTemplate::Unavailable { template, reason }
+                }
+                Err(TemplateAssetFailure::Security(_)) => {
+                    unreachable!("security failures are handled as whole-catalog failures")
+                }
             });
         }
         Ok(validated)
@@ -1291,7 +1379,7 @@ struct ReadOnlyDirectoryGuard {
 
 impl ReadOnlyDirectoryGuard {
     #[cfg(windows)]
-    fn open(path: &Path, label: &str) -> Result<Self, String> {
+    fn open(path: &Path, label: &str) -> Result<Self, CatalogSecurityError> {
         use windows_sys::Win32::Foundation::INVALID_HANDLE_VALUE;
         use windows_sys::Win32::Storage::FileSystem::{
             CreateFileW, GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
@@ -1299,7 +1387,9 @@ impl ReadOnlyDirectoryGuard {
             FILE_FLAG_OPEN_REPARSE_POINT, FILE_LIST_DIRECTORY, FILE_READ_ATTRIBUTES,
             FILE_SHARE_READ, OPEN_EXISTING,
         };
-        let wide = crate::platform::windows::encode_windows_path(path)?;
+        let wide = crate::platform::windows::encode_windows_path(path).map_err(|error| {
+            CatalogSecurityError::new(CatalogSecurityFailure::InvalidPath, error)
+        })?;
         let raw = unsafe {
             CreateFileW(
                 wide.as_ptr(),
@@ -1312,27 +1402,39 @@ impl ReadOnlyDirectoryGuard {
             )
         };
         if raw == INVALID_HANDLE_VALUE {
-            return Err(format!(
-                "open read-only {label}: {}",
-                std::io::Error::last_os_error()
+            return Err(CatalogSecurityError::new(
+                CatalogSecurityFailure::Access,
+                format!(
+                    "open read-only {label}: {}",
+                    std::io::Error::last_os_error()
+                ),
             ));
         }
         let handle = unsafe { OwnedHandle::from_raw_handle(raw) };
         let mut info = BY_HANDLE_FILE_INFORMATION::default();
         if unsafe { GetFileInformationByHandle(handle.as_raw_handle(), &mut info) } == 0 {
-            return Err(format!(
-                "inspect read-only {label}: {}",
-                std::io::Error::last_os_error()
+            return Err(CatalogSecurityError::new(
+                CatalogSecurityFailure::Access,
+                format!(
+                    "inspect read-only {label}: {}",
+                    std::io::Error::last_os_error()
+                ),
             ));
         }
         if info.dwFileAttributes & FILE_ATTRIBUTE_DIRECTORY == 0
             || info.dwFileAttributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         {
-            return Err(format!("{label} must be a real non-reparse directory"));
+            return Err(CatalogSecurityError::new(
+                CatalogSecurityFailure::ReparsePoint,
+                format!("{label} must be a real non-reparse directory"),
+            ));
         }
-        let canonical = path
-            .canonicalize()
-            .map_err(|error| format!("resolve {label}: {error}"))?;
+        let canonical = path.canonicalize().map_err(|error| {
+            CatalogSecurityError::new(
+                CatalogSecurityFailure::Access,
+                format!("resolve {label}: {error}"),
+            )
+        })?;
         Ok(Self {
             path: canonical,
             _handle: handle,
@@ -1340,22 +1442,42 @@ impl ReadOnlyDirectoryGuard {
     }
 
     #[cfg(not(windows))]
-    fn open(_path: &Path, _label: &str) -> Result<Self, String> {
-        Err("secure adoption catalog access currently requires Windows handles".into())
+    fn open(_path: &Path, _label: &str) -> Result<Self, CatalogSecurityError> {
+        Err(CatalogSecurityError::new(
+            CatalogSecurityFailure::Access,
+            "secure adoption catalog access currently requires Windows handles",
+        ))
     }
 
-    fn child(&self, name: &str, label: &str) -> Result<Self, String> {
-        validate_identifier(name, label)?;
+    fn child(&self, name: &str, label: &str) -> Result<Self, CatalogSecurityError> {
+        validate_identifier(name, label).map_err(|error| {
+            CatalogSecurityError::new(CatalogSecurityFailure::InvalidPath, error)
+        })?;
         let child = Self::open(&self.path.join(name), label)?;
         if child.path.parent() != Some(self.path.as_path()) {
-            return Err(format!("{label} escapes its read-only parent"));
+            return Err(CatalogSecurityError::new(
+                CatalogSecurityFailure::PathContainment,
+                format!("{label} escapes its read-only parent"),
+            ));
         }
         Ok(child)
     }
 
-    fn read_file(&self, name: &str, label: &str, limit: u64) -> Result<Vec<u8>, String> {
-        if validate_relative_path(name, label)?.len() != 1 {
-            return Err(format!("{label} must be a direct child file"));
+    fn read_file(
+        &self,
+        name: &str,
+        label: &str,
+        limit: u64,
+    ) -> Result<Vec<u8>, CatalogSecurityError> {
+        if validate_relative_path(name, label)
+            .map_err(|error| CatalogSecurityError::new(CatalogSecurityFailure::InvalidPath, error))?
+            .len()
+            != 1
+        {
+            return Err(CatalogSecurityError::new(
+                CatalogSecurityFailure::InvalidPath,
+                format!("{label} must be a direct child file"),
+            ));
         }
         read_bounded_regular_file(&self.path.join(name), &self.path, label, limit)
     }
@@ -1365,14 +1487,19 @@ impl ReadOnlyDirectoryGuard {
         relative: &str,
         label: &str,
         limit: u64,
-    ) -> Result<Vec<u8>, String> {
-        let parts = validate_relative_path(relative, label)?;
+    ) -> Result<Vec<u8>, CatalogSecurityError> {
+        let parts = validate_relative_path(relative, label).map_err(|error| {
+            CatalogSecurityError::new(CatalogSecurityFailure::InvalidPath, error)
+        })?;
         let mut directories = Vec::new();
         let mut parent = self.path.clone();
         for part in &parts[..parts.len() - 1] {
             let directory = ReadOnlyDirectoryGuard::open(&parent.join(part), label)?;
             if directory.path.parent() != Some(parent.as_path()) {
-                return Err(format!("{label} directory escapes its template"));
+                return Err(CatalogSecurityError::new(
+                    CatalogSecurityFailure::PathContainment,
+                    format!("{label} directory escapes its template"),
+                ));
             }
             parent = directory.path.clone();
             directories.push(directory);
@@ -1385,15 +1512,21 @@ impl ReadOnlyDirectoryGuard {
 }
 
 #[cfg(windows)]
-fn handle_identity(file: &std::fs::File, label: &str) -> Result<(FileIdentity, u32), String> {
+fn handle_identity(
+    file: &std::fs::File,
+    label: &str,
+) -> Result<(FileIdentity, u32), CatalogSecurityError> {
     use windows_sys::Win32::Storage::FileSystem::{
         GetFileInformationByHandle, BY_HANDLE_FILE_INFORMATION,
     };
     let mut info = BY_HANDLE_FILE_INFORMATION::default();
     if unsafe { GetFileInformationByHandle(file.as_raw_handle(), &mut info) } == 0 {
-        return Err(format!(
-            "inspect {label} identity: {}",
-            std::io::Error::last_os_error()
+        return Err(CatalogSecurityError::new(
+            CatalogSecurityFailure::Access,
+            format!(
+                "inspect {label} identity: {}",
+                std::io::Error::last_os_error()
+            ),
         ));
     }
     Ok((
@@ -1411,7 +1544,7 @@ fn read_bounded_regular_file(
     expected_parent: &Path,
     label: &str,
     limit: u64,
-) -> Result<Vec<u8>, String> {
+) -> Result<Vec<u8>, CatalogSecurityError> {
     use windows_sys::Win32::Foundation::GENERIC_READ;
     use windows_sys::Win32::Storage::FileSystem::{
         FILE_ATTRIBUTE_DIRECTORY, FILE_ATTRIBUTE_REPARSE_POINT, FILE_FLAG_OPEN_REPARSE_POINT,
@@ -1423,44 +1556,81 @@ fn read_bounded_regular_file(
         .share_mode(FILE_SHARE_READ)
         .custom_flags(FILE_FLAG_OPEN_REPARSE_POINT | FILE_FLAG_SEQUENTIAL_SCAN)
         .open(path)
-        .map_err(|error| format!("open read-only {label}: {error}"))?;
+        .map_err(|error| {
+            CatalogSecurityError::new(
+                CatalogSecurityFailure::Access,
+                format!("open read-only {label}: {error}"),
+            )
+        })?;
     let (before_identity, before_attributes) = handle_identity(&file, label)?;
     if before_attributes & FILE_ATTRIBUTE_REPARSE_POINT != 0
         || before_attributes & FILE_ATTRIBUTE_DIRECTORY != 0
     {
-        return Err(format!("{label} must be a regular non-reparse file"));
+        return Err(CatalogSecurityError::new(
+            CatalogSecurityFailure::ReparsePoint,
+            format!("{label} must be a regular non-reparse file"),
+        ));
     }
-    let metadata = file
-        .metadata()
-        .map_err(|error| format!("inspect {label}: {error}"))?;
+    let metadata = file.metadata().map_err(|error| {
+        CatalogSecurityError::new(
+            CatalogSecurityFailure::Access,
+            format!("inspect {label}: {error}"),
+        )
+    })?;
     if metadata.len() == 0 || metadata.len() > limit {
-        return Err(format!("{label} exceeds its bounded size"));
+        return Err(CatalogSecurityError::new(
+            CatalogSecurityFailure::BoundedRead,
+            format!("{label} exceeds its bounded size"),
+        ));
     }
-    let canonical = path
-        .canonicalize()
-        .map_err(|error| format!("resolve {label}: {error}"))?;
+    let canonical = path.canonicalize().map_err(|error| {
+        CatalogSecurityError::new(
+            CatalogSecurityFailure::Access,
+            format!("resolve {label}: {error}"),
+        )
+    })?;
     if canonical.parent() != Some(expected_parent) {
-        return Err(format!("{label} escapes its read-only template directory"));
+        return Err(CatalogSecurityError::new(
+            CatalogSecurityFailure::PathContainment,
+            format!("{label} escapes its read-only template directory"),
+        ));
     }
-    file.seek(std::io::SeekFrom::Start(0))
-        .map_err(|error| format!("seek {label}: {error}"))?;
+    file.seek(std::io::SeekFrom::Start(0)).map_err(|error| {
+        CatalogSecurityError::new(
+            CatalogSecurityFailure::Access,
+            format!("seek {label}: {error}"),
+        )
+    })?;
     let mut bytes = Vec::with_capacity(metadata.len() as usize);
     file.by_ref()
         .take(limit + 1)
         .read_to_end(&mut bytes)
-        .map_err(|error| format!("read {label}: {error}"))?;
+        .map_err(|error| {
+            CatalogSecurityError::new(
+                CatalogSecurityFailure::Access,
+                format!("read {label}: {error}"),
+            )
+        })?;
     if bytes.len() as u64 != metadata.len() || bytes.len() as u64 > limit {
-        return Err(format!("{label} changed while it was read"));
+        return Err(CatalogSecurityError::new(
+            CatalogSecurityFailure::IdentityChanged,
+            format!("{label} changed while it was read"),
+        ));
     }
     let (after_identity, after_attributes) = handle_identity(&file, label)?;
     if after_identity != before_identity
         || after_attributes != before_attributes
-        || path
-            .canonicalize()
-            .map_err(|error| format!("re-resolve {label}: {error}"))?
-            != canonical
+        || path.canonicalize().map_err(|error| {
+            CatalogSecurityError::new(
+                CatalogSecurityFailure::Access,
+                format!("re-resolve {label}: {error}"),
+            )
+        })? != canonical
     {
-        return Err(format!("{label} identity changed while it was read"));
+        return Err(CatalogSecurityError::new(
+            CatalogSecurityFailure::IdentityChanged,
+            format!("{label} identity changed while it was read"),
+        ));
     }
     Ok(bytes)
 }
@@ -1471,8 +1641,11 @@ fn read_bounded_regular_file(
     _expected_parent: &Path,
     _label: &str,
     _limit: u64,
-) -> Result<Vec<u8>, String> {
-    Err("secure adoption catalog file access currently requires Windows handles".into())
+) -> Result<Vec<u8>, CatalogSecurityError> {
+    Err(CatalogSecurityError::new(
+        CatalogSecurityFailure::Access,
+        "secure adoption catalog file access currently requires Windows handles",
+    ))
 }
 
 #[cfg(test)]
@@ -1946,6 +2119,34 @@ mod tests {
             .is_err());
         let healthy = test.service.start_adoption("cat-sunny", "健康模板");
         assert!(healthy.is_ok(), "healthy template was blocked: {healthy:?}");
+    }
+
+    #[test]
+    fn template_path_escape_and_identity_change_fail_the_catalog_closed_by_type() {
+        for kind in [
+            super::CatalogSecurityFailure::PathContainment,
+            super::CatalogSecurityFailure::IdentityChanged,
+        ] {
+            let failure = super::TemplateAssetFailure::Security(super::CatalogSecurityError::new(
+                kind,
+                "typed security failure",
+            ));
+
+            assert_eq!(
+                super::template_asset_failure_scope(&failure),
+                super::TemplateAssetFailureScope::WholeCatalog,
+            );
+        }
+    }
+
+    #[test]
+    fn template_content_corruption_remains_scoped_to_one_template_by_type() {
+        let failure = super::TemplateAssetFailure::Content("invalid PNG role".into());
+
+        assert_eq!(
+            super::template_asset_failure_scope(&failure),
+            super::TemplateAssetFailureScope::SingleTemplate,
+        );
     }
 
     #[test]
