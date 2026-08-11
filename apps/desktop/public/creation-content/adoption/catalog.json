@@ -1,0 +1,109 @@
+{
+  "schemaVersion": 1,
+  "templates": [
+    {
+      "templateId": "cat-misty",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "雾雾",
+      "personality": "安静沉稳，喜欢用温柔的陪伴带来安心。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "333951d9e0272617d0d9e8017c9114c01e49635b0915f79bc9232c2ec66a533d",
+      "bodySha256": "b1932b673fa68e5439b9a342a61bea72dbdba8e4133269fb0bb32833f791d7ff",
+      "motionProfileSha256": "4a9704a370cc42281de8d1c472046323e6625c912415dcd071bd5ea156ca687c"
+    },
+    {
+      "templateId": "cat-tangerine",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "橘子",
+      "personality": "活泼又好奇，总对身边的新鲜事物充满兴趣。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "9d9a33d9316e69e23333ede79e099031b26a14752e1327fd4acb499bc3368be9",
+      "bodySha256": "4da2d164c2ec5bb048b1adcbb70f33e8009c2f2788af6aa264420a01f3d345f8",
+      "motionProfileSha256": "aa9dc2da5b9363ba9a070dd60396e0154ea68f73cfe7c58d7391d0fdc988e3dd"
+    },
+    {
+      "templateId": "cat-dumpling",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "团子",
+      "personality": "黏人又温柔，亲近的神情让陪伴格外柔软。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "44ecfb1a6e4cfd4ea34e95b9de12c5c6930a229a8fd57f6832ebcf97904061fc",
+      "bodySha256": "1baa9beb93660c5050adbbb09b470d5fc9c7361218a28e56550eb0766687965d",
+      "motionProfileSha256": "3d22aa4bfe97d674c464ae31f070a842aa2fbd7f68fdfd5927e847dd7e5a8eeb"
+    },
+    {
+      "templateId": "cat-ink",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "墨墨",
+      "personality": "冷静而警觉，沉稳的气质让人感到可靠。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "473e21c772b261c95af996e326449522e5d2fcbfc930f15fa2adac77a74d4daf",
+      "bodySha256": "1499314d846845582be175178b6850740b29d442c6c79c6d8c047ec6a1407ff2",
+      "motionProfileSha256": "c3faa615df7fad6cd36ebc3565da389157c4a58dd318e640dd3014021e245bea"
+    },
+    {
+      "templateId": "cat-cloud",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "云朵",
+      "personality": "慢热而治愈，安静熟悉后会流露柔软的一面。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "aade448544e94b7bb6e9a1763ba1baba78e9d0d46a961999dd23827321c5d9d5",
+      "bodySha256": "884bf242ec63b53eb3e91e8b5d9e957afe748d4bed570a3f97add8d978071d40",
+      "motionProfileSha256": "cafcb90ca20c994964ace51728e625f6e45b828006c64915dda3ab1b2e75503d"
+    },
+    {
+      "templateId": "cat-chestnut",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "栗子",
+      "personality": "勇敢又可靠，坚定的眼神带着让人安心的力量。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "8bc910f9a6bef20096b810953b634a8e95112ab27c3b1183f94089a3d345b98f",
+      "bodySha256": "7e979ffecd411d3a4613a75f07779aceb350007fcb8624f9aafd98434ad06ff5",
+      "motionProfileSha256": "2b749378f2682873c4ded1a04aa542ce65a926639d1a0258c2280b3ff0b70052"
+    },
+    {
+      "templateId": "cat-sesame",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "芝麻",
+      "personality": "机灵又贪玩，灵动的模样总透着一点小聪明。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "a4553a112c45a997d26acacf1a0751974a2c2b7b1d6c510879e4387f8ceed46b",
+      "bodySha256": "2d1f95d0925a3b30f0a8a27021e3a47900dc664235e27e2217c87f8a7f2820b0",
+      "motionProfileSha256": "e3b344e3ad8ca3dd2f52f868974069264202302b53445f2b08043259dc8d2cf4"
+    },
+    {
+      "templateId": "cat-starlight",
+      "templateVersion": 1,
+      "runtimeSchemaVersion": 3,
+      "defaultName": "星星",
+      "personality": "梦幻而敏感，细腻的神情像在感受周围每一点变化。",
+      "thumbnailPath": "thumbnail.png",
+      "bodyPath": "body.png",
+      "motionProfilePath": "motion-profile.json",
+      "thumbnailSha256": "f7a56752030a43b8d6b048e6038a8b8d3910dba310990a64bfd7b5af63fadd56",
+      "bodySha256": "db7dbb2a90fce8f45047ba35f1beef0dbd44623b15c1c93b8d9d700654ad951d",
+      "motionProfileSha256": "5ec68ce40f6b280a8e10d58082e778444d78f74d0d7a56904e8a920912e35d47"
+    }
+  ]
+}

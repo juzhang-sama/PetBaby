@@ -1441,7 +1441,7 @@ fn read_bounded_regular_file(
 
 #[cfg(test)]
 mod tests {
-    use super::{adoption_facts, project_facts};
+    use super::{adoption_facts, load_catalog, project_facts};
     use crate::creation::domain::{CreationMethod, CreationSessionStatus, CreationSnapshot};
     use crate::creation::service::CreationService;
     use crate::pets::active::{ActivePetService, BUILTIN_PET_ID};
@@ -1757,6 +1757,34 @@ mod tests {
             .unwrap(),
         )
         .unwrap();
+    }
+
+    #[test]
+    fn production_catalog_reads_all_eight_validated_asset_sets() {
+        let content_root = PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .parent()
+            .unwrap()
+            .join("public/creation-content");
+        let content_root = crate::creation::content::test_content_root(&content_root).unwrap();
+        let templates = load_catalog(&content_root).unwrap();
+
+        let expected = [
+            ("cat-misty", "雾雾"),
+            ("cat-tangerine", "橘子"),
+            ("cat-dumpling", "团子"),
+            ("cat-ink", "墨墨"),
+            ("cat-cloud", "云朵"),
+            ("cat-chestnut", "栗子"),
+            ("cat-sesame", "芝麻"),
+            ("cat-starlight", "星星"),
+        ];
+        assert_eq!(templates.len(), expected.len());
+        for (validated, (template_id, default_name)) in templates.iter().zip(expected) {
+            assert_eq!(validated.template.template_id, template_id);
+            assert_eq!(validated.template.default_name, default_name);
+            assert!(!validated.body.is_empty());
+            assert!(!validated.motion_profile.is_empty());
+        }
     }
 
     #[test]

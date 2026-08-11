@@ -1,0 +1,20 @@
+{
+  "profileVersion": 1,
+  "engineProfile": "life-v1",
+  "alphaBounds": {
+    "left": 0.0830078125,
+    "top": 0.08203125,
+    "right": 0.86328125,
+    "bottom": 0.9296875
+  },
+  "breathZone": {
+    "left": 0.200048828125,
+    "top": 0.471953125,
+    "right": 0.746240234375,
+    "bottom": 0.8025390625
+  },
+  "swayPivot": {
+    "x": 0.47314453125,
+    "y": 0.709296875
+  }
+}
