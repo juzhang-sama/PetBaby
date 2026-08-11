@@ -93,9 +93,25 @@ debug capture 仅在 `debug_assertions` 且精确环境变量 `DESKTOP_PET_TASK1
 
 真实 UI 弹出“确定放弃这次创建吗？本地草稿和生成任务会被清理。”，确认后返回创建方式页并显示“已放弃创建并清理本地草稿”。精确只读核对：目标 session/pet 的数据库行和目录均不存在，`generation_jobs=0`，`creation_upload_sources=0`；没有选择文件、创建 job 或调用 provider，也没有新建 composer 草稿。
 
+### 4.3 固定序列 upload 宠物删除
+
+用户再次对精确对象进行 action-time 确认后，在唯一 `com.desktop-pet.task15-8e5480bf` 设置窗口中删除：
+
+- display：`Task15上传运动证据8e5480bf`
+- pet：`pet-61dc-18caba5f44e19394-3`
+- session：`session-61dc-18caba5f44e15578-2`
+- job：`job-61dc-18cabcddc56e3cf8-4`
+
+删除前该卡片同时显示“当前使用”和“上传创建”；生产确认文案为“确定删除这只宠物吗？此操作会移除它的本地资料和生成任务。”。确认后 UI 显示“宠物已删除。”，目标卡消失，默认 Live2D 显示“当前使用”，组合与重领卡片保留。只读核对：精确 pet/session/job/upload source 数据库计数均为 0，对应三个私有目录均不存在；composer 与 adoption 各保留 1 条。正式 adoption 25 个 tracked blob 与 HEAD 比较为 0 mismatch，既有聚合 SHA256 仍对应 `e2d0af9658e7d00dd93e6688c993dc4b5e4b086843261e1eafd6a103c7424d62`。
+
+### 4.4 竞态 identifier 空草稿放弃
+
+按用户对精确对象的 action-time 确认，顺序停止第一实例后启动唯一 `com.desktop-pet.task15-i3-upload-8e5480bf` 设置窗口。恢复 upload 入口前只读核对：session `session-235c-18cab9586249b234-1` 与 placeholder pet `pet-235c-18cab958624a0054-2` 各 1 条，session 为 `draft`，job/source 均为 0，未选择文件且没有私有目录。
+
+恢复页直接显示“放弃创建”；确认文案为“确定放弃这次创建吗？本地草稿和生成任务会被清理。”。确认后返回三路径页并显示“已放弃创建并清理本地草稿。”。只读核对目标及该隔离库全部 pet/session/job/source 均为 0，目标目录不存在；未选择文件、调用 provider 或创建其他草稿，也未删除 app-data 根。
+
 ## 5. 证据边界
 
-- 第 4.1 节的旧 upload 测试宠物已按用户确认删除；第 3.2 节新建的固定序列宠物仍保持 active，尚未获得删除确认，因此没有删除。
-- 新宠物若后续获得 action-time 删除确认，预计只清理 pet `pet-61dc-18caba5f44e19394-3`、session `session-61dc-18caba5f44e15578-2`、job `job-61dc-18cabcddc56e3cf8-4` 及其私有来源/正式资产，并安全回退默认；composer、adoption、formal25 和其他 identifier 不应受影响。
-- 纠正 identifier 竞态时产生的独立残留 draft `session-235c-18cab9586249b234-1` / placeholder pet `pet-235c-18cab958624a0054-2` 仍保留在 `com.desktop-pet.task15-i3-upload-8e5480bf`；它没有生成 job，也未获放弃确认。
-- 没有执行新的宠物删除或额外草稿放弃；没有对 API Key 做数据库查询、输出或记录。
+- 第 4.1 与 4.3 节的两个 upload 测试宠物均只在用户分别确认精确对象后删除；第 4.2 与 4.4 节的两个空 upload 草稿均只在用户分别确认后放弃。除这四项外没有执行其他删除或放弃。
+- 第 3.2 节的 92 帧、neutral reference、指标与 original 检查证据已在删除前完整固化；后续清理不改变已提交证据。
+- 两次最终清理均通过唯一自有 settings 窗口完成；各自 PID 树随后精确停止，14321/14322 均释放。没有递归删除任何 app-data 根，也没有对 API Key 做数据库查询、输出或记录。
