@@ -362,7 +362,9 @@ export class AdoptionCreationView {
     validateCatalog(entries);
     if (!this.isCurrent(visit)) return;
     this.catalogValue = entries.map((item) => ({ ...item, template: { ...item.template } }));
-    if (this.selectedId && !this.catalogValue.some((item) => item.template.templateId === this.selectedId)) {
+    if (this.selectedId && !this.catalogValue.some(
+      (item) => item.template.templateId === this.selectedId && item.unavailableReason === null,
+    )) {
       this.selectedId = null;
       this.nameValue = "";
       this.nameLockedValue = false;
@@ -401,6 +403,9 @@ export class AdoptionCreationView {
   private requireEntry(templateId: string): AdoptionCatalogEntry {
     const selected = this.catalogValue.find((item) => item.template.templateId === templateId);
     if (!selected) throw new Error(`认领目录中没有模板：${templateId}`);
+    if (selected.unavailableReason) {
+      throw new Error(`该模板暂不可用：${selected.unavailableReason}`);
+    }
     return selected;
   }
 
@@ -451,10 +456,14 @@ export class AdoptionCreationView {
     dom.selectedPersonality.textContent = selected?.template.personality
       ?? "从左侧目录选择一张卡片，动态预览会出现在这里。";
     if (dom.nameInput.value !== this.nameValue) dom.nameInput.value = this.nameValue;
-    dom.nameInput.disabled = this.busyValue || !selected || this.nameLockedValue;
+    dom.nameInput.disabled = this.busyValue || !selected || selected.unavailableReason !== null
+      || this.nameLockedValue;
     dom.nameInput.setAttribute("aria-disabled", String(dom.nameInput.disabled));
-    dom.actionButton.textContent = selected ? actionLabel(selected) : "先选择一只猫";
-    dom.actionButton.disabled = this.busyValue || !selected || !this.previewReady;
+    dom.actionButton.textContent = selected
+      ? (selected.unavailableReason ?? actionLabel(selected))
+      : "先选择一只猫";
+    dom.actionButton.disabled = this.busyValue || !selected || selected.unavailableReason !== null
+      || !this.previewReady;
     dom.actionButton.setAttribute("aria-disabled", String(dom.actionButton.disabled));
     this.renderCatalog(dom.catalog);
   }
@@ -480,7 +489,7 @@ export class AdoptionCreationView {
       button.dataset.adoptionTemplate = templateId;
       button.setAttribute("role", "option");
       button.setAttribute("aria-selected", String(templateId === this.selectedId));
-      button.disabled = this.busyValue;
+      button.disabled = this.busyValue || entry.unavailableReason !== null;
       button.setAttribute("aria-disabled", String(button.disabled));
       const image = (button.children[0] as HTMLImageElement | undefined) ?? document.createElement("img");
       image.src = this.assetUrl(entry.template, entry.template.thumbnailPath);
@@ -494,7 +503,7 @@ export class AdoptionCreationView {
       personality.textContent = entry.template.personality;
       const state = (copy.children[2] as HTMLElement | undefined) ?? document.createElement("span");
       state.className = "adoption-card-state";
-      state.textContent = actionLabel(entry);
+      state.textContent = entry.unavailableReason ?? actionLabel(entry);
       if (copy.children.length === 0) copy.append(name, personality, state);
       if (button.children.length === 0) button.append(image, copy);
       return button;
@@ -512,10 +521,11 @@ export class AdoptionCreationView {
         if (current !== button) root.insertBefore(button, current);
       }
     }
-    if (!this.focusTemplateId || !buttons.some(
+    const availableButtons = buttons.filter((button) => !button.disabled);
+    if (!this.focusTemplateId || !availableButtons.some(
       (button) => button.dataset.adoptionTemplate === this.focusTemplateId,
     )) {
-      this.focusTemplateId = this.selectedId ?? buttons[0]?.dataset.adoptionTemplate ?? null;
+      this.focusTemplateId = this.selectedId ?? availableButtons[0]?.dataset.adoptionTemplate ?? null;
     }
     for (const button of buttons) {
       button.tabIndex = button.dataset.adoptionTemplate === this.focusTemplateId ? 0 : -1;
@@ -529,7 +539,8 @@ export class AdoptionCreationView {
       const focusedId = desiredIds.has(this.pendingCatalogFocusId)
         ? this.pendingCatalogFocusId
         : this.focusTemplateId;
-      const target = buttons.find((button) => button.dataset.adoptionTemplate === focusedId);
+      const target = availableButtons.find((button) => button.dataset.adoptionTemplate === focusedId)
+        ?? availableButtons.find((button) => button.dataset.adoptionTemplate === this.focusTemplateId);
       if (canRestoreFocus && target && document.activeElement !== target) target.focus();
       this.pendingCatalogFocusId = null;
     }
@@ -543,7 +554,9 @@ export class AdoptionCreationView {
     const button = target.closest<HTMLButtonElement>("[data-adoption-template]");
     const currentId = button?.dataset.adoptionTemplate;
     if (!currentId || !this.elements) return;
-    const ids = this.catalogValue.map((entry) => entry.template.templateId);
+    const ids = this.catalogValue
+      .filter((entry) => entry.unavailableReason === null)
+      .map((entry) => entry.template.templateId);
     const current = ids.indexOf(currentId);
     if (current < 0) return;
     let next = current;

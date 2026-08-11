@@ -172,10 +172,12 @@ export class ComposerCreationView {
       this.composer = ComposerState.fromRecipe(pack, snapshot.recipe);
       this.stepValue = parseStep(snapshot.currentStep, snapshot);
       this.persistence = "saved";
+      this.message = "组合草稿已恢复，当前进度已保存。";
     } else {
       this.composer = null;
       this.stepValue = "body";
       this.persistence = "idle";
+      this.message = "草稿尚未选择身体，请从身体底型继续。";
     }
     await this.renderCurrent(visit);
   }
@@ -490,6 +492,10 @@ export class ComposerCreationView {
   }
 
   private async goRelative(delta: -1 | 1): Promise<void> {
+    if (isCandidateLocked(this.snapshotValue)) {
+      this.renderDom();
+      return;
+    }
     const current = STEP_ORDER.indexOf(this.stepValue);
     const next = Math.max(0, Math.min(STEP_ORDER.length - 1, current + delta));
     this.stepValue = STEP_ORDER[next]!;
@@ -642,10 +648,11 @@ export class ComposerCreationView {
   private renderDom(): void {
     const dom = this.elements;
     if (!dom) return;
+    const candidateLocked = isCandidateLocked(this.snapshotValue);
     dom.saveStatus.textContent = saveStateText(this.persistence);
     dom.saveStatus.dataset.state = this.persistence;
-    dom.previousButton.disabled = STEP_ORDER.indexOf(this.stepValue) <= 0;
-    dom.nextButton.disabled = this.persistence === "unsaved"
+    dom.previousButton.disabled = candidateLocked || STEP_ORDER.indexOf(this.stepValue) <= 0;
+    dom.nextButton.disabled = candidateLocked || this.persistence === "unsaved"
       || STEP_ORDER.indexOf(this.stepValue) >= STEP_ORDER.length - 1;
     dom.candidateButton.disabled = !this.canCreateCandidate();
     dom.finishButton.disabled = !this.canFinish();

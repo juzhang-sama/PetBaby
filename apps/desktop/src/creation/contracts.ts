@@ -55,4 +55,5 @@ export interface AdoptionCatalogEntry {
   template: AdoptionTemplate;
   adoptedPetId: string | null;
   retrySessionId: string | null;
+  unavailableReason: string | null;
 }

@@ -98,6 +98,7 @@ pub struct AdoptionCatalogEntry {
     pub template: AdoptionTemplate,
     pub adopted_pet_id: Option<String>,
     pub retry_session_id: Option<String>,
+    pub unavailable_reason: Option<String>,
 }
 
 #[derive(Debug, serde::Deserialize)]
@@ -140,6 +141,23 @@ struct ValidatedTemplate {
     template: AdoptionTemplate,
     body: Vec<u8>,
     motion_profile: Vec<u8>,
+}
+
+enum LoadedTemplate {
+    Available(ValidatedTemplate),
+    Unavailable {
+        template: AdoptionTemplate,
+        reason: String,
+    },
+}
+
+impl LoadedTemplate {
+    fn template(&self) -> &AdoptionTemplate {
+        match self {
+            Self::Available(validated) => &validated.template,
+            Self::Unavailable { template, .. } => template,
+        }
+    }
 }
 
 #[derive(Debug)]
@@ -208,14 +226,19 @@ pub(crate) fn catalog(
     let storage = storage.lock().map_err(|_| "storage lock poisoned")?;
     templates
         .into_iter()
-        .map(|validated| {
-            let facts = adoption_facts(&storage.db, &validated.template.template_id)?;
+        .map(|loaded| {
+            let facts = adoption_facts(&storage.db, &loaded.template().template_id)?;
             let (adopted_pet_id, retry_session_id) =
-                project_facts(&facts, &validated.template, app_data_dir)?;
+                project_facts(&facts, loaded.template(), app_data_dir)?;
+            let (template, unavailable_reason) = match loaded {
+                LoadedTemplate::Available(validated) => (validated.template, None),
+                LoadedTemplate::Unavailable { template, reason } => (template, Some(reason)),
+            };
             Ok(AdoptionCatalogEntry {
-                template: validated.template,
+                template,
                 adopted_pet_id,
                 retry_session_id,
+                unavailable_reason,
             })
         })
         .collect()
@@ -232,10 +255,16 @@ pub(crate) fn start(
     validate_template_id(template_id)?;
     let display_name = normalize_display_name(display_name)?;
     let templates = load_catalog(content_root)?;
-    let template = templates
+    let loaded = templates
         .into_iter()
-        .find(|candidate| candidate.template.template_id == template_id)
+        .find(|candidate| candidate.template().template_id == template_id)
         .ok_or_else(|| format!("adoption template not found: {template_id}"))?;
+    let template = match loaded {
+        LoadedTemplate::Available(template) => template,
+        LoadedTemplate::Unavailable { reason, .. } => {
+            return Err(format!("adoption template is unavailable: {reason}"));
+        }
+    };
     let reservation = reserve_or_load(storage, app_data_dir, &template.template, &display_name)?;
     let request_id = new_entity_id("adoption-start");
     let _operation =
@@ -1000,7 +1029,7 @@ fn parse_status(value: &str) -> Result<CreationSessionStatus, String> {
     }
 }
 
-fn load_catalog(content_root: &ContentRoot) -> Result<Vec<ValidatedTemplate>, String> {
+fn load_catalog(content_root: &ContentRoot) -> Result<Vec<LoadedTemplate>, String> {
     (|| {
         let content_guard = ReadOnlyDirectoryGuard::open(content_root.as_path(), "content root")?;
         if content_guard.path != content_root.as_path() {
@@ -1036,39 +1065,46 @@ fn load_catalog(content_root: &ContentRoot) -> Result<Vec<ValidatedTemplate>, St
         }
         let mut validated = Vec::with_capacity(TEMPLATE_COUNT);
         for template in manifest.templates {
-            let template_guard =
-                adoption_guard.child(&template.template_id, "adoption template directory")?;
-            let thumbnail = template_guard.read_relative_file(
-                &template.thumbnail_path,
-                "adoption thumbnail",
-                MAX_THUMBNAIL_BYTES,
-            )?;
-            verify_hash(&thumbnail, &template.thumbnail_sha256, "adoption thumbnail")?;
-            validate_png(&thumbnail, 512, 512, false, "adoption thumbnail")?;
-            let body = template_guard.read_relative_file(
-                &template.body_path,
-                "adoption body",
-                MAX_BODY_BYTES,
-            )?;
-            verify_hash(&body, &template.body_sha256, "adoption body")?;
-            validate_png(&body, 1024, 1024, true, "adoption body")?;
-            let motion_profile = template_guard.read_relative_file(
-                &template.motion_profile_path,
-                "adoption motion profile",
-                MAX_MOTION_PROFILE_BYTES,
-            )?;
-            verify_hash(
-                &motion_profile,
-                &template.motion_profile_sha256,
-                "adoption motion profile",
-            )?;
-            let motion_json = std::str::from_utf8(&motion_profile)
-                .map_err(|error| format!("adoption motion profile is not UTF-8: {error}"))?;
-            parse_strict_motion_profile(motion_json)?;
-            validated.push(ValidatedTemplate {
-                template,
-                body,
-                motion_profile,
+            let assets = (|| {
+                let template_guard =
+                    adoption_guard.child(&template.template_id, "adoption template directory")?;
+                let thumbnail = template_guard.read_relative_file(
+                    &template.thumbnail_path,
+                    "adoption thumbnail",
+                    MAX_THUMBNAIL_BYTES,
+                )?;
+                verify_hash(&thumbnail, &template.thumbnail_sha256, "adoption thumbnail")?;
+                validate_png(&thumbnail, 512, 512, false, "adoption thumbnail")?;
+                let body = template_guard.read_relative_file(
+                    &template.body_path,
+                    "adoption body",
+                    MAX_BODY_BYTES,
+                )?;
+                verify_hash(&body, &template.body_sha256, "adoption body")?;
+                validate_png(&body, 1024, 1024, true, "adoption body")?;
+                let motion_profile = template_guard.read_relative_file(
+                    &template.motion_profile_path,
+                    "adoption motion profile",
+                    MAX_MOTION_PROFILE_BYTES,
+                )?;
+                verify_hash(
+                    &motion_profile,
+                    &template.motion_profile_sha256,
+                    "adoption motion profile",
+                )?;
+                let motion_json = std::str::from_utf8(&motion_profile)
+                    .map_err(|error| format!("adoption motion profile is not UTF-8: {error}"))?;
+                parse_strict_motion_profile(motion_json)?;
+                Ok::<_, String>((body, motion_profile))
+            })();
+            validated.push(match assets {
+                Ok((body, motion_profile)) => LoadedTemplate::Available(ValidatedTemplate {
+                    template,
+                    body,
+                    motion_profile,
+                }),
+                Err(reason) if reason.contains("reparse") => return Err(reason),
+                Err(reason) => LoadedTemplate::Unavailable { template, reason },
             });
         }
         Ok(validated)
@@ -1779,7 +1815,10 @@ mod tests {
             ("cat-starlight", "星星"),
         ];
         assert_eq!(templates.len(), expected.len());
-        for (validated, (template_id, default_name)) in templates.iter().zip(expected) {
+        for (loaded, (template_id, default_name)) in templates.iter().zip(expected) {
+            let super::LoadedTemplate::Available(validated) = loaded else {
+                panic!("production template {template_id} is unavailable");
+            };
             assert_eq!(validated.template.template_id, template_id);
             assert_eq!(validated.template.default_name, default_name);
             assert!(!validated.body.is_empty());
@@ -1880,6 +1919,36 @@ mod tests {
     }
 
     #[test]
+    fn one_corrupt_template_is_disabled_without_blocking_healthy_templates() {
+        let test = AdoptionHarness::with_templates();
+        let corrupt_body = test.content_root.join("adoption/cat-misty/body.png");
+        assert!(corrupt_body.starts_with(&test.root));
+        std::fs::write(&corrupt_body, b"corrupt isolated test body").unwrap();
+
+        let catalog = test
+            .service
+            .adoption_catalog()
+            .expect("one corrupt template must not make the catalog unavailable");
+        assert_eq!(catalog.len(), 8);
+        let misty = catalog
+            .iter()
+            .find(|entry| entry.template.template_id == "cat-misty")
+            .unwrap();
+        let misty_json = serde_json::to_value(misty).unwrap();
+        assert!(misty_json["unavailableReason"].as_str().is_some());
+        assert!(catalog
+            .iter()
+            .filter(|entry| entry.template.template_id != "cat-misty")
+            .all(|entry| serde_json::to_value(entry).unwrap()["unavailableReason"].is_null()));
+        assert!(test
+            .service
+            .start_adoption("cat-misty", "损坏模板")
+            .is_err());
+        let healthy = test.service.start_adoption("cat-sunny", "健康模板");
+        assert!(healthy.is_ok(), "healthy template was blocked: {healthy:?}");
+    }
+
+    #[test]
     fn catalog_requires_exactly_eight_unique_templates_and_runtime_v3() {
         let test = AdoptionHarness::with_templates();
         let mut catalog = test.catalog_json();
@@ -1949,11 +2018,17 @@ mod tests {
         let mut catalog = test.catalog_json();
         catalog["templates"][0]["bodySha256"] = serde_json::json!("0".repeat(64));
         test.write_catalog_json(&catalog);
-        assert!(test
+        let entries = test
             .service
             .adoption_catalog()
-            .unwrap_err()
-            .contains("SHA-256 does not match"));
+            .expect("a single asset hash mismatch must not block healthy templates");
+        assert!(entries[0]
+            .unavailable_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("SHA-256 does not match")));
+        assert!(entries[1..]
+            .iter()
+            .all(|entry| entry.unavailable_reason.is_none()));
 
         write_catalog(&test.content_root);
         let mut catalog = test.catalog_json();
@@ -1993,9 +2068,17 @@ mod tests {
         catalog["templates"][0]["motionProfileSha256"] = serde_json::json!(sha256(&bytes));
         test.write_catalog_json(&catalog);
 
-        let error = test.service.adoption_catalog().unwrap_err();
-
-        assert!(error.contains("strict motion profile"), "{error}");
+        let entries = test
+            .service
+            .adoption_catalog()
+            .expect("one invalid motion profile must not block healthy templates");
+        assert!(entries[0]
+            .unavailable_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("strict motion profile")));
+        assert!(entries[1..]
+            .iter()
+            .all(|entry| entry.unavailable_reason.is_none()));
     }
 
     #[test]
@@ -2007,11 +2090,17 @@ mod tests {
         let mut catalog = test.catalog_json();
         catalog["templates"][0]["thumbnailSha256"] = serde_json::json!(sha256(&wrong_thumbnail));
         test.write_catalog_json(&catalog);
-        assert!(test
+        let entries = test
             .service
             .adoption_catalog()
-            .unwrap_err()
-            .contains("512x512"));
+            .expect("one wrongly sized thumbnail must not block healthy templates");
+        assert!(entries[0]
+            .unavailable_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("512x512")));
+        assert!(entries[1..]
+            .iter()
+            .all(|entry| entry.unavailable_reason.is_none()));
 
         write_catalog(&test.content_root);
         let template_root = test.content_root.join("adoption").join("cat-misty");
@@ -2019,11 +2108,17 @@ mod tests {
         let mut catalog = test.catalog_json();
         catalog["templates"][0]["bodySha256"] = serde_json::json!(sha256(&opaque_body));
         test.write_catalog_json(&catalog);
-        assert!(test
+        let entries = test
             .service
             .adoption_catalog()
-            .unwrap_err()
-            .contains("transparent background"));
+            .expect("one opaque body must not block healthy templates");
+        assert!(entries[0]
+            .unavailable_reason
+            .as_deref()
+            .is_some_and(|reason| reason.contains("transparent background")));
+        assert!(entries[1..]
+            .iter()
+            .all(|entry| entry.unavailable_reason.is_none()));
     }
 
     #[cfg(windows)]

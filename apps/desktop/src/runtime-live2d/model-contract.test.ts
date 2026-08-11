@@ -1,3 +1,4 @@
+import { createHash } from "node:crypto";
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
@@ -59,6 +60,18 @@ function modelFixture(overrides: Partial<RuntimeAssetManifestV2> = {}): RuntimeA
 }
 
 describe("validateModelContract", () => {
+  it("keeps every packaged Live2D file byte-identical to its manifest hash", () => {
+    const manifestUrl = new URL("../../public/builtin-pets/pet-live2d-v1/manifest.json", import.meta.url);
+    const manifest = parseLive2DManifest(JSON.parse(readFileSync(manifestUrl, "utf8")));
+    const mismatches = manifest.files.flatMap((file) => {
+      const bytes = readFileSync(new URL(file.relativePath, manifestUrl));
+      const actual = createHash("sha256").update(bytes).digest("hex");
+      return actual === file.sha256 ? [] : [{ path: file.relativePath, expected: file.sha256, actual }];
+    });
+
+    expect(mismatches).toEqual([]);
+  });
+
   it("accepts the packaged pet with only breathing and body sway mappings", () => {
     const manifestUrl = new URL("../../public/builtin-pets/pet-live2d-v1/manifest.json", import.meta.url);
     const manifest = parseLive2DManifest(JSON.parse(readFileSync(manifestUrl, "utf8")));

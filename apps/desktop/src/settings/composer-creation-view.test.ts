@@ -226,6 +226,25 @@ describe("ComposerCreationView", () => {
     expect(second.sessionId()).toBe("session-composer");
   });
 
+  it("restores an explicit composer snapshot without showing the empty-body prompt", async () => {
+    const manifest = pack();
+    const body = manifest.bodies[0]!;
+    const recipe = {
+      recipeVersion: 1, packId: manifest.packId, packVersion: manifest.packVersion,
+      layerContractVersion: manifest.layerContractVersion, bodyId: body.id,
+      ...body.defaults,
+    };
+    const test = composerPorts({ draft: snapshot({ recipe, currentStep: "ears" }) });
+    const view = new ComposerCreationView(test.ports);
+
+    await view.restore("session-composer");
+
+    expect(view.currentStep()).toBe("ears");
+    expect(view.recipe()?.bodyId).toBe(body.id);
+    expect(view.statusText()).toContain("已恢复");
+    expect(view.statusText()).not.toContain("请选择身体");
+  });
+
   it("coalesces concurrent first body selections into one composer session", async () => {
     const test = composerPorts();
     const view = new ComposerCreationView(test.ports);
@@ -376,6 +395,47 @@ describe("ComposerCreationView", () => {
       motionProfile(),
     );
     expect(reopened.canFinish()).toBe(true);
+  });
+
+  it("does not offer backward editing after a composer candidate is locked", async () => {
+    stubComposerDocument();
+    const test = composerPorts();
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    await view.selectBody("body-round");
+    await view.createCandidate({} as HTMLElement);
+    const elements = composerElements();
+    view.mount(elements.typed);
+
+    expect(view.currentStep()).toBe("preview");
+    expect(elements.raw.previousButton.disabled).toBe(true);
+    elements.raw.previousButton.dispatch("click");
+    expect(view.currentStep()).toBe("preview");
+    vi.unstubAllGlobals();
+  });
+
+  it("keeps backward modification available while the composer is still a draft", async () => {
+    stubComposerDocument();
+    const manifest = pack();
+    const body = manifest.bodies[0]!;
+    const recipe = {
+      recipeVersion: 1, packId: manifest.packId, packVersion: manifest.packVersion,
+      layerContractVersion: manifest.layerContractVersion, bodyId: body.id,
+      ...body.defaults,
+    };
+    const test = composerPorts({ draft: snapshot({ recipe, currentStep: "eyes" }) });
+    const view = new ComposerCreationView(test.ports);
+    await view.open();
+    const elements = composerElements();
+    view.mount(elements.typed);
+
+    expect(elements.raw.previousButton.disabled).toBe(false);
+    elements.raw.previousButton.dispatch("click");
+    await vi.waitFor(() => expect(test.creation.composerSave)
+      .toHaveBeenLastCalledWith("session-composer", recipe, "ears"));
+    await vi.waitFor(() => expect(view.saveState()).toBe("saved"));
+    expect(view.currentStep()).toBe("ears");
+    vi.unstubAllGlobals();
   });
 
   it("keeps review on finalize false and reconciles a completed response-loss snapshot", async () => {

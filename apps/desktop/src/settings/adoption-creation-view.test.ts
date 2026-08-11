@@ -30,6 +30,7 @@ function entry(overrides: Partial<AdoptionCatalogEntry> = {}): AdoptionCatalogEn
     },
     adoptedPetId: null,
     retrySessionId: null,
+    unavailableReason: null,
     ...overrides,
   };
 }
@@ -43,6 +44,7 @@ function catalog(first: AdoptionCatalogEntry = entry()): AdoptionCatalogEntry[] 
     },
     adoptedPetId: null,
     retrySessionId: null,
+    unavailableReason: null,
   }))];
 }
 
@@ -233,6 +235,26 @@ function blurCatalogFocusOnBusy(dom: ReturnType<typeof adoptionDomElements>, bus
 }
 
 describe("AdoptionCreationView", () => {
+  it("disables only an unavailable template while keeping healthy templates interactive", async () => {
+    const unavailable = {
+      ...entry(),
+      unavailableReason: "素材校验失败",
+    } as AdoptionCatalogEntry;
+    const test = adoptionPorts({ catalogs: [catalog(unavailable)] });
+    const dom = adoptionDomElements();
+    test.view.mount(dom.typed);
+
+    await test.view.open();
+
+    expect(dom.raw.catalog.children[0]?.disabled).toBe(true);
+    expect(dom.raw.catalog.children[1]?.disabled).toBe(false);
+    await expect(test.view.select("cat-misty")).rejects.toThrow(/素材校验失败/);
+    expect(test.ports.loadMotionProfile).not.toHaveBeenCalled();
+
+    await test.view.select("cat-2");
+    expect(test.ports.preview.show).toHaveBeenCalledOnce();
+  });
+
   it("previews a template dynamically before adoption", async () => {
     const test = adoptionPorts();
     await test.view.open();
