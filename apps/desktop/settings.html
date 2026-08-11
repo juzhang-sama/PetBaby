@@ -19,7 +19,33 @@
     </div>
 
     <div id="view-create" hidden>
-      <div class="wizard">
+      <section id="creation-home" class="creation-home" aria-labelledby="creation-home-title">
+        <p class="wizard-kicker">创建宠物 · 猫咪</p>
+        <h2 id="creation-home-title">你想怎样遇见它？</h2>
+        <p class="wizard-intro">三种方式都在本机完成最后确认。选择最适合你现在拥有的材料，随时可以安全返回。</p>
+        <div class="creation-route-grid">
+          <button type="button" class="creation-route-card" data-creation-route="upload" aria-describedby="creation-destination">
+            <strong>上传图片</strong>
+            <span>我有一张宠物照片</span>
+            <small>从真实照片生成一只猫</small>
+          </button>
+          <button type="button" class="creation-route-card" data-creation-route="composer" aria-describedby="creation-destination">
+            <strong>引导组合</strong>
+            <span>我想亲手组合一只猫</span>
+            <small>依次选择身体、五官与花色</small>
+          </button>
+          <button type="button" class="creation-route-card" data-creation-route="adoption" aria-describedby="creation-destination">
+            <strong>直接认领</strong>
+            <span>我想马上拥有一只猫</span>
+            <small>从八只内置猫咪中直接选择</small>
+          </button>
+        </div>
+        <p id="creation-destination" class="creation-destination">无论从哪里开始，完成后都会成为可切换、可删除，并会呼吸微动的桌面宠物。</p>
+        <div id="creation-page-status" class="creation-inline-status" role="status" aria-live="polite"></div>
+      </section>
+
+      <section id="upload-creation-workspace" class="wizard" aria-labelledby="wizard-title" hidden>
+        <button type="button" class="workspace-back" data-creation-back>返回创建方式</button>
         <p class="wizard-kicker">上传创建 · 猫咪</p>
         <h2 id="wizard-title">把一张照片变成桌面伙伴</h2>
         <p class="wizard-intro">选择照片，等待生成，再确认会呼吸微动的候选。完成前不会替换当前宠物。</p>
@@ -76,9 +102,10 @@
           <button id="wizard-next" class="primary" type="button">上传照片，生成候选</button>
           <button id="wizard-cancel" type="button" hidden>返回我的宠物</button>
         </div>
-      </div>
+      </section>
 
       <section id="composer-creation-workspace" class="composer-workbench" aria-labelledby="composer-title" hidden>
+        <button type="button" class="workspace-back" data-creation-back>返回创建方式</button>
         <header class="composer-heading">
           <p class="wizard-kicker">引导组合 · 猫咪工作台</p>
           <h2 id="composer-title">亲手组合一只会呼吸的猫</h2>
@@ -114,6 +141,52 @@
           </div>
         </div>
       </section>
+
+      <section id="adoption-creation-workspace" class="adoption-workbench" aria-labelledby="adoption-title" hidden>
+        <button id="adoption-back" type="button" class="workspace-back">返回创建方式</button>
+        <header class="adoption-heading">
+          <p class="wizard-kicker">直接认领 · 本机猫咪目录</p>
+          <h2 id="adoption-title">先看看谁在等你</h2>
+          <p>目录固定保留八只猫。认领会复制成你自己的宠物，之后可以切换或删除，原始成品不会消失。</p>
+        </header>
+        <div id="adoption-root" class="adoption-layout" aria-busy="false">
+          <div class="adoption-catalog-panel">
+            <div class="adoption-panel-heading">
+              <h3>八只可认领猫咪</h3>
+              <button id="adoption-refresh" type="button">刷新目录</button>
+            </div>
+            <div id="adoption-catalog" class="adoption-catalog" role="listbox" aria-label="可认领猫咪目录"></div>
+          </div>
+          <div class="adoption-inspector">
+            <div id="adoption-preview" class="candidate-preview adoption-preview" role="img" aria-label="所选猫咪呼吸微动动态预览"></div>
+            <div class="adoption-selection-copy">
+              <p class="wizard-kicker">当前选择</p>
+              <h3 id="adoption-selected-name">还没有选择猫咪</h3>
+              <p id="adoption-selected-personality">从左侧目录选择一张卡片，动态预览会出现在这里。</p>
+            </div>
+            <div class="field-group">
+              <label for="adoption-pet-name">给它取个名字</label>
+              <input id="adoption-pet-name" type="text" autocomplete="off" aria-describedby="adoption-name-help" />
+              <p id="adoption-name-help" class="field-help">请输入 1–20 个完整字符；认领后仍会保留原始成品包。</p>
+            </div>
+            <button id="adoption-action" class="primary adoption-action" type="button" disabled>先选择一只猫</button>
+            <div id="adoption-status" class="creation-inline-status" role="status" aria-live="polite">选择一只猫，先看看它呼吸微动的样子。</div>
+          </div>
+        </div>
+      </section>
+
+      <dialog id="draft-choice-dialog" aria-labelledby="draft-choice-title" aria-describedby="draft-choice-description">
+        <form method="dialog" class="draft-choice-card">
+          <p class="wizard-kicker">发现已保存草稿</p>
+          <h2 id="draft-choice-title">要先处理上次的创建吗？</h2>
+          <p id="draft-choice-description">上次的创建已安全保存在本机。继续会回到原来的方式；放弃后才会打开刚选择的方式。</p>
+          <div class="wizard-actions">
+            <button type="submit" class="primary" value="continue">继续当前草稿</button>
+            <button type="submit" class="danger" value="abandon">放弃并开始新方法</button>
+            <button type="submit" value="cancel">取消</button>
+          </div>
+        </form>
+      </dialog>
     </div>
 
     <script type="module" src="/src/settings.ts"></script>

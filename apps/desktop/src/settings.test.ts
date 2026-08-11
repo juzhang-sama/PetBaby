@@ -2,6 +2,61 @@ import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
 describe("settings upload creation assembly", () => {
+  it("offers three parallel semantic creation routes without fake sequence numbers", () => {
+    const html = readFileSync(new URL("../settings.html", import.meta.url), "utf8");
+
+    expect(html.match(/data-creation-route=/g)).toHaveLength(3);
+    expect(html).toContain('data-creation-route="upload"');
+    expect(html).toContain("上传图片");
+    expect(html).toContain("我有一张宠物照片");
+    expect(html).toContain('data-creation-route="composer"');
+    expect(html).toContain("引导组合");
+    expect(html).toContain("我想亲手组合一只猫");
+    expect(html).toContain('data-creation-route="adoption"');
+    expect(html).toContain("直接认领");
+    expect(html).toContain("我想马上拥有一只猫");
+    expect(html).not.toMatch(/>\s*0[123]\s*</);
+  });
+
+  it("assembles all three views through one durable page router", () => {
+    const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
+
+    expect(source).toContain("new CreationPageRun(");
+    expect(source).toContain("new UploadCreationView(");
+    expect(source).toContain("new ComposerCreationView(");
+    expect(source).toContain("new AdoptionCreationView(");
+    expect(source).toContain("creationApi.adoptionCatalog");
+    expect(source).toContain("creationApi.adoptionStart");
+  });
+
+  it("keeps adoption keyboard reachable, announced and responsive without decorative motion", () => {
+    const html = readFileSync(new URL("../settings.html", import.meta.url), "utf8");
+    const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+
+    expect(html).toContain('id="adoption-catalog"');
+    expect(html).toContain('role="listbox"');
+    expect(html).toContain('aria-label="可认领猫咪目录"');
+    expect(html).toContain('id="adoption-status"');
+    expect(html).toContain('aria-live="polite"');
+    expect(html).toContain('for="adoption-pet-name"');
+    expect(html).toContain('id="draft-choice-dialog"');
+    expect(css).toContain(".adoption-layout");
+    expect(css).toContain("@media (max-width: 520px)");
+    expect(css).toContain("@media (prefers-reduced-motion: reduce)");
+    expect(css).not.toContain("adoption-float");
+    const source = readFileSync(new URL("./settings/adoption-creation-view.ts", import.meta.url), "utf8");
+    expect(source).toContain('button.setAttribute("role", "option")');
+    expect(source).toContain('button.setAttribute("aria-selected"');
+    expect(source).toContain('button.setAttribute("aria-disabled"');
+  });
+
+  it("ships the settings page as a production HTML entry", () => {
+    const config = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+
+    expect(config).toContain('index: join(process.cwd(), "index.html")');
+    expect(config).toContain('settings: join(process.cwd(), "settings.html")');
+  });
+
   it("assembles the durable upload view without legacy creation truth sources", () => {
     const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
 

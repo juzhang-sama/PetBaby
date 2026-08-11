@@ -15,7 +15,17 @@ export default defineConfig({
     watch: { ignored: ["**/src-tauri/target/**", "**/src-tauri/gen/**"] },
   },
   envPrefix: ["VITE_", "TAURI_"],
-  build: { target: "es2022", minify: "esbuild", sourcemap: true },
+  build: {
+    target: "es2022",
+    minify: "esbuild",
+    sourcemap: true,
+    rollupOptions: {
+      input: {
+        index: join(process.cwd(), "index.html"),
+        settings: join(process.cwd(), "settings.html"),
+      },
+    },
+  },
   resolve: {
     alias: {
       "@cubism-runtime": cubismRuntime,

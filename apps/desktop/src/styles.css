@@ -350,6 +350,147 @@ body.settings-shell {
 .settings-shell .composer-finish > label { font-size: 13px; font-weight: 700; }
 .settings-shell .composer-finish .candidate-preview:empty { display: none; }
 
+.settings-shell .creation-home {
+  width: min(100%, 980px);
+  padding: clamp(20px, 4vw, 34px);
+  border: 1px solid #c7d4d2;
+  border-radius: 14px;
+  background: var(--paper);
+}
+.settings-shell .creation-route-grid {
+  display: grid;
+  grid-template-columns: repeat(3, minmax(0, 1fr));
+  gap: 10px;
+  margin-top: 24px;
+}
+.settings-shell .creation-route-card {
+  display: grid;
+  min-height: 156px;
+  padding: 18px;
+  align-content: start;
+  gap: 8px;
+  border-radius: 10px;
+  text-align: left;
+}
+.settings-shell .creation-route-card strong {
+  color: var(--pine);
+  font: 700 18px/1.3 Georgia, "Times New Roman", serif;
+}
+.settings-shell .creation-route-card span { font-size: 14px; }
+.settings-shell .creation-route-card small { color: var(--muted); font-size: 12px; line-height: 1.55; }
+.settings-shell .creation-destination {
+  margin: 14px 0 0;
+  padding: 12px 14px;
+  border-left: 4px solid var(--pine);
+  background: #eef6f4;
+  color: #345a57;
+  font-size: 13px;
+  line-height: 1.55;
+}
+.settings-shell .creation-inline-status {
+  min-height: 20px;
+  margin-top: 10px;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.5;
+}
+.settings-shell .creation-inline-status.error { color: #9b3f24; }
+.settings-shell .workspace-back { margin-bottom: 18px; }
+
+.settings-shell .adoption-workbench {
+  width: min(100%, 1120px);
+  padding: clamp(18px, 3vw, 28px);
+  border: 1px solid #c7d4d2;
+  border-radius: 14px;
+  background: var(--paper);
+}
+.settings-shell .adoption-heading { max-width: 730px; }
+.settings-shell .adoption-heading > p:last-child {
+  margin: 8px 0 0;
+  color: var(--muted);
+  font-size: 13px;
+  line-height: 1.6;
+}
+.settings-shell .adoption-layout {
+  display: grid;
+  grid-template-columns: minmax(420px, 1.25fr) minmax(280px, .75fr);
+  gap: clamp(18px, 3vw, 34px);
+  margin-top: 22px;
+}
+.settings-shell .adoption-panel-heading {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  margin-bottom: 10px;
+}
+.settings-shell .adoption-panel-heading h3 { margin: 0; }
+.settings-shell .adoption-catalog {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 8px;
+}
+.settings-shell .adoption-card {
+  display: grid;
+  grid-template-columns: 76px minmax(0, 1fr);
+  min-height: 96px;
+  padding: 8px;
+  align-items: center;
+  gap: 10px;
+  text-align: left;
+}
+.settings-shell .adoption-card[aria-selected="true"] {
+  border-color: var(--pine);
+  box-shadow: inset 4px 0 0 var(--pine);
+}
+.settings-shell .adoption-card img {
+  display: block;
+  width: 76px;
+  height: 76px;
+  object-fit: contain;
+  border: 1px solid #d7e1df;
+  border-radius: 7px;
+  background: #f4f8f7;
+}
+.settings-shell .adoption-card-copy { display: grid; min-width: 0; gap: 4px; }
+.settings-shell .adoption-card-copy strong { font: 700 14px/1.3 Georgia, "Times New Roman", serif; }
+.settings-shell .adoption-card-copy > span { overflow: hidden; color: var(--muted); font-size: 11px; line-height: 1.35; text-overflow: ellipsis; white-space: nowrap; }
+.settings-shell .adoption-card-copy .adoption-card-state {
+  color: var(--pine);
+  font: 700 10px/1.3 "Cascadia Mono", Consolas, monospace;
+}
+.settings-shell .adoption-inspector {
+  display: grid;
+  align-self: start;
+  gap: 13px;
+  padding: 14px;
+  border: 1px solid #c7d4d2;
+  border-radius: 10px;
+  background: #f8fbfa;
+}
+.settings-shell .adoption-preview { aspect-ratio: 1; min-height: 0; border: 1px solid #d1dedd; }
+.settings-shell .adoption-preview canvas { min-height: 0; }
+.settings-shell .adoption-selection-copy > p:last-child { margin: 4px 0 0; color: var(--muted); font-size: 12px; line-height: 1.55; }
+.settings-shell .adoption-action { width: 100%; min-height: 42px; }
+
+.settings-shell #draft-choice-dialog {
+  width: min(calc(100% - 32px), 520px);
+  padding: 0;
+  border: 1px solid #b8c6c5;
+  border-radius: 12px;
+  color: var(--ink);
+  background: var(--paper);
+}
+.settings-shell #draft-choice-dialog::backdrop { background: rgb(24 36 43 / 44%); }
+.settings-shell .draft-choice-card { padding: 24px; }
+.settings-shell .draft-choice-card > p:last-of-type { color: var(--muted); font-size: 13px; line-height: 1.6; }
+
+@media (max-width: 760px) {
+  .settings-shell .composer-layout,
+  .settings-shell .adoption-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-shell .composer-stage { position: relative; top: auto; }
+}
+
 @media (max-width: 520px) {
   body.settings-shell { padding: 18px 14px 30px; }
   .settings-shell .pet-item { align-items: flex-start; flex-direction: column; gap: 13px; }
@@ -368,6 +509,14 @@ body.settings-shell {
   .settings-shell .composer-step-rail { grid-template-columns: 1fr; }
   .settings-shell .composer-navigation { flex-direction: column; }
   .settings-shell .composer-navigation button { width: 100%; min-height: 44px; }
+  .settings-shell .creation-home { padding: 19px 15px; }
+  .settings-shell .creation-route-grid { grid-template-columns: 1fr; }
+  .settings-shell .creation-route-card { min-height: 112px; }
+  .settings-shell .adoption-workbench { padding: 16px 13px; }
+  .settings-shell .adoption-layout { grid-template-columns: minmax(0, 1fr); }
+  .settings-shell .adoption-catalog { grid-template-columns: 1fr; }
+  .settings-shell .adoption-card { grid-template-columns: 66px minmax(0, 1fr); }
+  .settings-shell .adoption-card img { width: 66px; height: 66px; }
 }
 
 @media (prefers-reduced-motion: reduce) {
