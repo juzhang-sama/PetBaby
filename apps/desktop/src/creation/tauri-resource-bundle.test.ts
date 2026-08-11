@@ -12,4 +12,14 @@ describe("Tauri creation-content resource bundle", () => {
       "../public/creation-content": "creation-content",
     });
   });
+
+  it("keeps every hashed runtime JSON byte-stable on Windows checkouts", () => {
+    const attributes = readFileSync(
+      new URL("../../../../.gitattributes", import.meta.url),
+      "utf8",
+    ).split(/\r?\n/);
+
+    expect(attributes).toContain("apps/desktop/public/creation-content/**/*.json text eol=lf");
+    expect(attributes).toContain("apps/desktop/public/builtin-pets/pet-live2d-v1/*.model3.json text eol=lf");
+  });
 });
