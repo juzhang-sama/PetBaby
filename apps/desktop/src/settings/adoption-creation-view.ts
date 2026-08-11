@@ -44,6 +44,7 @@ export class AdoptionCreationView {
   private catalogValue: AdoptionCatalogEntry[] = [];
   private selectedId: string | null = null;
   private focusTemplateId: string | null = null;
+  private pendingCatalogFocusId: string | null = null;
   private nameValue = "";
   private nameLockedValue = false;
   private status = "选择一只猫，先看看它呼吸微动的样子。";
@@ -185,6 +186,7 @@ export class AdoptionCreationView {
     this.active = false;
     this.visit += 1;
     this.selectionRevision += 1;
+    this.pendingCatalogFocusId = null;
     this.previewReady = false;
     this.clearPreviewOnce();
     this.setBusy(false);
@@ -377,6 +379,7 @@ export class AdoptionCreationView {
     this.destroyed = false;
     this.visit += 1;
     this.selectionRevision += 1;
+    this.pendingCatalogFocusId = null;
     this.selectedId = null;
     this.nameValue = "";
     this.nameLockedValue = false;
@@ -444,6 +447,13 @@ export class AdoptionCreationView {
 
   private renderCatalog(root: HTMLElement): void {
     const document = root.ownerDocument;
+    const activeElement = document.activeElement;
+    const activeButton = activeElement instanceof Element
+      ? activeElement.closest<HTMLButtonElement>("[data-adoption-template]")
+      : null;
+    if (activeButton && root.contains(activeButton)) {
+      this.pendingCatalogFocusId = activeButton.dataset.adoptionTemplate ?? null;
+    }
     const existing = new Map(Array.from(root.children, (child) => {
       const button = child as HTMLButtonElement;
       return [button.dataset.adoptionTemplate ?? "", button] as const;
@@ -475,10 +485,19 @@ export class AdoptionCreationView {
       if (button.children.length === 0) button.append(image, copy);
       return button;
     });
-    for (const [templateId, button] of existing) {
-      if (!this.catalogValue.some((entry) => entry.template.templateId === templateId)) button.remove();
+    const desiredIds = new Set(buttons.map((button) => button.dataset.adoptionTemplate));
+    const structureChanged = buttons.length !== root.children.length || buttons.some(
+      (button, index) => root.children[index] !== button,
+    );
+    if (structureChanged) {
+      for (const [templateId, button] of existing) {
+        if (!desiredIds.has(templateId)) button.remove();
+      }
+      for (const [index, button] of buttons.entries()) {
+        const current = root.children[index] ?? null;
+        if (current !== button) root.insertBefore(button, current);
+      }
     }
-    root.append(...buttons);
     if (!this.focusTemplateId || !buttons.some(
       (button) => button.dataset.adoptionTemplate === this.focusTemplateId,
     )) {
@@ -486,6 +505,14 @@ export class AdoptionCreationView {
     }
     for (const button of buttons) {
       button.tabIndex = button.dataset.adoptionTemplate === this.focusTemplateId ? 0 : -1;
+    }
+    if (!this.busyValue && this.pendingCatalogFocusId) {
+      const focusedId = desiredIds.has(this.pendingCatalogFocusId)
+        ? this.pendingCatalogFocusId
+        : this.focusTemplateId;
+      const target = buttons.find((button) => button.dataset.adoptionTemplate === focusedId);
+      if (target && document.activeElement !== target) target.focus();
+      this.pendingCatalogFocusId = null;
     }
   }
 

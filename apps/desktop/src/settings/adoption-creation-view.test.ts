@@ -70,8 +70,13 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
+interface FakeDocument {
+  activeElement: FakeDomElement | null;
+  createElement(tagName: string): FakeDomElement;
+}
+
 class FakeDomElement {
-  disabled = false;
+  private disabledValue = false;
   textContent = "";
   value = "";
   type = "";
@@ -82,10 +87,17 @@ class FakeDomElement {
   loading = "";
   dataset: Record<string, string> = {};
   children: FakeDomElement[] = [];
-  ownerDocument!: { createElement(tagName: string): FakeDomElement };
-  readonly focus = vi.fn();
+  parentElement: FakeDomElement | null = null;
+  ownerDocument!: FakeDocument;
+  readonly focus = vi.fn(() => { this.ownerDocument.activeElement = this; });
   private readonly attributes = new Map<string, string>();
   private readonly listeners = new Map<string, Set<EventListener>>();
+
+  get disabled(): boolean { return this.disabledValue; }
+  set disabled(value: boolean) {
+    this.disabledValue = value;
+    if (value && this.ownerDocument?.activeElement === this) this.ownerDocument.activeElement = null;
+  }
 
   addEventListener(type: string, listener: EventListener): void {
     const listeners = this.listeners.get(type) ?? new Set<EventListener>();
@@ -103,20 +115,54 @@ class FakeDomElement {
     }
   }
 
-  replaceChildren(...children: FakeDomElement[]): void { this.children = children; }
-  append(...children: FakeDomElement[]): void {
-    this.children = [...this.children.filter((child) => !children.includes(child)), ...children];
+  replaceChildren(...children: FakeDomElement[]): void {
+    for (const child of [...this.children]) child.detach();
+    this.append(...children);
   }
-  remove(): void {}
+  append(...children: FakeDomElement[]): void {
+    for (const child of children) {
+      child.detach();
+      child.parentElement = this;
+      this.children.push(child);
+    }
+  }
+  insertBefore(child: FakeDomElement, reference: FakeDomElement | null): void {
+    if (reference === child) return;
+    child.detach();
+    child.parentElement = this;
+    const index = reference ? this.children.indexOf(reference) : -1;
+    if (index < 0) this.children.push(child);
+    else this.children.splice(index, 0, child);
+  }
+  remove(): void { this.detach(); }
   setAttribute(name: string, value: string): void { this.attributes.set(name, value); }
   getAttribute(name: string): string | null { return this.attributes.get(name) ?? null; }
   closest(selector: string): FakeDomElement | null {
     return selector === "[data-adoption-template]" && this.dataset.adoptionTemplate ? this : null;
   }
+
+  contains(candidate: FakeDomElement): boolean {
+    return candidate === this || this.children.some((child) => child.contains(candidate));
+  }
+
+  private detach(): void {
+    if (!this.parentElement) return;
+    this.parentElement.children = this.parentElement.children.filter((child) => child !== this);
+    this.parentElement = null;
+    const active = this.ownerDocument.activeElement;
+    if (active && this.contains(active)) this.ownerDocument.activeElement = null;
+  }
 }
 
 function adoptionDomElements() {
-  const document = { createElement: (_tagName: string) => new FakeDomElement() };
+  const document: FakeDocument = {
+    activeElement: null,
+    createElement: (_tagName: string) => {
+      const element = new FakeDomElement();
+      element.ownerDocument = document;
+      return element;
+    },
+  };
   const make = () => {
     const element = new FakeDomElement();
     element.ownerDocument = document;
@@ -128,6 +174,7 @@ function adoptionDomElements() {
   };
   vi.stubGlobal("Element", FakeDomElement);
   return {
+    document,
     raw,
     typed: raw as unknown as import("./adoption-creation-view").AdoptionCreationElements,
   };
@@ -255,6 +302,60 @@ describe("AdoptionCreationView", () => {
 
     await test.view.refresh();
     expect(dom.raw.catalog.children[0]).toBe(firstNode);
+  });
+
+  it("keeps focus on the selected card while selection and preview settle render", async () => {
+    const loadingProfile = deferred<unknown>();
+    const test = adoptionPorts({ loadMotionProfile: () => loadingProfile.promise });
+    const dom = adoptionDomElements();
+    test.view.mount(dom.typed);
+    await test.view.open();
+    const firstNode = dom.raw.catalog.children[0]!;
+    firstNode.focus();
+
+    dom.raw.catalog.dispatch("click", { target: firstNode });
+    const activeAfterSelection = dom.document.activeElement;
+    loadingProfile.resolve(profile);
+    await vi.waitFor(() => expect(test.ports.preview.show).toHaveBeenCalledOnce());
+
+    expect(activeAfterSelection).toBe(firstNode);
+    expect(dom.document.activeElement).toBe(firstNode);
+  });
+
+  it("restores catalog focus across reorder and falls back when the focused card is removed", async () => {
+    const initial = catalog();
+    const reordered = [initial[1]!, initial[0]!, ...initial.slice(2)];
+    const replacement = entry({
+      template: {
+        ...initial[0]!.template,
+        templateId: "cat-9",
+        defaultName: "猫咪9",
+      },
+    });
+    const withoutMisty = [...reordered.filter(
+      (item) => item.template.templateId !== "cat-misty",
+    ), replacement];
+    const test = adoptionPorts({ catalogs: [initial, reordered, withoutMisty] });
+    const dom = adoptionDomElements();
+    test.view.mount(dom.typed);
+    await test.view.open();
+    const firstNode = dom.raw.catalog.children[0]!;
+    const catTwoNode = dom.raw.catalog.children[1]!;
+
+    firstNode.focus();
+    dom.raw.catalog.dispatch("keydown", { target: firstNode, key: "ArrowRight" });
+    await test.view.refresh();
+    expect(dom.raw.catalog.children[0]).toBe(catTwoNode);
+    expect(dom.document.activeElement).toBe(catTwoNode);
+
+    const mistyNode = dom.raw.catalog.children[1]!;
+    dom.raw.catalog.dispatch("keydown", { target: catTwoNode, key: "ArrowRight" });
+    expect(dom.document.activeElement).toBe(mistyNode);
+    await test.view.refresh();
+
+    expect(dom.document.activeElement).toBe(dom.raw.catalog.children[0]);
+    expect(dom.raw.catalog.children[0]!.tabIndex).toBe(0);
+    expect(dom.raw.catalog.children.filter((button) => button.tabIndex === 0)).toHaveLength(1);
   });
 
   it("invalidates a pending preview when leaving", async () => {
