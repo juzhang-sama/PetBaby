@@ -55,6 +55,10 @@ function staticRuntime(petId: string): MountedPetRuntime {
 describe("loadStartupRuntime", () => {
   afterEach(() => vi.unstubAllGlobals());
 
+  it("pins the recovery target to the approved standard cat", () => {
+    expect(BUILTIN_PET_ID).toBe("cat-a-standard-v1");
+  });
+
   it("keeps a healthy active pet without persisting a fallback", async () => {
     const activeRuntime = runtime("pet-user-1");
     const prepare = vi.fn(async (petId: string) => ({ petId, source: "installed" }) as RuntimePetDescriptor);
@@ -70,10 +74,10 @@ describe("loadStartupRuntime", () => {
   });
 
   it("recovers a broken user pet to the built-in pet and persists the repair", async () => {
-    const builtinRuntime = runtime("pet-live2d-v1");
+    const builtinRuntime = runtime(BUILTIN_PET_ID);
     const prepare = vi.fn(async (petId: string) => ({
       petId,
-      source: petId === "pet-live2d-v1" ? "builtin" : "installed",
+      source: petId === BUILTIN_PET_ID ? "builtin" : "installed",
     }) as RuntimePetDescriptor);
     const load = vi.fn(async (descriptor: RuntimePetDescriptor) => {
       if (descriptor.petId === "pet-user-1") throw new Error("corrupt PNG");
@@ -85,18 +89,18 @@ describe("loadStartupRuntime", () => {
       runtime: builtinRuntime,
       recoveredToBuiltin: true,
     });
-    expect(prepare).toHaveBeenNthCalledWith(2, "pet-live2d-v1");
-    expect(commit).toHaveBeenCalledWith("pet-live2d-v1");
+    expect(prepare).toHaveBeenNthCalledWith(2, BUILTIN_PET_ID);
+    expect(commit).toHaveBeenCalledWith(BUILTIN_PET_ID);
   });
 
   it("recovers to the built-in pet when an installed Live2D runtime falls back to static", async () => {
     const installedFallback = staticRuntime("pet-user-1");
-    const builtinFallback = staticRuntime("pet-live2d-v1");
+    const builtinFallback = staticRuntime(BUILTIN_PET_ID);
     const ports: RuntimePetLoaderPorts = {
       readInstalledManifest: vi.fn(async () => live2dManifest("pet-user-1")),
       installedAssetUrl: vi.fn((petId, path) => `asset://${petId}/${path}`),
       createBuiltinTransport: vi.fn(() => ({
-        readManifest: vi.fn(async () => live2dManifest("pet-live2d-v1")),
+        readManifest: vi.fn(async () => live2dManifest(BUILTIN_PET_ID)),
         readFile: vi.fn(),
       })),
       createRuntime: vi.fn(async (petId) => (
@@ -107,7 +111,7 @@ describe("loadStartupRuntime", () => {
     vi.stubGlobal("window", { location: { origin: "http://localhost" } });
     const prepare = vi.fn(async (petId: string) => ({
       petId,
-      source: petId === "pet-live2d-v1" ? "builtin" : "installed",
+      source: petId === BUILTIN_PET_ID ? "builtin" : "installed",
     }) as RuntimePetDescriptor);
     const commit = vi.fn(async () => undefined);
 
@@ -123,10 +127,10 @@ describe("loadStartupRuntime", () => {
     });
 
     expect(result.recoveredToBuiltin).toBe(true);
-    expect(result.runtime.petId).toBe("pet-live2d-v1");
+    expect(result.runtime.petId).toBe(BUILTIN_PET_ID);
     expect(result.runtime.host).toBe(builtinFallback.host);
     expect(installedFallback.host.destroy).toHaveBeenCalledOnce();
-    expect(commit).toHaveBeenCalledWith("pet-live2d-v1");
+    expect(commit).toHaveBeenCalledWith(BUILTIN_PET_ID);
   });
 
   it("does not retry when the built-in pet itself fails", async () => {
@@ -134,7 +138,7 @@ describe("loadStartupRuntime", () => {
     const load = vi.fn(async () => { throw new Error("built-in unavailable"); });
     const commit = vi.fn(async () => undefined);
 
-    await expect(loadStartupRuntime("pet-live2d-v1", { prepare, load, commit })).rejects.toThrow(
+    await expect(loadStartupRuntime(BUILTIN_PET_ID, { prepare, load, commit })).rejects.toThrow(
       "built-in unavailable",
     );
     expect(prepare).toHaveBeenCalledTimes(1);
@@ -142,10 +146,10 @@ describe("loadStartupRuntime", () => {
   });
 
   it("destroys the fallback runtime when persisting recovery fails", async () => {
-    const builtinRuntime = runtime("pet-live2d-v1");
+    const builtinRuntime = runtime(BUILTIN_PET_ID);
     const prepare = vi.fn(async (petId: string) => ({ petId, source: "builtin" }) as RuntimePetDescriptor);
     const load = vi.fn(async (descriptor: RuntimePetDescriptor) => {
-      if (descriptor.petId !== "pet-live2d-v1") throw new Error("corrupt PNG");
+      if (descriptor.petId !== BUILTIN_PET_ID) throw new Error("corrupt PNG");
       return builtinRuntime;
     });
     const commit = vi.fn(async () => { throw new Error("database unavailable"); });

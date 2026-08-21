@@ -1,0 +1,18 @@
+{
+  "contractVersion": "LayerContractV1",
+  "sourceMaster": "D:\\PetBabyAssets\\cat-a-live2d-v1\\标准猫\\01-母版\\标准猫-A-v1.png",
+  "layerSource": "D:\\PetBabyAssets\\cat-a-live2d-v1\\标准猫\\02-分层源\\标准猫-A-v1.kra",
+  "canvas": { "width": 2048, "height": 2048 },
+  "layers": [
+    {
+      "name": "body",
+      "canvas": { "width": 2048, "height": 2048 },
+      "anchor": { "x": 1024, "y": 1915 },
+      "deformBounds": { "x": 560, "y": 77, "width": 1251, "height": 1838 },
+      "occludes": [],
+      "kraPath": "D:\\PetBabyAssets\\cat-a-live2d-v1\\标准猫\\02-分层源\\标准猫-A-v1.kra",
+      "kraLayerPath": "标准猫-A-v1/body"
+    }
+  ],
+  "occlusionReserve": ["occlusionReserve"]
+}

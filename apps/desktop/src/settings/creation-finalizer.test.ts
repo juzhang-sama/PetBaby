@@ -5,6 +5,7 @@ import { finalizeCreation, type FinalizerPorts, type PreparedCreation } from "./
 
 function harness(input: {
   alreadyCompleted?: boolean;
+  cleanupPending?: boolean;
   switchResult?: PetSwitchResult;
   switchError?: Error;
 } = {}) {
@@ -15,8 +16,13 @@ function harness(input: {
     petId: "pet-1",
     variantId: "variant-1",
     alreadyCompleted: input.alreadyCompleted ?? false,
+    cleanupPending: input.cleanupPending ?? false,
   };
-  const prepare = vi.fn(async (_sessionId: string, _requestId: string) => {
+  const prepare = vi.fn(async (
+    _sessionId: string,
+    _requestId: string,
+    _confirmNeedsReview: boolean,
+  ) => {
     calls.push("prepare");
     return prepared;
   });
@@ -56,13 +62,26 @@ describe("finalizeCreation", () => {
 
     await expect(finalizeCreation("session-1", test.ports)).resolves.toMatchObject({ ok: true });
 
-    expect(test.prepare).toHaveBeenCalledWith("session-1", "request-1");
+    expect(test.prepare).toHaveBeenCalledWith("session-1", "request-1", false);
     expect(test.switchPet).toHaveBeenCalledWith("pet-1", {
       requestId: "request-1",
       acceptedVariantId: "variant-1",
       creationSessionId: "session-1",
     });
     expect(test.calls).toEqual(["prepare", "switch"]);
+  });
+
+  it("forwards explicit manual cutout confirmation only for the upload review action", async () => {
+    const test = harness();
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("request-reviewed" as ReturnType<typeof crypto.randomUUID>);
+
+    await expect(finalizeCreation(
+      "session-1",
+      test.ports,
+      { confirmNeedsReview: true },
+    )).resolves.toMatchObject({ ok: true });
+
+    expect(test.prepare).toHaveBeenCalledWith("session-1", "request-reviewed", true);
   });
 
   it("returns an already completed creation without switching or touching the gate", async () => {
@@ -154,5 +173,39 @@ describe("finalizeCreation", () => {
 
     expect(test.abort).not.toHaveBeenCalled();
     expect(test.cancel).not.toHaveBeenCalled();
+  });
+
+  it("reports cleanupPending after a successful switch without invoking frontend rollback", async () => {
+    const test = harness({ cleanupPending: true });
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("request-cleanup" as ReturnType<typeof crypto.randomUUID>);
+
+    await expect(finalizeCreation("session-1", test.ports)).resolves.toEqual({
+      ok: true,
+      requestId: "request-1",
+      petId: "pet-1",
+      warning: "照片源已从本机删除，远端清理将在后台重试。",
+    });
+
+    expect(test.abort).not.toHaveBeenCalled();
+    expect(test.cancel).not.toHaveBeenCalled();
+  });
+
+  it("aborts and releases the switch owner without preparing again when the runtime switch rolls back", async () => {
+    const test = harness({
+      cleanupPending: true,
+      switchResult: {
+        ok: false,
+        requestId: "request-photo-rollback",
+        petId: "pet-1",
+        code: "pet-window-unavailable",
+        message: "desktop unavailable",
+      },
+    });
+    vi.spyOn(crypto, "randomUUID").mockReturnValue("request-photo-rollback" as ReturnType<typeof crypto.randomUUID>);
+
+    await finalizeCreation("session-1", test.ports);
+
+    expect(test.calls).toEqual(["prepare", "switch", "abort", "cancel"]);
+    expect(test.prepare).toHaveBeenCalledOnce();
   });
 });

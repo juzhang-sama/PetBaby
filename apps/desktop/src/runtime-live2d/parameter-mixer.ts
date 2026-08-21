@@ -1,4 +1,9 @@
 import type { Live2DParameterSemantic } from "../runtime/pet-renderer";
+import {
+  clampCatMotionValue,
+  type CatMotionAmplitudeSemanticV1,
+  type MotionSpatialProfileV1,
+} from "../runtime-assets/cat-motion-spatial-profile";
 
 export type ParameterValues = Partial<Record<Live2DParameterSemantic, number>>;
 
@@ -6,6 +11,7 @@ export interface ParameterMixInput {
   motion?: ParameterValues;
   expression?: ParameterValues;
   automation?: ParameterValues;
+  interaction?: ParameterValues;
   look?: ParameterValues;
   lipSyncLayer?: ParameterValues;
   physics?: ParameterValues;
@@ -31,21 +37,48 @@ export interface ParameterWritePort {
 
 export interface ParameterMixerOptions {
   semantics: Partial<Record<Live2DParameterSemantic, string>>;
+  motionSpatialProfile?: Readonly<MotionSpatialProfileV1>;
   port: ParameterWritePort;
-  diagnose?: (semantic: Live2DParameterSemantic) => void;
+  diagnose?: (
+    semantic: Live2DParameterSemantic,
+    issue?: "incompatible-range",
+  ) => void;
   silentMissing?: ReadonlySet<Live2DParameterSemantic>;
 }
 
 const PARAMETER_ORDER: Live2DParameterSemantic[] = [
   "eyeOpen",
+  "eyeOpenLeft",
+  "eyeOpenRight",
   "eyeBallX",
   "eyeBallY",
   "angleX",
   "angleY",
   "bodyBreath",
   "bodySway",
+  "bodyStretch",
   "mouthOpen",
+  "earLeft",
+  "earRight",
+  "tailAngle",
+  "tailCurl",
+  "tailTip",
 ];
+
+const AMPLITUDE_SEMANTIC: Partial<
+  Record<Live2DParameterSemantic, CatMotionAmplitudeSemanticV1>
+> = {
+  eyeOpen: "blink",
+  eyeOpenLeft: "blink",
+  eyeOpenRight: "blink",
+  bodyBreath: "breath",
+  bodyStretch: "bodyStretch",
+  earLeft: "ear",
+  earRight: "ear",
+  tailAngle: "tailAngle",
+  tailCurl: "tailCurl",
+  tailTip: "tailTip",
+};
 
 export function mixParameters(input: ParameterMixInput): ParameterValues {
   const result: ParameterValues = {};
@@ -56,6 +89,7 @@ export function mixParameters(input: ParameterMixInput): ParameterValues {
     ...(input.breath === undefined ? {} : { bodyBreath: input.breath }),
     ...(input.sway === undefined ? {} : { bodySway: input.sway }),
   });
+  Object.assign(result, input.interaction);
   Object.assign(result, input.look, {
     ...(input.lookX === undefined ? {} : { eyeBallX: input.lookX }),
     ...(input.lookY === undefined ? {} : { eyeBallY: input.lookY }),
@@ -68,7 +102,7 @@ export function mixParameters(input: ParameterMixInput): ParameterValues {
 }
 
 export class ParameterMixer {
-  private readonly diagnosed = new Set<Live2DParameterSemantic>();
+  private readonly diagnosed = new Set<string>();
 
   constructor(private readonly options: ParameterMixerOptions) {}
 
@@ -87,14 +121,37 @@ export class ParameterMixer {
         this.diagnoseOnce(semantic);
         continue;
       }
-      this.options.port.setParameter(parameterId, Math.min(range.max, Math.max(range.min, value)));
+      const modelClamped = Math.min(range.max, Math.max(range.min, value));
+      const amplitudeSemantic = AMPLITUDE_SEMANTIC[semantic];
+      const amplitudeRange = this.options.motionSpatialProfile && amplitudeSemantic
+        ? this.options.motionSpatialProfile.amplitude[amplitudeSemantic]
+        : undefined;
+      if (amplitudeRange === undefined || amplitudeSemantic === undefined || !this.options.motionSpatialProfile) {
+        this.options.port.setParameter(parameterId, modelClamped);
+        continue;
+      }
+      const intersectionMin = Math.max(range.min, amplitudeRange.min);
+      const intersectionMax = Math.min(range.max, amplitudeRange.max);
+      if (intersectionMin > intersectionMax) {
+        this.diagnoseOnce(semantic, "incompatible-range");
+        continue;
+      }
+      this.options.port.setParameter(
+        parameterId,
+        clampCatMotionValue(this.options.motionSpatialProfile, amplitudeSemantic, modelClamped),
+      );
     }
   }
 
-  private diagnoseOnce(semantic: Live2DParameterSemantic): void {
-    if (this.options.silentMissing?.has(semantic)) return;
-    if (this.diagnosed.has(semantic)) return;
-    this.diagnosed.add(semantic);
-    this.options.diagnose?.(semantic);
+  private diagnoseOnce(
+    semantic: Live2DParameterSemantic,
+    issue?: "incompatible-range",
+  ): void {
+    if (issue === undefined && this.options.silentMissing?.has(semantic)) return;
+    const key = issue === undefined ? semantic : `${semantic}:${issue}`;
+    if (this.diagnosed.has(key)) return;
+    this.diagnosed.add(key);
+    if (issue === undefined) this.options.diagnose?.(semantic);
+    else this.options.diagnose?.(semantic, issue);
   }
 }

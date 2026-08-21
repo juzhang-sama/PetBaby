@@ -1,0 +1,43 @@
+{
+  "styleProfileId": "pixel-style-v2-animation-ready",
+  "version": 2,
+  "route": "pixel-v1",
+  "provider": "lk888",
+  "model": "gpt-image-2",
+  "modelDisplayName": "GPT-image-2.0",
+  "visualLanguage": "animation-first simplified pixel character with strong silhouette, large deliberate color clusters, and two-step shading",
+  "headShareOfHeight": [0.38, 0.42],
+  "bodyShareOfHeight": [0.58, 0.62],
+  "pose": "stable centered seated front to slight three-quarter view",
+  "background": "transparent",
+  "safeMarginRatio": 0.06,
+  "logicalGridSize": 160,
+  "paletteColorLimit": 24,
+  "quantizeMethod": "maxcoverage",
+  "dither": "none",
+  "protectedAccentSlots": 4,
+  "downsample": "box",
+  "upsample": "nearest",
+  "preserveTraits": [
+    "face shape and proportions",
+    "ear shape",
+    "eye color",
+    "primary face markings",
+    "main chest and paw markings",
+    "body silhouette and main patches",
+    "tail shape and main markings",
+    "signature marks"
+  ],
+  "forbidden": [
+    "microscopic fur texture",
+    "secondary texture noise",
+    "face patch compositing",
+    "body-part assembly",
+    "semantic layer output",
+    "Live2D rig",
+    "generic cat replacement",
+    "smooth gradients",
+    "anti-aliasing"
+  ],
+  "referenceAsset": "认可参考图.png"
+}

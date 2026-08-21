@@ -838,6 +838,7 @@ mod tests {
     use crate::pets::mutation::PetMutationGate;
     use crate::pets::{ActivePetSession, SharedActivePetSession};
     use crate::storage::Storage;
+    use crate::test_support::TestStorageRoot;
     use serde_json::{json, Value};
     use std::path::{Path, PathBuf};
     use std::sync::atomic::{AtomicU64, Ordering};
@@ -919,17 +920,24 @@ mod tests {
         storage: Arc<Mutex<Storage>>,
         service: CreationService,
         gate: Arc<PetMutationGate>,
+        // Keep last so every SQLite-owning field is dropped before directory cleanup.
+        _storage_root: TestStorageRoot,
     }
 
-    impl Drop for ComposerServiceHarness {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
+    #[test]
+    fn composer_service_harness_drop_removes_storage_root() {
+        let test = ComposerServiceHarness::new();
+        let root = test.root.clone();
+
+        drop(test);
+
+        assert!(!root.exists(), "storage root remained: {}", root.display());
     }
 
     impl ComposerServiceHarness {
         fn new() -> Self {
-            let root = temp_root("service");
+            let storage_root = TestStorageRoot::claim("composer-service").unwrap();
+            let root = storage_root.path().to_path_buf();
             let storage = Arc::new(Mutex::new(Storage::open(&root.join("pets")).unwrap()));
             let session: SharedActivePetSession = Arc::new(Mutex::new(ActivePetSession::new()));
             session
@@ -965,6 +973,7 @@ mod tests {
                 storage,
                 service,
                 gate,
+                _storage_root: storage_root,
             }
         }
 

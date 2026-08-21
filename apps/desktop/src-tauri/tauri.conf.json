@@ -31,7 +31,8 @@
   "bundle": {
     "active": false,
     "resources": {
-      "../public/creation-content": "creation-content"
+      "../public/creation-content": "creation-content",
+      "../public/cat-character-modules": "cat-character-modules"
     }
   }
 }

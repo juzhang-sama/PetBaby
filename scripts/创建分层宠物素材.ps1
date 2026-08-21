@@ -1,4 +1,4 @@
-param([string]$OutputDir = 'public/test-assets/layered')
+﻿param([string]$OutputDir = 'public/test-assets/layered')
 
 Add-Type -AssemblyName System.Drawing
 $resolved = [System.IO.Path]::GetFullPath((Join-Path (Get-Location) $OutputDir))

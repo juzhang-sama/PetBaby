@@ -157,15 +157,23 @@ class ProbeModel extends CubismUserModel {
   ): { cancel(): void } {
     const motion = this.motions.get(`${group}:${index}`);
     if (!motion) return { cancel() {} };
-    motion.setIsLoop(options.loop);
+    motion.setLoop(options.loop);
+    if (options.fadeInMs !== undefined) motion.setFadeInTime(Math.max(0, options.fadeInMs) / 1_000);
+    if (options.fadeOutMs !== undefined) motion.setFadeOutTime(Math.max(0, options.fadeOutMs) / 1_000);
     motion.setFinishedMotionHandler(() => onFinished());
-    this._motionManager.startMotionPriority(motion, false, options.priority);
+    const queueEntryHandle = this._motionManager.startMotionPriority(motion, false, options.priority);
     let cancelled = false;
     return {
       cancel: () => {
         if (cancelled) return;
         cancelled = true;
-        this._motionManager.stopAllMotions();
+        if (options.fadeOutMs === undefined) {
+          this._motionManager.stopAllMotions();
+          return;
+        }
+        this._motionManager
+          .getCubismMotionQueueEntry(queueEntryHandle)
+          ?.setFadeOut(Math.max(0, options.fadeOutMs) / 1_000);
       },
     };
   }

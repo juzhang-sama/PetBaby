@@ -9,6 +9,7 @@ pub enum MutationKind {
     Switch,
     Creation,
     Delete,
+    ProfileEdit,
 }
 
 #[derive(Clone, PartialEq, Eq)]
@@ -25,6 +26,7 @@ struct MutationOwner {
 #[derive(Default)]
 struct MutationState {
     owner: Option<MutationOwner>,
+    profile_owners: Vec<MutationOwner>,
     next_token: u64,
     retired_cross_window_request_ids: HashSet<String>,
 }
@@ -90,12 +92,14 @@ impl PetMutationGate {
             .map_err(|_| "pet mutation gate lock poisoned")?;
         let token = loop {
             let now = (self.clock)();
-            Self::retire_stale_cross_window_owner(&mut state, now, self.timeout);
-            match state.owner.as_ref() {
+            Self::retire_stale_cross_window_owners(&mut state, now, self.timeout);
+            match Self::conflicting_owner(&state, kind, pet_id)
+                .map(|owner| (owner.scoped, owner.pins, owner.started_at))
+            {
                 None => {
                     state.next_token = state.next_token.wrapping_add(1).max(1);
                     let token = state.next_token;
-                    state.owner = Some(MutationOwner {
+                    let owner = MutationOwner {
                         request_id: request_id.into(),
                         kind,
                         pet_id: pet_id.into(),
@@ -103,23 +107,28 @@ impl PetMutationGate {
                         scoped: true,
                         token,
                         pins: 0,
-                    });
+                    };
+                    if kind == MutationKind::ProfileEdit {
+                        state.profile_owners.push(owner);
+                    } else {
+                        state.owner = Some(owner);
+                    }
                     break token;
                 }
-                Some(owner) if owner.scoped => {
+                Some((true, _, _)) => {
                     state = self
                         .changed
                         .wait(state)
                         .map_err(|_| "pet mutation gate lock poisoned")?;
                 }
-                Some(owner) if owner.pins > 0 => {
+                Some((_, pins, _)) if pins > 0 => {
                     state = self
                         .changed
                         .wait(state)
                         .map_err(|_| "pet mutation gate lock poisoned")?;
                 }
-                Some(owner) => {
-                    let age = now.saturating_sub(owner.started_at);
+                Some((_, _, started_at)) => {
+                    let age = now.saturating_sub(started_at);
                     let remaining = self.timeout.saturating_sub(age);
                     let (next, _) = self
                         .changed
@@ -147,10 +156,15 @@ impl PetMutationGate {
             .state
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
-        let owner = state
-            .owner
-            .as_mut()
-            .filter(|owner| {
+        let MutationState {
+            owner,
+            profile_owners,
+            ..
+        } = &mut *state;
+        let owner = owner
+            .iter_mut()
+            .chain(profile_owners.iter_mut())
+            .find(|owner| {
                 !owner.scoped
                     && owner.request_id == request_id
                     && owner.kind == kind
@@ -172,18 +186,44 @@ impl PetMutationGate {
             .state
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
-        match state.owner.as_ref() {
-            None => Ok(None),
-            Some(owner) if owner.request_id == request_id && !owner.scoped && owner.pins == 0 => {
-                let owner = state.owner.take().expect("matching owner must exist");
-                let token = owner.token;
-                state
-                    .retired_cross_window_request_ids
-                    .insert(owner.request_id);
-                self.changed.notify_all();
-                Ok(Some(token))
+        if state
+            .owner
+            .as_ref()
+            .is_some_and(|owner| owner.request_id == request_id)
+        {
+            if state
+                .owner
+                .as_ref()
+                .is_some_and(|owner| owner.scoped || owner.pins > 0)
+            {
+                return Err("pet mutation request does not own the gate".into());
             }
-            Some(_) => Err("pet mutation request does not own the gate".into()),
+            let owner = state.owner.take().expect("matching owner must exist");
+            let token = owner.token;
+            state
+                .retired_cross_window_request_ids
+                .insert(owner.request_id);
+            self.changed.notify_all();
+            Ok(Some(token))
+        } else if let Some(index) = state
+            .profile_owners
+            .iter()
+            .position(|owner| owner.request_id == request_id)
+        {
+            if state.profile_owners[index].scoped || state.profile_owners[index].pins > 0 {
+                return Err("pet mutation request does not own the gate".into());
+            }
+            let owner = state.profile_owners.remove(index);
+            let token = owner.token;
+            state
+                .retired_cross_window_request_ids
+                .insert(owner.request_id);
+            self.changed.notify_all();
+            Ok(Some(token))
+        } else if state.owner.is_some() || !state.profile_owners.is_empty() {
+            Err("pet mutation request does not own the gate".into())
+        } else {
+            Ok(None)
         }
     }
 
@@ -196,8 +236,13 @@ impl PetMutationGate {
             .state
             .lock()
             .map_err(|_| "pet mutation gate lock poisoned")?;
-        Self::retire_stale_cross_window_owner(&mut state, now, self.timeout);
-        if let Some(owner) = state.owner.as_ref() {
+        Self::retire_stale_cross_window_owners(&mut state, now, self.timeout);
+        if let Some(owner) = state
+            .owner
+            .iter()
+            .chain(state.profile_owners.iter())
+            .find(|owner| owner.request_id == request_id)
+        {
             if owner.request_id == request_id
                 && owner.kind == kind
                 && owner.pet_id == pet_id
@@ -207,12 +252,15 @@ impl PetMutationGate {
             }
             return Err("已有宠物变更正在进行".into());
         }
+        if Self::conflicting_owner(&state, kind, pet_id).is_some() {
+            return Err("已有宠物变更正在进行".into());
+        }
         if state.retired_cross_window_request_ids.contains(request_id) {
             return Err("pet mutation request id has already been retired".into());
         }
         state.next_token = state.next_token.wrapping_add(1).max(1);
         let token = state.next_token;
-        state.owner = Some(MutationOwner {
+        let owner = MutationOwner {
             request_id: request_id.into(),
             kind,
             pet_id: pet_id.into(),
@@ -220,11 +268,31 @@ impl PetMutationGate {
             scoped: false,
             token,
             pins: 0,
-        });
+        };
+        if kind == MutationKind::ProfileEdit {
+            state.profile_owners.push(owner);
+        } else {
+            state.owner = Some(owner);
+        }
         Ok(token)
     }
 
-    fn retire_stale_cross_window_owner(
+    fn conflicting_owner<'a>(
+        state: &'a MutationState,
+        kind: MutationKind,
+        pet_id: &str,
+    ) -> Option<&'a MutationOwner> {
+        state
+            .owner
+            .iter()
+            .chain(state.profile_owners.iter())
+            .find(|owner| {
+                (owner.kind != MutationKind::ProfileEdit && kind != MutationKind::ProfileEdit)
+                    || owner.pet_id == pet_id
+            })
+    }
+
+    fn retire_stale_cross_window_owners(
         state: &mut MutationState,
         now: Duration,
         timeout: Duration,
@@ -237,6 +305,17 @@ impl PetMutationGate {
                 .retired_cross_window_request_ids
                 .insert(owner.request_id);
         }
+        let mut retained = Vec::with_capacity(state.profile_owners.len());
+        for owner in state.profile_owners.drain(..) {
+            if !owner.scoped && owner.pins == 0 && now.saturating_sub(owner.started_at) >= timeout {
+                state
+                    .retired_cross_window_request_ids
+                    .insert(owner.request_id);
+            } else {
+                retained.push(owner);
+            }
+        }
+        state.profile_owners = retained;
     }
 
     fn finish_scoped(&self, request_id: &str, token: u64) {
@@ -248,6 +327,13 @@ impl PetMutationGate {
         }) {
             state.owner = None;
             self.changed.notify_all();
+            return;
+        }
+        if let Some(index) = state.profile_owners.iter().position(|owner| {
+            owner.scoped && owner.request_id == request_id && owner.token == token
+        }) {
+            state.profile_owners.remove(index);
+            self.changed.notify_all();
         }
     }
 
@@ -255,10 +341,15 @@ impl PetMutationGate {
         let Ok(mut state) = self.state.lock() else {
             return;
         };
-        if let Some(owner) = state
-            .owner
-            .as_mut()
-            .filter(|owner| owner.token == token && !owner.scoped && owner.pins > 0)
+        let MutationState {
+            owner,
+            profile_owners,
+            ..
+        } = &mut *state;
+        if let Some(owner) = owner
+            .iter_mut()
+            .chain(profile_owners.iter_mut())
+            .find(|owner| owner.token == token && !owner.scoped && owner.pins > 0)
         {
             owner.pins -= 1;
             self.changed.notify_all();
@@ -299,6 +390,91 @@ mod tests {
         let owner = state.owner.as_ref().expect("expected mutation owner");
         assert_eq!(owner.request_id, request_id);
         assert_eq!(owner.pet_id, pet_id);
+    }
+
+    fn assert_scoped_waits_for(first_kind: MutationKind, waiting_kind: MutationKind) {
+        let gate = Arc::new(PetMutationGate::new(Duration::from_secs(1)));
+        let first = gate.scoped("first", first_kind, "pet-a").unwrap();
+        let waiting = gate.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let _waiting = waiting.scoped("waiting", waiting_kind, "pet-a").unwrap();
+            sent.send(()).unwrap();
+        });
+
+        assert!(received.recv_timeout(Duration::from_millis(20)).is_err());
+        drop(first);
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)), Ok(()));
+        thread.join().unwrap();
+    }
+
+    fn assert_scoped_does_not_wait_for_different_pet(
+        first_kind: MutationKind,
+        concurrent_kind: MutationKind,
+    ) {
+        let gate = Arc::new(PetMutationGate::new(Duration::from_secs(1)));
+        let _first = gate.scoped("first", first_kind, "pet-a").unwrap();
+        let concurrent = gate.clone();
+        let (sent, received) = std::sync::mpsc::channel();
+        let thread = std::thread::spawn(move || {
+            let _concurrent = concurrent
+                .scoped("concurrent", concurrent_kind, "pet-b")
+                .unwrap();
+            sent.send(()).unwrap();
+        });
+
+        assert_eq!(received.recv_timeout(Duration::from_secs(1)), Ok(()));
+        thread.join().unwrap();
+    }
+
+    #[test]
+    fn profile_edit_conflicts_with_delete_for_same_pet() {
+        assert_scoped_waits_for(MutationKind::Delete, MutationKind::ProfileEdit);
+        assert_scoped_waits_for(MutationKind::ProfileEdit, MutationKind::Delete);
+    }
+
+    #[test]
+    fn profile_edit_conflicts_with_switch_and_creation_for_same_pet_in_both_directions() {
+        for other in [MutationKind::Switch, MutationKind::Creation] {
+            assert_scoped_waits_for(other, MutationKind::ProfileEdit);
+            assert_scoped_waits_for(MutationKind::ProfileEdit, other);
+        }
+    }
+
+    #[test]
+    fn profile_edits_for_the_same_pet_are_serialized() {
+        assert_scoped_waits_for(MutationKind::ProfileEdit, MutationKind::ProfileEdit);
+    }
+
+    #[test]
+    fn profile_edit_and_other_mutations_for_different_pets_do_not_interlock() {
+        for other in [
+            MutationKind::Switch,
+            MutationKind::Delete,
+            MutationKind::Creation,
+        ] {
+            assert_scoped_does_not_wait_for_different_pet(other, MutationKind::ProfileEdit);
+            assert_scoped_does_not_wait_for_different_pet(MutationKind::ProfileEdit, other);
+        }
+        assert_scoped_does_not_wait_for_different_pet(
+            MutationKind::ProfileEdit,
+            MutationKind::ProfileEdit,
+        );
+    }
+
+    #[test]
+    fn profile_edit_lease_releases_when_the_operation_returns_an_error() {
+        let gate = PetMutationGate::new(Duration::from_secs(1));
+        let operation = || -> Result<(), String> {
+            let _lease = gate.scoped("edit-failing", MutationKind::ProfileEdit, "pet-a")?;
+            Err("injected repository failure".into())
+        };
+
+        assert_eq!(operation(), Err("injected repository failure".into()));
+        drop(
+            gate.scoped("delete-after-error", MutationKind::Delete, "pet-a")
+                .unwrap(),
+        );
     }
 
     #[test]

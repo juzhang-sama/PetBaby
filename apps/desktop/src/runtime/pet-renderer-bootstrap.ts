@@ -1,5 +1,7 @@
 import { loadLive2DAsset } from "../runtime-assets/live2d-asset-loader";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
+import type { RuntimeAssetManifestV4 } from "../runtime-assets/cat-character-manifest";
+import type { RuntimeAssetManifestV5 } from "../runtime-assets/cat-spatial-manifest";
 import { Live2DRenderer } from "../runtime-live2d/live2d-renderer";
 import { loadAnimatedImageAsset } from "./animated-image-asset-loader";
 import { AnimatedImageRenderer } from "./animated-image-renderer";
@@ -156,7 +158,7 @@ export async function createPetRendererRuntime(
     };
   }
 
-  const liveManifest: RuntimeAssetManifestV2 = manifest;
+  const liveManifest: RuntimeAssetManifestV2 | RuntimeAssetManifestV4 | RuntimeAssetManifestV5 = manifest;
   const previewAsset = {
     kind: "static-png" as const,
     imageUrl: assetUrl(petId, liveManifest.previewImage),
@@ -181,6 +183,7 @@ export async function createPetRendererRuntime(
       stage: "live2d-initial-load",
       message: errorMessage(error),
     });
+    if (liveManifest.schemaVersion === 4 || liveManifest.schemaVersion === 5) throw error;
     return makeStatic(liveManifest.previewImage);
   }
 
@@ -201,6 +204,7 @@ export async function createPetRendererRuntime(
         stage: "live2d-context-restore",
         message: errorMessage(error),
       });
+      if (liveManifest.schemaVersion === 4 || liveManifest.schemaVersion === 5) throw error;
       recovery = (async () => {
         const fallbackSurface = createCanvas();
         fallbackSurface.className = "pet-render-surface";

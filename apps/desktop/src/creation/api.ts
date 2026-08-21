@@ -4,6 +4,7 @@ import type {
   AdoptionCatalogEntry,
   ComposerRecipe,
   CreationSnapshot,
+  UploadCandidateAssets,
 } from "./contracts";
 
 export type InvokePort = <T>(
@@ -40,6 +41,23 @@ export interface ComposerCandidateProjection {
   snapshot: CreationSnapshot;
   bodyUrl: string;
   motionProfile: MotionProfileV1;
+}
+
+export interface PhotoAvatarUpload {
+  bytesB64: string;
+  sha256: string;
+}
+
+export interface PhotoAvatarSnapshot {
+  route?: "pixel-v1";
+  sessionId: string;
+  revision: number;
+  step: string;
+  providerJobId: string | null;
+  profile: unknown;
+  attempts: Record<string, number>;
+  errorCode: string | null;
+  errorMessage: string | null;
 }
 
 export function createCreationApi(invoke: InvokePort) {
@@ -79,7 +97,47 @@ export function createCreationApi(invoke: InvokePort) {
       invoke<UploadJobRecord[]>("creation_upload_jobs", { sessionId }),
     uploadSource: (sessionId: string) =>
       invoke<UploadSource | null>("creation_upload_source", { sessionId }),
+    uploadCandidate: (jobId: string) =>
+      invoke<UploadCandidateAssets>("creation_upload_candidate_assets", { jobId }),
     recoverFinalization: () => invoke<RecoveryReport>("creation_recover_finalization"),
+    photoAvatarConsent: (accept: boolean) =>
+      invoke<boolean>("creation_photo_avatar_consent", { accept }),
+    photoAvatarBegin: (
+      sessionId: string,
+      consentVersion: string,
+      photos: PhotoAvatarUpload[],
+    ) =>
+      invoke<PhotoAvatarSnapshot>("creation_photo_avatar_begin", {
+        sessionId,
+        consentVersion,
+        photos,
+      }),
+    photoAvatarStatus: (sessionId: string) =>
+      invoke<PhotoAvatarSnapshot | null>("creation_photo_avatar_status", { sessionId }),
+    photoAvatarRuntimeCheckPassed: (
+      sessionId: string,
+      revision: number,
+      manifestSha256: string,
+    ) =>
+      invoke<PhotoAvatarSnapshot>("creation_photo_avatar_runtime_check_passed", {
+        sessionId,
+        revision,
+        manifestSha256,
+      }),
+    photoAvatarCancel: (sessionId: string) =>
+      invoke<PhotoAvatarSnapshot>("creation_photo_avatar_cancel", { sessionId }),
+    photoAvatarRegenerate: (sessionId: string) =>
+      invoke<PhotoAvatarSnapshot>("creation_photo_avatar_regenerate", { sessionId }),
+    photoAvatarRevise: (sessionId: string, instruction: string) =>
+      invoke<PhotoAvatarSnapshot>("creation_photo_avatar_revise", { sessionId, instruction }),
+    photoAvatarPreviewManifest: (sessionId: string, revision: number) =>
+      invoke<unknown>("creation_photo_avatar_preview_manifest", { sessionId, revision }),
+    photoAvatarPreviewFileB64: (sessionId: string, revision: number, relativePath: string) =>
+      invoke<string>("creation_photo_avatar_preview_file_b64", {
+        sessionId,
+        revision,
+        relativePath,
+      }),
   };
 }
 

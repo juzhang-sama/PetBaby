@@ -26,4 +26,27 @@ describe("RenderScheduler", () => {
     scheduler.setTier("companion");
     expect(start).toHaveBeenCalledTimes(1);
   });
+
+  it("uses 60 fps for v4 companion while preserving 24 fps for legacy companion", () => {
+    const setMaxFps = vi.fn();
+    const scheduler = new RenderScheduler({ start: vi.fn(), stop: vi.fn(), setMaxFps, renderOnce: vi.fn() });
+
+    scheduler.setCompanionFps(60);
+    scheduler.setTier("companion");
+    scheduler.setCompanionFps(24);
+    scheduler.setTier("companion");
+
+    expect(setMaxFps.mock.calls).toEqual([[60], [24]]);
+  });
+
+  it("applies a changed companion fps immediately while companion rendering is already active", () => {
+    const setMaxFps = vi.fn();
+    const scheduler = new RenderScheduler({ start: vi.fn(), stop: vi.fn(), setMaxFps, renderOnce: vi.fn() });
+    scheduler.setTier("companion");
+    setMaxFps.mockClear();
+
+    scheduler.setCompanionFps(60);
+
+    expect(setMaxFps).toHaveBeenCalledWith(60);
+  });
 });

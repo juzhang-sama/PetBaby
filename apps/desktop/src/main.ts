@@ -1,19 +1,51 @@
 import "./styles.css";
-import { PhysicalPosition, PhysicalSize } from "@tauri-apps/api/dpi";
-import { getCurrentWindow, availableMonitors, primaryMonitor } from "@tauri-apps/api/window";
+import { LogicalPosition, LogicalSize, PhysicalPosition } from "@tauri-apps/api/dpi";
+import {
+  getCurrentWindow,
+  availableMonitors,
+  currentMonitor,
+  primaryMonitor,
+} from "@tauri-apps/api/window";
 import { invoke } from "@tauri-apps/api/core";
 import { emitTo, listen } from "@tauri-apps/api/event";
 import { EffectOverlay } from "./runtime/effect-overlay";
-import { applyHitRegion, loadPreferences, probeFullscreen, savePreferences } from "./runtime/bridge";
+import {
+  applyHitRegion,
+  createLogicalWindowGeometryPersistence,
+  createLogicalWindowSizePort,
+  listenForPetDisplayScaleRequests,
+  loadPreferences,
+  probeFullscreen,
+  reconcileWindowVisibility,
+  updateWindowFullscreen,
+} from "./runtime/bridge";
+import {
+  PET_CALIBRATION_PREVIEW_REQUEST,
+  PET_CALIBRATION_PREVIEW_RESULT,
+  PET_DISPLAY_SCALE_REQUEST,
+  PET_DISPLAY_SCALE_RESULT,
+} from "./runtime/contracts";
 import { clampRectToWorkArea } from "./runtime/geometry";
+import { wireFullscreenProbeLoop } from "./runtime/fullscreen";
 import { alphaToRegionSpans } from "./runtime/hit-mask";
-import { PetStage } from "./runtime/pet-stage";
+import {
+  PetStage,
+  wirePetCalibrationRuntime,
+} from "./runtime/pet-stage";
+import type { PetCalibrationV1 } from "./runtime/pet-calibration";
 import {
   type RendererDiagnostic,
 } from "./runtime/pet-renderer-bootstrap";
-import { WindowMotionController } from "./runtime/window-motion-controller";
+import {
+  runWithWindowMotionSuspended,
+  WindowMotionController,
+} from "./runtime/window-motion-controller";
 import { isLive2DProbeMode, mountLive2DProbe } from "./runtime-live2d/probe";
 import { isLive2DPreviewMode, mountLive2DPreview } from "./runtime-live2d/preview";
+import {
+  isCatMotionEvidenceMode,
+  mountCatMotionEvidence,
+} from "./runtime-live2d/cat-motion-evidence";
 import { PetRuntimeSlot, type MountedPetRuntime } from "./runtime/pet-runtime-slot";
 import { PetSwitchCoordinator } from "./runtime/pet-switch-coordinator";
 import {
@@ -25,6 +57,8 @@ import {
 import { assertVisibleFrame } from "./runtime/render-surface-probe";
 import { loadRuntimePet } from "./runtime/runtime-pet-loader";
 import { finalizeStartupRecovery, loadStartupRuntime } from "./runtime/startup-runtime-recovery";
+import { WindowSizeController } from "./runtime/window-size-controller";
+import { wireWindowModeRuntime } from "./runtime/window-mode-runtime";
 
 const root = document.querySelector<HTMLElement>("#app");
 if (!root) throw new Error("missing #app root");
@@ -33,7 +67,9 @@ function tracePetRuntime(message: string): void {
   void invoke("frontend_ping", { message: `pet-runtime: ${message}` }).catch(() => undefined);
 }
 
-if (isLive2DProbeMode(location.search)) {
+if (isCatMotionEvidenceMode(location.search)) {
+  await mountCatMotionEvidence(root);
+} else if (isLive2DProbeMode(location.search)) {
   const result = await mountLive2DProbe(root);
   root.dataset.live2dProbeResult = result.ok ? "ok" : result.reason;
   console.info("Live2D probe result", result);
@@ -135,22 +171,29 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   tracePetRuntime(`runtime-loaded: ${initialRuntime.kind()}`);
   slot = new PetRuntimeSlot(rendererRoot, initialRuntime);
 
+  const windowGeometryPersistence = createLogicalWindowGeometryPersistence({
+    window: petWindow,
+    preferences,
+    diagnose: (_stage, error) => diagnose({
+      petId: slot.activePetId,
+      manifestVersion: 0,
+      stage: "window-motion",
+      message: errorMessage(error),
+    }),
+  });
+  await petWindow.onResized(({ payload: size }) => {
+    void windowGeometryPersistence.persist({ size });
+  });
+
   const windowMotion = new WindowMotionController({
     getPosition: async () => {
       const position = await petWindow.outerPosition();
       return { x: position.x, y: position.y };
     },
     setPosition: (position) => petWindow.setPosition(new PhysicalPosition(position.x, position.y)),
-    persistPosition: async (position) => {
-      const size = await petWindow.outerSize();
-      Object.assign(preferences, {
-        x: position.x,
-        y: position.y,
-        width: size.width,
-        height: size.height,
-      });
-      await savePreferences(preferences);
-    },
+    persistPosition: (position) => windowGeometryPersistence.persist({
+      position: new PhysicalPosition(position.x, position.y),
+    }),
   });
 
   const stage = new PetStage({
@@ -158,6 +201,7 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
     windowMotion,
     effects,
     refreshHitRegion,
+    onFrameSample: (deltas) => tracePetRuntime(`frame-sample: deltas=${deltas.map((value) => value.toFixed(2)).join(",")}`),
     diagnose: (stageName, error) => diagnose({
       petId: slot.activePetId,
       manifestVersion: 0,
@@ -167,6 +211,71 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   });
   await stage.mount(rendererRoot);
   tracePetRuntime("stage-mounted");
+
+  const windowModeWiring = await wireWindowModeRuntime({
+    listen: async (event, handler) => listen<unknown>(event, ({ payload }) => handler(payload)),
+    ready: () => invoke<number>("window_mode_runtime_ready"),
+    ack: (requestId, cycle, phase) => invoke<boolean>("window_mode_runtime_ack", {
+      requestId,
+      cycle,
+      phase,
+    }),
+    pause: () => stage.pauseWindowModeTransition(),
+    resume: (effectiveVisible) => stage.resumeWindowModeTransition(effectiveVisible),
+    abort: () => stage.abortWindowModeTransition(),
+    diagnose: (stageName, error) => console.error("Window mode runtime diagnostic", {
+      stage: stageName,
+      message: errorMessage(error),
+    }),
+  });
+  window.addEventListener("beforeunload", windowModeWiring.destroy, { once: true });
+  tracePetRuntime("window-mode-listeners-ready");
+
+  const calibrationWiring = await wirePetCalibrationRuntime({
+    activePetId: () => slot.activePetId,
+    load: (petId) => invoke<PetCalibrationV1>("pet_calibration_load", { petId }),
+    setCalibration: (value) => stage.setCalibration(value),
+    listen: async (handler) => listen<unknown>(
+      PET_CALIBRATION_PREVIEW_REQUEST,
+      ({ payload }) => handler(payload),
+    ),
+    emit: (result) => emitTo("settings", PET_CALIBRATION_PREVIEW_RESULT, result),
+    previewFeedback: () => stage.previewFeedback(),
+    diagnose: (stageName, error) => console.error("Pet calibration diagnostic", {
+      petId: slot.activePetId,
+      stage: stageName,
+      message: errorMessage(error),
+    }),
+  });
+  window.addEventListener("beforeunload", calibrationWiring.destroy, { once: true });
+  tracePetRuntime("calibration-preview-listener-ready");
+
+  const windowSize = new WindowSizeController(createLogicalWindowSizePort({
+    window: petWindow,
+    currentMonitor,
+    resizeRenderer: async () => stage.refreshViewport(),
+    refreshHitRegion,
+  }));
+  await listenForPetDisplayScaleRequests({
+    listen: async (handler) => listen<unknown>(
+      PET_DISPLAY_SCALE_REQUEST,
+      ({ payload }) => handler(payload),
+    ),
+    emit: (result) => emitTo("settings", PET_DISPLAY_SCALE_RESULT, result),
+    apply: (displayScale, commit) => runWithWindowMotionSuspended(
+      windowMotion,
+      () => windowGeometryPersistence.flushCurrentGeometry(),
+      () => windowGeometryPersistence.runDisplayScaleTransaction(
+        () => windowSize.apply(displayScale, commit),
+      ),
+    ),
+    commit: (ack) => windowGeometryPersistence.commitDisplayScale(ack),
+    diagnose: (stageName, error) => console.error("Display scale protocol diagnostic", {
+      stage: stageName,
+      message: errorMessage(error),
+    }),
+  });
+  tracePetRuntime("display-scale-listener-ready");
 
   const coordinator = new PetSwitchCoordinator(slot, {
     prepare: (requestId, petId) => invoke("pet_prepare_switch", { requestId, petId }),
@@ -197,32 +306,26 @@ async function mountPet(appRoot: HTMLElement): Promise<void> {
   });
   await listen<PetSwitchRequest>(PET_SWITCH_REQUEST, async ({ payload }) => {
     const result = await coordinator.switch(payload);
+    await calibrationWiring.afterPetSwitch(result);
+    if (result.ok) stage.syncActiveRenderer();
     await emitTo("settings", PET_SWITCH_RESULT, result);
   });
   tracePetRuntime("switch-listener-ready");
 
-  let hiddenForFullscreen = false;
-  window.setInterval(async () => {
-    try {
-      const snapshot = await probeFullscreen();
-      if (snapshot.isFullscreen && !hiddenForFullscreen) {
-        hiddenForFullscreen = true;
-        stage.setVisibility(false);
-        await petWindow.hide();
-      } else if (!snapshot.isFullscreen && hiddenForFullscreen) {
-        hiddenForFullscreen = false;
-        stage.setVisibility(true);
-        await petWindow.show();
-      }
-    } catch (error) {
-      diagnose({
+  const fullscreenWiring = wireFullscreenProbeLoop({
+    setInterval: (callback, delayMs) => window.setInterval(callback, delayMs),
+    clearInterval: (id) => window.clearInterval(id),
+    probe: probeFullscreen,
+    update: updateWindowFullscreen,
+    reconcile: reconcileWindowVisibility,
+    diagnose: (error) => diagnose({
         petId: slot.activePetId,
         manifestVersion: 0,
         stage: "fullscreen",
         message: errorMessage(error),
-      });
-    }
-  }, 750);
+    }),
+  });
+  window.addEventListener("beforeunload", fullscreenWiring.destroy, { once: true });
 }
 
 async function restoreWindowPlacement(
@@ -241,11 +344,13 @@ async function restoreWindowPlacement(
   let anchored = false;
 
   for (const monitor of monitors) {
+    const logicalPosition = monitor.workArea.position.toLogical(monitor.scaleFactor);
+    const logicalSize = monitor.workArea.size.toLogical(monitor.scaleFactor);
     const area = {
-      x: monitor.position.x,
-      y: monitor.position.y,
-      width: monitor.size.width,
-      height: monitor.size.height,
+      x: logicalPosition.x,
+      y: logicalPosition.y,
+      width: logicalSize.width,
+      height: logicalSize.height,
     };
     const overlaps = saved.x < area.x + area.width && saved.x + saved.width > area.x
       && saved.y < area.y + area.height && saved.y + saved.height > area.y;
@@ -260,11 +365,13 @@ async function restoreWindowPlacement(
   if (!anchored) {
     const monitor = await primaryMonitor();
     if (monitor) {
+      const logicalPosition = monitor.workArea.position.toLogical(monitor.scaleFactor);
+      const logicalSize = monitor.workArea.size.toLogical(monitor.scaleFactor);
       const area = {
-        x: monitor.position.x,
-        y: monitor.position.y,
-        width: monitor.size.width,
-        height: monitor.size.height,
+        x: logicalPosition.x,
+        y: logicalPosition.y,
+        width: logicalSize.width,
+        height: logicalSize.height,
       };
       restored = saved.width > area.width * 0.95 || saved.height > area.height * 0.95
         ? { ...clampRectToWorkArea(saved, area, 64), ...defaultSize }
@@ -273,8 +380,8 @@ async function restoreWindowPlacement(
   }
 
   Object.assign(preferences, restored);
-  await petWindow.setSize(new PhysicalSize(restored.width, restored.height));
-  await petWindow.setPosition(new PhysicalPosition(restored.x, restored.y));
+  await petWindow.setSize(new LogicalSize(restored.width, restored.height));
+  await petWindow.setPosition(new LogicalPosition(restored.x, restored.y));
 }
 
 function errorMessage(error: unknown): string {

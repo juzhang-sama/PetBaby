@@ -1,5 +1,6 @@
 use crate::creation::profiles;
 use crate::creation::StandardCandidate;
+use crate::generation::cutout::CandidateQualityReportV1;
 use crate::storage::Storage;
 use rusqlite::{Connection, OptionalExtension};
 use sha2::{Digest, Sha256};
@@ -329,8 +330,9 @@ impl CreationStore {
             jobs_root,
             raw_path,
             cutout_path,
-            motion_profile_path,
+            Some(motion_profile_path),
             quality,
+            None,
             None,
         )
     }
@@ -342,10 +344,18 @@ impl CreationStore {
         jobs_root: &Path,
         raw_path: &str,
         cutout_path: &str,
-        motion_profile_path: &str,
-        quality: &str,
+        motion_profile_path: Option<&str>,
+        quality_report: &CandidateQualityReportV1,
         result_url: &str,
     ) -> Result<StandardCandidate, String> {
+        let quality = if quality_report.is_acceptable() {
+            "acceptable"
+        } else {
+            "needs-review"
+        };
+        if quality_report.is_acceptable() != motion_profile_path.is_some() {
+            return Err("motion profile presence must match candidate quality".into());
+        }
         self.record_upload_candidate_transaction(
             job_id,
             session_id,
@@ -354,6 +364,7 @@ impl CreationStore {
             cutout_path,
             motion_profile_path,
             quality,
+            Some(quality_report),
             Some(result_url),
         )
     }
@@ -366,8 +377,9 @@ impl CreationStore {
         jobs_root: &Path,
         raw_path: &str,
         cutout_path: &str,
-        motion_profile_path: &str,
+        motion_profile_path: Option<&str>,
         quality: &str,
+        quality_report: Option<&CandidateQualityReportV1>,
         result_url: Option<&str>,
     ) -> Result<StandardCandidate, String> {
         let (raw_path, cutout_path, motion_profile_path) = validate_candidate_paths(
@@ -377,6 +389,10 @@ impl CreationStore {
             cutout_path,
             motion_profile_path,
         )?;
+        let quality_report_json = quality_report
+            .map(serde_json::to_string)
+            .transpose()
+            .map_err(|error| format!("serialize candidate quality report: {error}"))?;
         let candidate_id = crate::creation::domain::new_entity_id("candidate");
         let created_at = profiles::now_iso();
         let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
@@ -416,8 +432,8 @@ impl CreationStore {
         tx.execute(
             "INSERT INTO appearance_variants
              (variant_id, pet_id, job_id, session_id, image_path, cutout_path,
-              motion_profile_path, quality, accepted, created_at)
-             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, 0, ?9)",
+              motion_profile_path, quality, quality_report_json, accepted, created_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7, ?8, ?9, 0, ?10)",
             rusqlite::params![
                 candidate_id,
                 job_pet_id,
@@ -427,6 +443,7 @@ impl CreationStore {
                 cutout_path,
                 motion_profile_path,
                 quality,
+                quality_report_json,
                 created_at
             ],
         )
@@ -464,8 +481,113 @@ impl CreationStore {
             body_path: cutout_path,
             motion_profile_path,
             quality: quality.into(),
+            quality_report: quality_report.cloned(),
             created_at,
         })
+    }
+
+    #[allow(clippy::too_many_arguments)]
+    pub fn replace_upload_candidate_processing(
+        &self,
+        job_id: &str,
+        session_id: &str,
+        candidate_id: &str,
+        jobs_root: &Path,
+        raw_path: &str,
+        cutout_path: &str,
+        motion_profile_path: Option<&str>,
+        quality_report: &CandidateQualityReportV1,
+    ) -> Result<(), String> {
+        let quality = if quality_report.is_acceptable() {
+            "acceptable"
+        } else {
+            "needs-review"
+        };
+        if quality_report.is_acceptable() != motion_profile_path.is_some() {
+            return Err("motion profile presence must match candidate quality".into());
+        }
+        let (raw_path, cutout_path, motion_profile_path) = validate_candidate_paths(
+            jobs_root,
+            job_id,
+            raw_path,
+            cutout_path,
+            motion_profile_path,
+        )?;
+        let report_json = serde_json::to_string(quality_report)
+            .map_err(|error| format!("serialize candidate quality report: {error}"))?;
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let current: Option<(String, i64, Option<String>, String, String)> = tx
+            .query_row(
+                "SELECT av.quality, av.accepted, av.quality_report_json,
+                        gj.status, cs.status
+                 FROM appearance_variants av
+                 JOIN generation_jobs gj ON gj.job_id=av.job_id
+                 JOIN creation_sessions cs ON cs.session_id=av.session_id
+                 WHERE av.variant_id=?1 AND av.job_id=?2 AND av.session_id=?3
+                   AND av.pet_id=gj.pet_id AND av.pet_id=cs.pet_id",
+                rusqlite::params![candidate_id, job_id, session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        let (old_quality, accepted, old_report_json, job_status, session_status) = current
+            .ok_or_else(|| {
+                "upload candidate is no longer current for local reprocessing".to_string()
+            })?;
+        let old_report: CandidateQualityReportV1 = serde_json::from_str(
+            old_report_json
+                .as_deref()
+                .ok_or("upload candidate has no prior quality report")?,
+        )
+        .map_err(|error| format!("upload candidate quality report is invalid: {error}"))?;
+        if old_quality != "needs-review"
+            || accepted != 0
+            || job_status != "success"
+            || session_status != "candidateReady"
+            || old_report.transparent_ratio != 0.0
+            || !old_report
+                .reasons
+                .contains(&crate::generation::cutout::QualityReason::NonUniformBackground)
+        {
+            return Err(
+                "upload candidate is not eligible for local green-screen reprocessing".into(),
+            );
+        }
+        let affected = tx
+            .execute(
+                "UPDATE appearance_variants
+                 SET image_path=?4, cutout_path=?5, motion_profile_path=?6,
+                     quality=?7, quality_report_json=?8
+                 WHERE variant_id=?1 AND job_id=?2 AND session_id=?3
+                   AND quality='needs-review' AND accepted=0",
+                rusqlite::params![
+                    candidate_id,
+                    job_id,
+                    session_id,
+                    raw_path,
+                    cutout_path,
+                    motion_profile_path,
+                    quality,
+                    report_json
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("upload candidate changed during local reprocessing".into());
+        }
+        tx.commit().map_err(|error| error.to_string())
     }
 
     pub fn record_local_candidate(
@@ -586,8 +708,9 @@ impl CreationStore {
             pet_id,
             job_id: None,
             body_path: body_path_text,
-            motion_profile_path: motion_profile_path_text,
+            motion_profile_path: Some(motion_profile_path_text),
             quality: "acceptable".into(),
+            quality_report: None,
             created_at,
         })
     }
@@ -789,9 +912,10 @@ impl CreationStore {
 
     pub fn candidate_for_session(&self, session_id: &str) -> Result<StandardCandidate, String> {
         let db = &self.storage.lock().map_err(|_| "storage lock poisoned")?.db;
-        db.query_row(
-            "SELECT av.variant_id, av.session_id, av.pet_id, av.job_id, av.cutout_path,
-                    av.motion_profile_path, av.quality, av.created_at
+        let (mut candidate, quality_report_json): (StandardCandidate, Option<String>) = db
+            .query_row(
+                "SELECT av.variant_id, av.session_id, av.pet_id, av.job_id, av.cutout_path,
+                    av.motion_profile_path, av.quality, av.quality_report_json, av.created_at
              FROM appearance_variants av
              LEFT JOIN generation_jobs gj ON gj.job_id=av.job_id
              JOIN creation_sessions cs ON cs.session_id=av.session_id
@@ -799,24 +923,34 @@ impl CreationStore {
                AND (av.job_id IS NULL OR
                     (gj.session_id=av.session_id AND gj.pet_id=av.pet_id AND gj.status='success'))
                AND cs.status!='abandoned'
-               AND av.cutout_path IS NOT NULL AND av.motion_profile_path IS NOT NULL
-               AND av.motion_profile_path!=''
+               AND av.cutout_path IS NOT NULL
+               AND (av.motion_profile_path IS NULL OR av.motion_profile_path!='')
              ORDER BY av.created_at DESC, av.rowid DESC LIMIT 1",
-            [session_id],
-            |row| {
-                Ok(StandardCandidate {
-                    candidate_id: row.get(0)?,
-                    session_id: row.get(1)?,
-                    pet_id: row.get(2)?,
-                    job_id: row.get(3)?,
-                    body_path: row.get(4)?,
-                    motion_profile_path: row.get(5)?,
-                    quality: row.get(6)?,
-                    created_at: row.get(7)?,
-                })
-            },
-        )
-        .map_err(|error| format!("candidate is not available for creation session: {error}"))
+                [session_id],
+                |row| {
+                    Ok((
+                        StandardCandidate {
+                            candidate_id: row.get(0)?,
+                            session_id: row.get(1)?,
+                            pet_id: row.get(2)?,
+                            job_id: row.get(3)?,
+                            body_path: row.get(4)?,
+                            motion_profile_path: row.get(5)?,
+                            quality: row.get(6)?,
+                            quality_report: None,
+                            created_at: row.get(8)?,
+                        },
+                        row.get(7)?,
+                    ))
+                },
+            )
+            .map_err(|error| format!("candidate is not available for creation session: {error}"))?;
+        candidate.quality_report = quality_report_json
+            .as_deref()
+            .map(serde_json::from_str)
+            .transpose()
+            .map_err(|error| format!("candidate quality report is invalid: {error}"))?;
+        Ok(candidate)
     }
 
     pub fn update_job_status(
@@ -1262,8 +1396,8 @@ fn validate_candidate_paths(
     job_id: &str,
     raw_path: &str,
     cutout_path: &str,
-    motion_profile_path: &str,
-) -> Result<(String, String, String), String> {
+    motion_profile_path: Option<&str>,
+) -> Result<(String, String, Option<String>), String> {
     let root_metadata = std::fs::symlink_metadata(jobs_root)
         .map_err(|error| format!("configured jobs root is missing: {error}"))?;
     if crate::platform::is_link_or_reparse_point(&root_metadata) || !root_metadata.is_dir() {
@@ -1273,11 +1407,10 @@ fn validate_candidate_paths(
         .canonicalize()
         .map_err(|error| format!("could not canonicalize configured jobs root: {error}"))?;
     let expected_job_dir = canonical_root.join(job_id);
-    let expected = [
-        (raw_path, "raw.png"),
-        (cutout_path, "cutout.png"),
-        (motion_profile_path, "motion-profile.json"),
-    ];
+    let mut expected = vec![(raw_path, "raw.png"), (cutout_path, "cutout.png")];
+    if let Some(motion_profile_path) = motion_profile_path {
+        expected.push((motion_profile_path, "motion-profile.json"));
+    }
     let mut canonical_paths = Vec::with_capacity(expected.len());
     let mut canonical_job_dir = None;
     for (value, expected_name) in expected {
@@ -1321,11 +1454,10 @@ fn validate_candidate_paths(
         }
         canonical_paths.push(canonical_path.to_string_lossy().into_owned());
     }
-    Ok((
-        canonical_paths.remove(0),
-        canonical_paths.remove(0),
-        canonical_paths.remove(0),
-    ))
+    let raw_path = canonical_paths.remove(0);
+    let cutout_path = canonical_paths.remove(0);
+    let motion_profile_path = (!canonical_paths.is_empty()).then(|| canonical_paths.remove(0));
+    Ok((raw_path, cutout_path, motion_profile_path))
 }
 
 fn require_writable_upload_session(db: &Connection, session_id: &str) -> Result<(), String> {

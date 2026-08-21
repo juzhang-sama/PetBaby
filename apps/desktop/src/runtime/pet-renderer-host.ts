@@ -6,6 +6,9 @@ import type {
   PetRenderAsset,
   PetRenderer,
 } from "./pet-renderer";
+import type { CatMotionNameV1 } from "../runtime-live2d/cat-motion-contract";
+import type { CatAutomationMode } from "../runtime-live2d/cat-automation";
+import { canonicalPetCalibration, type PetCalibrationV1 } from "./pet-calibration";
 
 interface Viewport {
   width: number;
@@ -19,6 +22,7 @@ export class PetRendererHost implements PetRenderer {
   private visible = false;
   private destroyed = false;
   private replacementGeneration = 0;
+  private calibration: Readonly<PetCalibrationV1> | null = null;
 
   constructor(renderer: PetRenderer) {
     this.current = renderer;
@@ -39,6 +43,22 @@ export class PetRendererHost implements PetRenderer {
     return this.current.playMotion(motion, options);
   }
 
+  supportsCatMotionV1(): boolean {
+    return this.current.supportsCatMotionV1?.() === true;
+  }
+
+  setCatAutomationMode(mode: CatAutomationMode): void {
+    this.current.setCatAutomationMode?.(mode);
+  }
+
+  playCatMotion(
+    motion: CatMotionNameV1,
+    transition: { loop?: boolean; priority?: number; fadeInMs?: number; fadeOutMs?: number } = {},
+    onFinished?: () => void,
+  ): PetMotionHandle {
+    return this.current.playCatMotion?.(motion, transition, onFinished) ?? { cancel() {} };
+  }
+
   setExpression(expression: PetExpression, weight?: number): void {
     this.current.setExpression(expression, weight);
   }
@@ -49,6 +69,13 @@ export class PetRendererHost implements PetRenderer {
 
   setLipSync(value: number): void {
     this.current.setLipSync(value);
+  }
+
+  setCalibration(value: PetCalibrationV1): void {
+    this.assertAlive();
+    const next = Object.freeze(canonicalPetCalibration(value));
+    this.current.setCalibration({ ...next });
+    this.calibration = next;
   }
 
   hitTest(point: { x: number; y: number }): PetHitArea | null {
@@ -76,6 +103,7 @@ export class PetRendererHost implements PetRenderer {
         return;
       }
       if (this.viewport) renderer.resize(this.viewport);
+      if (this.calibration) renderer.setCalibration({ ...this.calibration });
       renderer.setVisibility(this.visible);
     } catch (error) {
       renderer.destroy();

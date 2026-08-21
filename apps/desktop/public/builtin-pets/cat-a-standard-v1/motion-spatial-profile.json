@@ -1,0 +1,116 @@
+{
+    "schemaVersion":  1,
+    "bodyModuleId":  "body-balanced-v1",
+    "canvas":  {
+                   "width":  2048,
+                   "height":  2048
+               },
+    "alphaBounds":  {
+                        "left":  0.2,
+                        "top":  0.05,
+                        "right":  0.92,
+                        "bottom":  0.94
+                    },
+    "faceSafeZone":  {
+                         "left":  0.36,
+                         "top":  0.05,
+                         "right":  0.72,
+                         "bottom":  0.32
+                     },
+    "eyes":  {
+                 "left":  {
+                              "center":  {
+                                             "x":  0.46,
+                                             "y":  0.19
+                                         },
+                              "bounds":  {
+                                             "left":  0.41,
+                                             "top":  0.14,
+                                             "right":  0.51,
+                                             "bottom":  0.24
+                                         }
+                          },
+                 "right":  {
+                               "center":  {
+                                              "x":  0.62,
+                                              "y":  0.19
+                                          },
+                               "bounds":  {
+                                              "left":  0.57,
+                                              "top":  0.14,
+                                              "right":  0.67,
+                                              "bottom":  0.24
+                                          }
+                           }
+             },
+    "earRoots":  {
+                     "left":  {
+                                  "x":  0.42,
+                                  "y":  0.12
+                              },
+                     "right":  {
+                                   "x":  0.66,
+                                   "y":  0.12
+                               }
+                 },
+    "breathZone":  {
+                       "left":  0.4,
+                       "top":  0.34,
+                       "right":  0.68,
+                       "bottom":  0.72
+                   },
+    "stretchAxis":  {
+                        "origin":  {
+                                       "x":  0.54,
+                                       "y":  0.5
+                                   },
+                        "direction":  {
+                                          "x":  0,
+                                          "y":  1
+                                      }
+                    },
+    "swayPivot":  {
+                      "x":  0.54,
+                      "y":  0.58
+                  },
+    "tailRoot":  {
+                     "x":  0.74,
+                     "y":  0.69
+                 },
+    "edgeTailBounds":  {
+                           "left":  0.68,
+                           "top":  0.3,
+                           "right":  0.92,
+                           "bottom":  0.84
+                       },
+    "amplitude":  {
+                      "breath":  {
+                                     "min":  0,
+                                     "max":  0.8
+                                 },
+                      "blink":  {
+                                    "min":  0,
+                                    "max":  1
+                                },
+                      "ear":  {
+                                  "min":  -0.15,
+                                  "max":  0.15
+                              },
+                      "tailAngle":  {
+                                        "min":  -16,
+                                        "max":  16
+                                    },
+                      "tailCurl":  {
+                                       "min":  -0.4,
+                                       "max":  0.4
+                                   },
+                      "tailTip":  {
+                                      "min":  -0.45,
+                                      "max":  0.45
+                                  },
+                      "bodyStretch":  {
+                                          "min":  0,
+                                          "max":  0.9
+                                      }
+                  }
+}

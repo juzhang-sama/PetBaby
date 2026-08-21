@@ -9,6 +9,8 @@ import type { ParameterRange } from "./parameter-mixer";
 export interface CubismMotionOptions {
   priority: number;
   loop: boolean;
+  fadeInMs?: number;
+  fadeOutMs?: number;
 }
 
 export interface CubismControlAdapter extends CubismAdapter {

@@ -272,6 +272,27 @@ describe("loadRuntimePet", () => {
     expect(fallbackRuntime.host.destroy).not.toHaveBeenCalled();
   });
 
+  it("never turns a built-in v4 cat failure into static preview success", async () => {
+    const ports = loaderPorts();
+    const fallbackRuntime = fakeRuntime();
+    ports.createBuiltinTransport.mockReturnValue({
+      readManifest: vi.fn(async () => ({ schemaVersion: 4 })),
+      readFile: vi.fn(),
+    });
+    ports.createRuntime.mockRejectedValue(new Error("v4 model rejected"));
+    ports.createPreviewRuntime.mockResolvedValue(fallbackRuntime);
+    vi.stubGlobal("window", { location: { origin: "http://localhost" } });
+
+    await expect(loadRuntimePet(
+      { petId: "cat-a-standard-v1", source: "builtin" },
+      {} as HTMLElement,
+      ports,
+      { allowPreviewFallback: true },
+    )).rejects.toThrow("v4 model rejected");
+
+    expect(ports.createPreviewRuntime).not.toHaveBeenCalled();
+  });
+
   it("rejects an animated-image candidate that reports a static runtime", async () => {
     const ports = loaderPorts();
     const root = {} as HTMLElement;

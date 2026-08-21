@@ -223,6 +223,7 @@ function adoptionPorts(options: {
       ok: true as const, requestId: "switch-1", petId,
     }))),
     refreshPets: vi.fn(async () => undefined),
+    onBack: vi.fn(),
     onBusyChange: vi.fn((busy: boolean) => options.onBusyChange?.(busy)),
     activity: options.activity,
   } satisfies AdoptionCreationPorts;
@@ -277,6 +278,7 @@ describe("AdoptionCreationView", () => {
     expect(test.ports.switchPet).toHaveBeenCalledWith("pet-existing");
     expect(test.ports.creation.adoptionStart).not.toHaveBeenCalled();
     expect(test.ports.refreshPets).toHaveBeenCalledTimes(1);
+    expect(test.ports.onBack).toHaveBeenCalledOnce();
   });
 
   it("requires the fixed eight-entry trusted catalog", async () => {
@@ -667,6 +669,17 @@ describe("AdoptionCreationView", () => {
     expect(test.ports.creation.adoptionStart).toHaveBeenCalledWith("cat-misty", "雾团");
     expect(test.ports.refreshPets).toHaveBeenCalledTimes(1);
     expect(test.view.statusText()).toMatch(/已认领/);
+  });
+
+  it("returns to the parent view after a newly adopted pet is projected", async () => {
+    const test = adoptionPorts({
+      catalogs: [catalog(), catalog(entry({ adoptedPetId: "pet-adoption" }))],
+    });
+    await test.view.open();
+
+    await test.view.activate("cat-misty");
+
+    expect(test.ports.onBack).toHaveBeenCalledOnce();
   });
 
   it("rejects invalid names before starting adoption", async () => {

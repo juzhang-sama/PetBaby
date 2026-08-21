@@ -1,0 +1,33 @@
+{
+  "schemaVersion": 1,
+  "species": "cat",
+  "style": "animated-film-soft-v1",
+  "bodyModuleId": "body-balanced-v1",
+  "bodyModuleSource": "ai-completed",
+  "traits": [
+    { "key": "faceShape", "value": "round", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "faceProportions", "value": "balanced", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "furColors", "value": "black and white", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "markings", "value": "white muzzle", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "eyeShape", "value": "almond", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "eyeColor", "value": "green", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "earShape", "value": "upright", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "bodyType", "value": "balanced", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "tail", "value": "long", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "signatureMarks", "value": "forehead blaze", "source": "ai-completed", "evidencePhotoIds": [] },
+    { "key": "temperament", "value": "calm", "source": "ai-completed", "evidencePhotoIds": [] }
+  ],
+  "completionSummary": [
+    "faceShape",
+    "faceProportions",
+    "furColors",
+    "markings",
+    "eyeShape",
+    "eyeColor",
+    "earShape",
+    "bodyType",
+    "tail",
+    "signatureMarks",
+    "temperament"
+  ]
+}

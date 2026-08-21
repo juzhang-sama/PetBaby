@@ -1,0 +1,44 @@
+{
+  "schemaVersion": 1,
+  "captureDate": "2026-08-15",
+  "captureSurface": "Live2DRenderer + Playwright Chromium",
+  "viewport": {
+    "width": 1280,
+    "height": 720
+  },
+  "modules": [
+    {
+      "moduleId": "body-slender-v1",
+      "moc3Sha256": "fa45a041ef8af80ebaae6bb40a85f9adf03ab48ca353211916e17fc62d39bd51",
+      "actions": {
+        "breath": ["breath/00-neutral.png", "breath/01-peak.png", "breath/02-fallback.png"],
+        "blink": ["blink/00-neutral.png", "blink/01-peak.png", "blink/02-fallback.png"],
+        "ears": ["ears/00-neutral.png", "ears/01-peak.png", "ears/02-fallback.png"],
+        "tail": ["tail/00-neutral.png", "tail/01-peak.png", "tail/02-fallback.png"],
+        "stretch": ["stretch/00-neutral.png", "stretch/01-peak.png", "stretch/02-fallback.png"]
+      }
+    },
+    {
+      "moduleId": "body-balanced-v1",
+      "moc3Sha256": "069068b996e5778185d1c13c69e1a5661593ef87e9372d58d7fb4ea62ae653e5",
+      "actions": {
+        "breath": ["breath/00-neutral.png", "breath/01-peak.png", "breath/02-fallback.png"],
+        "blink": ["blink/00-neutral.png", "blink/01-peak.png", "blink/02-fallback.png"],
+        "ears": ["ears/00-neutral.png", "ears/01-peak.png", "ears/02-fallback.png"],
+        "tail": ["tail/00-neutral.png", "tail/01-peak.png", "tail/02-fallback.png"],
+        "stretch": ["stretch/00-neutral.png", "stretch/01-peak.png", "stretch/02-fallback.png"]
+      }
+    },
+    {
+      "moduleId": "body-rounded-v1",
+      "moc3Sha256": "ade61426a4ae981f0dfc6eac2a293442f07903a90471dc4719fa72916d687137",
+      "actions": {
+        "breath": ["breath/00-neutral.png", "breath/01-peak.png", "breath/02-fallback.png"],
+        "blink": ["blink/00-neutral.png", "blink/01-peak.png", "blink/02-fallback.png"],
+        "ears": ["ears/00-neutral.png", "ears/01-peak.png", "ears/02-fallback.png"],
+        "tail": ["tail/00-neutral.png", "tail/01-peak.png", "tail/02-fallback.png"],
+        "stretch": ["stretch/00-neutral.png", "stretch/01-peak.png", "stretch/02-fallback.png"]
+      }
+    }
+  ]
+}

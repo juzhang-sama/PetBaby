@@ -6,7 +6,8 @@ use rusqlite::OptionalExtension;
 use std::path::PathBuf;
 use std::sync::{Arc, Mutex};
 
-pub const BUILTIN_PET_ID: &str = "pet-live2d-v1";
+pub const BUILTIN_PET_ID: &str = "cat-a-standard-v1";
+const LEGACY_BUILTIN_PET_ID: &str = "pet-live2d-v1";
 const ACTIVE_KEY: &str = "app:active_pet_id";
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
@@ -104,6 +105,10 @@ impl ActivePetService {
         let persisted = self.read_persisted_active()?;
         let active_pet_id = match persisted.as_deref() {
             Some(BUILTIN_PET_ID) => BUILTIN_PET_ID.to_owned(),
+            Some(LEGACY_BUILTIN_PET_ID) => {
+                self.save_persisted_active(BUILTIN_PET_ID)?;
+                BUILTIN_PET_ID.to_owned()
+            }
             Some(pet_id) if self.installed_pet_is_healthy(pet_id)? => pet_id.to_owned(),
             _ => {
                 self.save_persisted_active(BUILTIN_PET_ID)?;
@@ -735,11 +740,9 @@ mod tests {
         migration::{migrate_v1_pet_assets, MigrationOutcome},
     };
     use crate::storage::Storage;
+    use crate::test_support::TestStorageRoot;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
-
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     struct ActiveHarness {
         root: PathBuf,
@@ -748,13 +751,24 @@ mod tests {
         session: SharedActivePetSession,
         service: ActivePetService,
         gate: SharedPetMutationGate,
+        // Keep last so every SQLite-owning field is dropped before directory cleanup.
+        _storage_root: TestStorageRoot,
+    }
+
+    #[test]
+    fn active_harness_drop_removes_storage_root() {
+        let test = ActiveHarness::new();
+        let root = test.root.clone();
+
+        drop(test);
+
+        assert!(!root.exists(), "storage root remained: {}", root.display());
     }
 
     impl ActiveHarness {
         fn new() -> Self {
-            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let root =
-                std::env::temp_dir().join(format!("desktop-pet-active-{}-{n}", std::process::id()));
+            let storage_root = TestStorageRoot::claim("active-pet").unwrap();
+            let root = storage_root.path().to_path_buf();
             let pets_dir = root.join("pets");
             let storage = Arc::new(Mutex::new(Storage::open(&pets_dir).unwrap()));
             let session = Arc::new(Mutex::new(ActivePetSession::new()));
@@ -772,6 +786,7 @@ mod tests {
                 session,
                 service,
                 gate,
+                _storage_root: storage_root,
             }
         }
 
@@ -948,6 +963,7 @@ mod tests {
 
     #[test]
     fn missing_or_invalid_selection_repairs_to_builtin() {
+        assert_eq!(BUILTIN_PET_ID, "cat-a-standard-v1");
         let test = ActiveHarness::new();
         assert_eq!(test.service.restore().unwrap(), BUILTIN_PET_ID);
         assert_eq!(test.persisted_active().as_deref(), Some(BUILTIN_PET_ID));

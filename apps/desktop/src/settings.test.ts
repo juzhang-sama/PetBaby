@@ -22,7 +22,7 @@ describe("settings upload creation assembly", () => {
     const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
 
     expect(source).toContain("new CreationPageRun(");
-    expect(source).toContain("new UploadCreationView(");
+    expect(source).toContain("new PhotoAvatarCreationView(");
     expect(source).toContain("new ComposerCreationView(");
     expect(source).toContain("new AdoptionCreationView(");
     expect(source).toContain("creationApi.adoptionCatalog");
@@ -33,7 +33,7 @@ describe("settings upload creation assembly", () => {
     const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
 
     expect(source).toContain("new CreationPageActivity(");
-    expect(source.match(/activity: creationActivity/g)).toHaveLength(4);
+    expect(source.match(/activity: creationActivity/g)).toHaveLength(3);
     expect(source).toContain("new CreationPageFocusManager(");
     expect(source).toContain("creationFocus.enter(");
     expect(source).toContain("creationFocus.returnToTrigger(");
@@ -71,48 +71,78 @@ describe("settings upload creation assembly", () => {
     expect(config).toContain('settings: join(process.cwd(), "settings.html")');
   });
 
-  it("assembles the durable upload view without legacy creation truth sources", () => {
-    const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
-
-    expect(source).toContain("new UploadCreationView(");
-    expect(source).toContain("creationApi");
-    expect(source).toContain("finalizeCreation");
-    expect(source).toContain("if (selectedView === view) return;");
-    for (const forbidden of [
-      ["pet", "create"].join("_"),
-      ["pet", "creation", "resume"].join("_"),
-      ["session", "Storage"].join(""),
-      "CreationWizardRun",
-      "CreationResume",
-    ]) {
-      expect(source).not.toContain(forbidden);
-    }
-  });
-
-  it("keeps one accessible cat upload path with explicit naming and final action", () => {
+  it("replaces the standalone calibration demo with accessible current-pet controls", () => {
     const html = readFileSync(new URL("../settings.html", import.meta.url), "utf8");
-
-    expect(html).not.toContain('value="dog"');
-    expect(html).toContain('for="pet-name"');
-    expect(html).toContain('aria-describedby="pet-name-help pet-name-error"');
-    expect(html).toContain("满意，出现在桌面");
-    expect(html).toContain("上传到第三方生成平台");
-    expect(html).not.toContain('maxlength="40"');
-    expect(html).toContain('accept="image/png,image/jpeg"');
-    expect(html).toContain("1–20 个可见字符");
-    expect(html).toContain("按完整字素计");
-    expect(html).toContain("原图会仅在本机临时保存用于失败恢复");
-    expect(html).toContain("完成或放弃后删除");
-    expect(html).toContain('id="upload-abandon"');
-  });
-
-  it("loads source and candidate contracts from strongly typed backend commands", () => {
     const source = readFileSync(new URL("./settings.ts", import.meta.url), "utf8");
-    const api = readFileSync(new URL("./creation/api.ts", import.meta.url), "utf8");
-    expect(source).toContain('"creation_upload_candidate_assets"');
-    expect(api).toContain('"creation_upload_source"');
-    expect(source).not.toContain("schemaVersion: 3");
-    expect(source).not.toContain('"gen_cutout_b64"');
-    expect(source).not.toContain('"gen_motion_profile"');
+    const rust = readFileSync(new URL("../src-tauri/src/lib.rs", import.meta.url), "utf8");
+    const config = readFileSync(new URL("../vite.config.ts", import.meta.url), "utf8");
+    const capabilities = JSON.parse(readFileSync(
+      new URL("../src-tauri/capabilities/settings-close.json", import.meta.url),
+      "utf8",
+    )) as { windows: string[]; permissions: string[] };
+
+    expect(html).toContain('id="calibration-section"');
+    expect(html).toContain('for="calibration-breath"');
+    expect(html).toContain('min="0" max="5" step="0.1" value="2"');
+    expect(html).not.toContain('for="calibration-blink"');
+    expect(html).not.toContain('id="calibration-blink"');
+    expect(html).toContain('for="calibration-feedback"');
+    expect(html).toContain('min="0" max="1" step="0.05" value="0.6"');
+    expect(html).toContain('role="status" aria-live="polite"');
+    expect(html).toContain('role="alert"');
+    expect(source).toContain("new PetCalibrationControl(");
+    expect(source).toContain("entry.isCurrent");
+    expect(source).toContain('"pet_calibration_save"');
+    expect(source).toContain('"settings:navigate"');
+    expect(source).toContain("initializeSettingsNavigation({");
+    expect(source).toContain('listen<unknown>("settings:navigate"');
+    expect(source).toContain('invoke<string | null>("settings_take_pending_navigation")');
+    expect(source).toContain("wireSettingsPageLifecycle(window");
+    expect(source).toContain("new SettingsCloseCoordinator({");
+    expect(source).toContain("settingsWindow.onCloseRequested(handler)");
+    expect(source).toContain("destroy: () => settingsWindow.destroy()");
+    expect(source).not.toContain("close: () => settingsWindow.close()");
+    expect(capabilities.windows).toEqual(["settings"]);
+    expect(capabilities.permissions).toEqual(["core:window:allow-destroy"]);
+    expect(source).toContain("calibrationControl.settleForClose()");
+    expect(source).toContain("calibrationControl.restoreBeforeClose()");
+    expect(source).toContain("[settings] calibration close coordination");
+    expect(rust).toContain('show_settings_window(app, Some("calibration"))');
+    expect(rust).toContain('app.state::<SettingsNavigationState>().publish(section)?');
+    expect(rust).toMatch(/\.emit\(\s*"settings:navigate"/);
+    expect(rust).not.toContain("calibration.html");
+    expect(config).not.toMatch(/calibration\s*:/);
   });
+
+  it("keeps one accessible photo-avatar path with final Live2D actions", () => {
+    const html = readFileSync(new URL("../settings.html", import.meta.url), "utf8");
+    const css = readFileSync(new URL("./styles.css", import.meta.url), "utf8");
+    const workspaceStart = html.indexOf('<section id="photo-avatar-workspace"');
+    const workspaceEnd = html.indexOf("</section>", workspaceStart);
+    const previewStart = html.indexOf('<div id="photo-avatar-preview"', workspaceStart);
+    const previewEnd = html.indexOf('<div id="photo-avatar-complete"', previewStart);
+    const regenerate = html.indexOf('id="photo-avatar-regenerate"', workspaceStart);
+
+    expect(html).toContain('id="photo-avatar-workspace"');
+    expect(html).toContain('id="photo-avatar-files"');
+    expect(html).toContain('accept="image/png,image/jpeg" multiple');
+    expect(html).toContain('id="photo-avatar-live2d"');
+    expect(html).toContain("照片分身像素动态预览");
+    expect(html).toContain('id="photo-avatar-accept"');
+    expect(html).toContain('id="photo-avatar-regenerate"');
+    expect(html).toContain('id="photo-avatar-revise"');
+    expect(html).toContain('id="photo-avatar-consent-dialog"');
+    expect(html).toContain("lk888.ai");
+    expect(html).toContain("gpt-4o 仅用于分析与补全");
+    expect(html).toContain("gpt-image-2 仅用于生成纹理");
+    expect(html).toContain("没有公开删除 API");
+    expect(html).toContain("保存期限尚未核验");
+    expect(html).toContain("隐私政策版本尚未核验");
+    expect(html).not.toContain("lk888 已删除");
+    expect(css).toMatch(/\.settings-shell \.photo-avatar-live2d\s*{[^}]*position:\s*relative;/s);
+    expect(previewStart).toBeLessThan(previewEnd);
+    expect(previewEnd).toBeLessThan(regenerate);
+    expect(regenerate).toBeLessThan(workspaceEnd);
+  });
+
 });

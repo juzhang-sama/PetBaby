@@ -31,6 +31,7 @@ describe("PetRenderer contract", () => {
       setExpression: vi.fn(),
       setLookTarget: vi.fn(),
       setLipSync: vi.fn(),
+      setCalibration: vi.fn(),
       hitTest: vi.fn(() => null),
       setVisibility: vi.fn(),
       update: vi.fn(),

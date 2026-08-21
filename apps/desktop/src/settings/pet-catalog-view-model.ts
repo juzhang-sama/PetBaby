@@ -1,7 +1,7 @@
 import type { PetCatalogEntry, PetLifecycle } from "../pets/pet-catalog-contract";
 
 export type PetListAction = {
-  kind: "switch" | "continue" | "delete";
+  kind: "edit" | "switch" | "continue" | "delete";
   label: string;
 };
 
@@ -43,6 +43,7 @@ export function buildPetListRows(entries: PetCatalogEntry[]): PetListRow[] {
 
 function actionsFor(entry: PetCatalogEntry): PetListAction[] {
   const actions: PetListAction[] = [];
+  if (entry.source === "user") actions.push({ kind: "edit", label: "编辑" });
   if (!entry.isCurrent) {
     if (entry.status === "ready") actions.push({ kind: "switch", label: "设为当前" });
   }

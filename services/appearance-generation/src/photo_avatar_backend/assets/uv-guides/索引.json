@@ -1,0 +1,57 @@
+{
+  "schemaVersion": 2,
+  "generatorVersion": "opaque-uv-work-canvas-v2",
+  "guides": [
+    {
+      "moduleId": "body-slender-v1",
+      "workCanvasPath": "body-slender-v1.work.png",
+      "regionMapPath": "body-slender-v1.regions.png",
+      "workCanvasSha256": "4bdb94c46d7de2726a9d15453b79ff143a6e1bd860a5ab00778a8474f6778223",
+      "regionMapSha256": "96bebc3bc6543c41c89f21429b84116a93f1cd91ee9970f00a73d6e4c46d55a9",
+      "sourceTextureSha256": "e1909f26ed3e0f3fb988d171af39541525558c7b4f35b3ef916cdbb13ace873d",
+      "moduleContractSha256": "5c74530a17485a985d50e73ce27e207d2836c143dcbdcdfbd66bfe01da47c5d6",
+      "sourceAlphaSha256": "3911e30ba998afd77872505a3ff866a226195e7ab2d9bd0eba32686f8ae78246",
+      "width": 2048,
+      "height": 2048,
+      "visualReview": {
+        "status": "passed",
+        "tool": "view_image",
+        "conclusion": "仅见固定六色平面 UV 岛与透明边界；未见脸部绘制、眼睛、毛色、花纹或鼻口身份细节。"
+      }
+    },
+    {
+      "moduleId": "body-balanced-v1",
+      "workCanvasPath": "body-balanced-v1.work.png",
+      "regionMapPath": "body-balanced-v1.regions.png",
+      "workCanvasSha256": "4bdb94c46d7de2726a9d15453b79ff143a6e1bd860a5ab00778a8474f6778223",
+      "regionMapSha256": "96bebc3bc6543c41c89f21429b84116a93f1cd91ee9970f00a73d6e4c46d55a9",
+      "sourceTextureSha256": "e1909f26ed3e0f3fb988d171af39541525558c7b4f35b3ef916cdbb13ace873d",
+      "moduleContractSha256": "887b29c5fbef5a4957dab9e2af9dd87f49db001043f3c6b2dafc25a1a072ab6e",
+      "sourceAlphaSha256": "3911e30ba998afd77872505a3ff866a226195e7ab2d9bd0eba32686f8ae78246",
+      "width": 2048,
+      "height": 2048,
+      "visualReview": {
+        "status": "passed",
+        "tool": "view_image",
+        "conclusion": "仅见固定六色平面 UV 岛与透明边界；未见脸部绘制、眼睛、毛色、花纹或鼻口身份细节。"
+      }
+    },
+    {
+      "moduleId": "body-rounded-v1",
+      "workCanvasPath": "body-rounded-v1.work.png",
+      "regionMapPath": "body-rounded-v1.regions.png",
+      "workCanvasSha256": "4bdb94c46d7de2726a9d15453b79ff143a6e1bd860a5ab00778a8474f6778223",
+      "regionMapSha256": "96bebc3bc6543c41c89f21429b84116a93f1cd91ee9970f00a73d6e4c46d55a9",
+      "sourceTextureSha256": "e1909f26ed3e0f3fb988d171af39541525558c7b4f35b3ef916cdbb13ace873d",
+      "moduleContractSha256": "437a5f2a43471a140f6e3517879ff297190e79b552ab5fbae8fc8a677e44fad1",
+      "sourceAlphaSha256": "3911e30ba998afd77872505a3ff866a226195e7ab2d9bd0eba32686f8ae78246",
+      "width": 2048,
+      "height": 2048,
+      "visualReview": {
+        "status": "passed",
+        "tool": "view_image",
+        "conclusion": "仅见固定六色平面 UV 岛与透明边界；未见脸部绘制、眼睛、毛色、花纹或鼻口身份细节。"
+      }
+    }
+  ]
+}

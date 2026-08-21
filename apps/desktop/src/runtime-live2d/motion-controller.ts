@@ -3,6 +3,8 @@ import type { PetMotion, PetMotionHandle } from "../runtime/pet-renderer";
 export interface MotionPlaybackOptions {
   priority: number;
   loop: boolean;
+  fadeInMs?: number;
+  fadeOutMs?: number;
 }
 
 export interface MotionPlaybackPort {
@@ -32,8 +34,17 @@ export class MotionController {
     this.now = options.now ?? (() => performance.now());
   }
 
-  play(name: PetMotion, options: Partial<MotionPlaybackOptions> = {}): PetMotionHandle {
-    const requested = { priority: options.priority ?? 0, loop: options.loop ?? false };
+  play(
+    name: PetMotion,
+    options: Partial<MotionPlaybackOptions> = {},
+    onFinished?: () => void,
+  ): PetMotionHandle {
+    const requested: MotionPlaybackOptions = {
+      priority: options.priority ?? 0,
+      loop: options.loop ?? false,
+      ...(options.fadeInMs === undefined ? {} : { fadeInMs: options.fadeInMs }),
+      ...(options.fadeOutMs === undefined ? {} : { fadeOutMs: options.fadeOutMs }),
+    };
     if (this.stopped || (this.active && requested.priority < this.active.priority)) return NOOP_HANDLE;
 
     this.cancelActive();
@@ -47,7 +58,7 @@ export class MotionController {
       cancelled: false,
     };
     this.active = state;
-    state.handle = this.options.port.start(name, requested, () => this.finish(token));
+    state.handle = this.options.port.start(name, requested, () => this.finish(token, onFinished));
 
     let cancelled = false;
     return {
@@ -62,8 +73,15 @@ export class MotionController {
 
   current(): ActiveMotion | null {
     if (!this.active) return null;
-    const { name, priority, loop, startedAt } = this.active;
-    return { name, priority, loop, startedAt };
+    const { name, priority, loop, startedAt, fadeInMs, fadeOutMs } = this.active;
+    return {
+      name,
+      priority,
+      loop,
+      startedAt,
+      ...(fadeInMs === undefined ? {} : { fadeInMs }),
+      ...(fadeOutMs === undefined ? {} : { fadeOutMs }),
+    };
   }
 
   stopAll(): void {
@@ -73,11 +91,13 @@ export class MotionController {
     this.options.port.stopAll();
   }
 
-  private finish(token: symbol): void {
+  private finish(token: symbol, onFinished?: () => void): void {
     if (this.active?.token !== token) return;
     const wasLoop = this.active.loop;
     this.active = null;
     if (wasLoop || this.stopped) return;
+    onFinished?.();
+    if (this.active) return;
     const resume = this.options.resumeForState?.();
     if (resume) this.play(resume.name, resume);
   }

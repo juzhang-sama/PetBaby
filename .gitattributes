@@ -3,3 +3,4 @@ apps/desktop/public/builtin-pets/pet-live2d-v1/*.cdi3.json text eol=lf
 apps/desktop/public/builtin-pets/pet-live2d-v1/*.model3.json text eol=lf
 apps/desktop/public/builtin-pets/pet-live2d-v1/许可证.json text eol=crlf
 apps/desktop/public/creation-content/**/*.json text eol=lf
+apps/desktop/public/cat-character-modules/**/*.json text eol=lf

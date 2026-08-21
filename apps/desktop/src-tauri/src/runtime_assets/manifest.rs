@@ -1,6 +1,11 @@
 use serde::{Deserialize, Serialize};
 use std::collections::HashSet;
 
+use super::cat_character::{
+    parse_cat_character_manifest, parse_cat_spatial_manifest, RuntimeAssetManifestV4,
+    RuntimeAssetManifestV5,
+};
+
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct ManifestFileEntry {
@@ -73,6 +78,8 @@ pub enum RuntimeAssetManifest {
     V1(RuntimeAssetManifestV1),
     V2(RuntimeAssetManifestV2),
     V3(RuntimeAssetManifestV3),
+    V4(RuntimeAssetManifestV4),
+    V5(RuntimeAssetManifestV5),
 }
 
 pub fn manifest_files(manifest: &RuntimeAssetManifest) -> &[ManifestFileEntry] {
@@ -80,6 +87,8 @@ pub fn manifest_files(manifest: &RuntimeAssetManifest) -> &[ManifestFileEntry] {
         RuntimeAssetManifest::V1(value) => &value.files,
         RuntimeAssetManifest::V2(value) => &value.files,
         RuntimeAssetManifest::V3(value) => &value.files,
+        RuntimeAssetManifest::V4(value) => &value.files,
+        RuntimeAssetManifest::V5(value) => &value.files,
     }
 }
 
@@ -88,6 +97,8 @@ pub fn manifest_identity(manifest: &RuntimeAssetManifest) -> (&str, &str) {
         RuntimeAssetManifest::V1(value) => (&value.pet_id, &value.variant_id),
         RuntimeAssetManifest::V2(value) => (&value.pet_id, &value.variant_id),
         RuntimeAssetManifest::V3(value) => (&value.pet_id, &value.variant_id),
+        RuntimeAssetManifest::V4(value) => (&value.pet_id, &value.variant_id),
+        RuntimeAssetManifest::V5(value) => (&value.pet_id, &value.variant_id),
     }
 }
 
@@ -124,7 +135,7 @@ pub fn validate_relative_path(path: &str) -> Result<(), String> {
     normalize_relative_path(path).map(|_| ())
 }
 
-fn validate_files(files: &[ManifestFileEntry], v1: bool) -> Result<(), String> {
+pub(super) fn validate_files(files: &[ManifestFileEntry], v1: bool) -> Result<(), String> {
     if files.is_empty() {
         return Err("manifest must declare at least one file".into());
     }
@@ -183,6 +194,12 @@ pub fn parse_manifest(json: &str) -> Result<RuntimeAssetManifest, String> {
     }
     if version == 3 {
         return parse_manifest_v3(value).map(RuntimeAssetManifest::V3);
+    }
+    if version == 4 {
+        return parse_cat_character_manifest(value).map(RuntimeAssetManifest::V4);
+    }
+    if version == 5 {
+        return parse_cat_spatial_manifest(value).map(RuntimeAssetManifest::V5);
     }
     if version != 2 {
         return Err(format!("unsupported schemaVersion: {version}"));

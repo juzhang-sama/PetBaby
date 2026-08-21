@@ -1,8 +1,8 @@
 import { readFileSync } from "node:fs";
 import { describe, expect, it } from "vitest";
 
-describe("Tauri creation-content resource bundle", () => {
-  it("walks the content directory so adoption and composer hierarchy is preserved", () => {
+describe("Tauri creation resource bundle", () => {
+  it("walks the content and body-module directories with their hierarchy preserved", () => {
     const config = JSON.parse(readFileSync(
       new URL("../../src-tauri/tauri.conf.json", import.meta.url),
       "utf8",
@@ -10,6 +10,7 @@ describe("Tauri creation-content resource bundle", () => {
 
     expect(config.bundle.resources).toEqual({
       "../public/creation-content": "creation-content",
+      "../public/cat-character-modules": "cat-character-modules",
     });
   });
 
@@ -21,5 +22,6 @@ describe("Tauri creation-content resource bundle", () => {
 
     expect(attributes).toContain("apps/desktop/public/creation-content/**/*.json text eol=lf");
     expect(attributes).toContain("apps/desktop/public/builtin-pets/pet-live2d-v1/*.model3.json text eol=lf");
+    expect(attributes).toContain("apps/desktop/public/cat-character-modules/**/*.json text eol=lf");
   });
 });

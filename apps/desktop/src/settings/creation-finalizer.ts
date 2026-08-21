@@ -9,18 +9,27 @@ export interface PreparedCreation {
   petId: string;
   variantId: string;
   alreadyCompleted: boolean;
+  cleanupPending?: boolean;
 }
 
 export interface FinalizerPorts {
-  prepare(sessionId: string, requestId: string): Promise<PreparedCreation>;
+  prepare(
+    sessionId: string,
+    requestId: string,
+    confirmNeedsReview: boolean,
+  ): Promise<PreparedCreation>;
   switchPet(petId: string, options: PetSwitchOptions): Promise<PetSwitchResult>;
   abort(sessionId: string, error: string): Promise<CreationSnapshot>;
   cancel(requestId: string): Promise<void>;
 }
 
 const tauriFinalizerPorts: FinalizerPorts = {
-  prepare: (sessionId, requestId) =>
-    invoke<PreparedCreation>("creation_prepare_finalize", { sessionId, requestId }),
+  prepare: (sessionId, requestId, confirmNeedsReview) =>
+    invoke<PreparedCreation>("creation_prepare_finalize", {
+      sessionId,
+      requestId,
+      confirmNeedsReview,
+    }),
   switchPet: (petId, options) => requestPetSwitch(petId, options),
   abort: (sessionId, error) =>
     invoke<CreationSnapshot>("creation_abort_finalize", { sessionId, error }),
@@ -46,11 +55,12 @@ async function boundedAbort(action: () => Promise<unknown>): Promise<void> {
 export async function finalizeCreation(
   sessionId: string,
   ports: FinalizerPorts = tauriFinalizerPorts,
+  options: { confirmNeedsReview?: boolean } = {},
 ): Promise<PetSwitchResult> {
   const requestId = crypto.randomUUID();
   let prepared: PreparedCreation;
   try {
-    prepared = await ports.prepare(sessionId, requestId);
+    prepared = await ports.prepare(sessionId, requestId, options.confirmNeedsReview === true);
   } catch (error) {
     await ports.cancel(requestId).catch(() => undefined);
     throw error;
@@ -82,6 +92,13 @@ export async function finalizeCreation(
     } finally {
       await ports.cancel(requestId).catch(() => undefined);
     }
+  }
+  if (result.ok && prepared.cleanupPending) {
+    const cleanupWarning = "照片源已从本机删除，远端清理将在后台重试。";
+    return {
+      ...result,
+      warning: result.warning ? `${result.warning}；${cleanupWarning}` : cleanupWarning,
+    };
   }
   return result;
 }

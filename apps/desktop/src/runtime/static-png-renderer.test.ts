@@ -1,4 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
+import { DEFAULT_PET_CALIBRATION } from "./pet-calibration";
 import { loadBrowserImage, StaticPngRenderer } from "./static-png-renderer";
 
 function createHarness() {
@@ -6,6 +7,10 @@ function createHarness() {
     clearRect: vi.fn(),
     drawImage: vi.fn(),
     setTransform: vi.fn(),
+    save: vi.fn(),
+    restore: vi.fn(),
+    translate: vi.fn(),
+    scale: vi.fn(),
   };
   const canvas = {
     width: 0,
@@ -18,10 +23,16 @@ function createHarness() {
   const image = { width: 200, height: 400 } as unknown as CanvasImageSource & { width: number; height: number };
   const loadImage = vi.fn(async () => image);
   const renderer = new StaticPngRenderer(root, { createCanvas: () => canvas, loadImage });
+  renderer.setVisibility(true);
   return { canvas, context, image, loadImage, renderer, root };
 }
 
 describe("StaticPngRenderer", () => {
+  it("does not expose the frozen whole-image blink effect", () => {
+    const { renderer } = createHarness();
+    expect("setBlink" in renderer).toBe(false);
+  });
+
   it("loads browser images anonymously so their canvases remain readable", async () => {
     const decode = vi.fn(async () => undefined);
     class TestImage {
@@ -64,6 +75,41 @@ describe("StaticPngRenderer", () => {
     expect(canvas.style.height).toBe("400px");
     expect(context.setTransform).toHaveBeenCalledWith(2, 0, 0, 2, 0, 0);
     expect(context.drawImage).toHaveBeenLastCalledWith(image, 100, 0, 200, 400);
+  });
+
+  it("applies calibrated breathing around the image bottom center", async () => {
+    const { context, renderer } = createHarness();
+    renderer.resize({ width: 400, height: 400, dpr: 1 });
+    await renderer.load({ kind: "static-png", imageUrl: "pet.png" });
+    renderer.setCalibration({
+      ...DEFAULT_PET_CALIBRATION,
+      breathAmplitudePercent: 5,
+    });
+    context.translate.mockClear();
+    context.scale.mockClear();
+
+    renderer.update(700);
+
+    expect(context.translate).toHaveBeenNthCalledWith(1, 200, 400);
+    expect(context.scale).toHaveBeenNthCalledWith(1, 1.05, 1.05);
+    expect(context.translate).toHaveBeenNthCalledWith(2, -200, -400);
+  });
+
+  it("does not render or advance breathing while hidden", async () => {
+    const { context, renderer } = createHarness();
+    renderer.resize({ width: 400, height: 400, dpr: 1 });
+    await renderer.load({ kind: "static-png", imageUrl: "pet.png" });
+    renderer.setCalibration({ ...DEFAULT_PET_CALIBRATION, breathAmplitudePercent: 5 });
+    renderer.setVisibility(false);
+    context.drawImage.mockClear();
+    context.scale.mockClear();
+
+    renderer.update(60_000);
+
+    expect(context.drawImage).not.toHaveBeenCalled();
+    renderer.setVisibility(true);
+    renderer.update(700);
+    expect(context.scale).toHaveBeenNthCalledWith(1, 1.05, 1.05);
   });
 
   it("hit tests the visible body bounds", async () => {

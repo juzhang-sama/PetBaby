@@ -1,5 +1,6 @@
 import { describe, expect, it, vi } from "vitest";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
+import type { RuntimeAssetManifestV4 } from "../runtime-assets/cat-character-manifest";
 import { validAnimatedManifest, validMotionProfile } from "./animated-image-test-fixtures";
 import type { PetRenderAsset, PetRenderer } from "./pet-renderer";
 import { createPetRendererRuntime, type RendererDiagnostic } from "./pet-renderer-bootstrap";
@@ -12,6 +13,7 @@ function fakeRenderer(loadError?: Error): PetRenderer {
     setExpression: vi.fn(),
     setLookTarget: vi.fn(),
     setLipSync: vi.fn(),
+    setCalibration: vi.fn(),
     hitTest: vi.fn(() => null),
     setVisibility: vi.fn(),
     update: vi.fn(),
@@ -47,6 +49,35 @@ const v2Manifest: RuntimeAssetManifestV2 = {
   ],
   semantics: { motions: {}, expressions: {}, hitAreas: {}, parameters: {} },
   license: { id: "test", author: "test", source: "test", commercialUse: true, redistributable: false },
+};
+
+const v4Manifest: RuntimeAssetManifestV4 = {
+  schemaVersion: 4,
+  renderer: "cat-live2d-v1",
+  petId: "cat-a",
+  variantId: "standard-v1",
+  skeletonVersion: "cat-a-live2d-v1",
+  modelEntry: "cat.model3.json",
+  previewImage: "preview.png",
+  files: [
+    { role: "model", relativePath: "cat.model3.json", sha256: "ab".repeat(32) },
+    { role: "preview", relativePath: "preview.png", sha256: "cd".repeat(32) },
+  ],
+  motions: Object.fromEntries([
+    "breathing", "blink", "ear-twitch", "tail-idle", "pointer-focus", "pet-happy",
+    "sleepy-yawn", "half-stand-stretch",
+  ].map((name) => [name, { group: name, index: 0 }])) as RuntimeAssetManifestV4["motions"],
+  parameters: Object.fromEntries([
+    "eyeOpenLeft", "eyeOpenRight", "eyeBallX", "eyeBallY", "earLeft", "earRight",
+    "tailAngle", "tailCurl", "tailTip", "bodyBreath", "bodyStretch", "mouthOpen",
+  ].map((name) => [name, `Param-${name}`])) as RuntimeAssetManifestV4["parameters"],
+  hitAreas: { body: "ArtMeshBody", edgeTail: "ArtMeshTail" },
+  edgeTailStates: Object.fromEntries(
+    ["left", "right", "top", "bottom"].map((name) => [name, {
+      group: `edge-tail-${name}`, index: 0, tailArtMesh: "ArtMeshTail",
+    }]),
+  ) as RuntimeAssetManifestV4["edgeTailStates"],
+  license: { id: "project", author: "PetBaby", source: "project", commercialUse: true, redistributable: true },
 };
 
 function harness(options: { liveLoadError?: Error } = {}) {
@@ -130,6 +161,17 @@ describe("createPetRendererRuntime", () => {
     expect(test.liveRenderer.load).toHaveBeenCalledWith(expect.objectContaining({ kind: "live2d" }));
     expect(test.root.replaceChildren).toHaveBeenCalledWith(runtime.getSurface());
     expect(runtime.kind()).toBe("live2d");
+  });
+
+  it("routes a v4 cat package to real Live2D without preview fallback", async () => {
+    const test = harness();
+
+    const runtime = await createPetRendererRuntime("cat-a", v4Manifest, test.options);
+
+    expect(test.options.loadLive2DAsset).toHaveBeenCalledWith("cat-a", v4Manifest);
+    expect(test.liveRenderer.load).toHaveBeenCalledWith(expect.objectContaining({ kind: "live2d" }));
+    expect(runtime.kind()).toBe("live2d");
+    expect(test.staticRenderers).toHaveLength(0);
   });
 
   it("boots schema v3 through the animated image renderer", async () => {
@@ -228,6 +270,20 @@ describe("createPetRendererRuntime", () => {
       stage: "live2d-initial-load",
       message: "webgl unavailable",
     }]);
+  });
+
+  it("fails closed when initial v4 Live2D loading fails", async () => {
+    const test = harness({ liveLoadError: new Error("cat model rejected") });
+
+    await expect(createPetRendererRuntime("cat-a", v4Manifest, test.options))
+      .rejects.toThrow("cat model rejected");
+
+    expect(test.staticRenderers).toHaveLength(0);
+    expect(test.diagnostics).toContainEqual(expect.objectContaining({
+      petId: "cat-a",
+      manifestVersion: 4,
+      stage: "live2d-initial-load",
+    }));
   });
 
   it("replaces Live2D with the preview after context restoration fails", async () => {

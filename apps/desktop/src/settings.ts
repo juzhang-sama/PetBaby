@@ -1,4 +1,6 @@
 import { invoke } from "@tauri-apps/api/core";
+import { emitTo, listen } from "@tauri-apps/api/event";
+import { getCurrentWindow } from "@tauri-apps/api/window";
 import { creationApi } from "./creation/api";
 import { loadComposerPack } from "./creation/composer-pack";
 import {
@@ -7,6 +9,17 @@ import {
   type ComposerRenderPorts,
 } from "./creation/composer-renderer";
 import type { PetCatalogEntry } from "./pets/pet-catalog-contract";
+import { createPetProfileClient } from "./pets/pet-profile-contract";
+import { loadPreferences, requestPetDisplayScale } from "./runtime/bridge";
+import { isProbePreferences } from "./runtime/contracts";
+import {
+  PET_CALIBRATION_PREVIEW_REQUEST,
+  PET_CALIBRATION_PREVIEW_RESULT,
+} from "./runtime/contracts";
+import {
+  type PetCalibrationV1,
+} from "./runtime/pet-calibration";
+import { requestPetCalibrationPreview } from "./runtime/pet-stage";
 import {
   AdoptionCreationView,
   type AdoptionCreationElements,
@@ -25,17 +38,28 @@ import {
 } from "./settings/creation-page-run";
 import { finalizeCreation } from "./settings/creation-finalizer";
 import {
+  DisplaySizeControl,
+  initializeDisplaySizeControl,
+} from "./settings/display-size-control";
+import {
   catalogSwitchStatus,
   deleteCurrentCatalogPet,
   mergeCatalogWarnings,
 } from "./settings/pet-catalog-delete-flow";
 import { buildPetListRows, type PetListAction } from "./settings/pet-catalog-view-model";
+import { PetProfileEditor } from "./settings/pet-profile-editor";
+import {
+  PetCalibrationCatalogCoordinator,
+  PetCalibrationControl,
+} from "./settings/pet-calibration-control";
+import { initializeSettingsNavigation } from "./settings/settings-navigation";
+import { wireSettingsPageLifecycle } from "./settings/settings-page-lifecycle";
+import { SettingsCloseCoordinator } from "./settings/settings-close-coordinator";
 import { requestPetSwitch } from "./settings/pet-switch-client";
 import {
-  queryUploadCreationElements,
-  type CandidateDynamicAssets,
-  UploadCreationView,
-} from "./settings/upload-creation-view";
+  createPhotoAvatarCreationDomPorts,
+  PhotoAvatarCreationView,
+} from "./settings/photo-avatar-creation-view";
 
 interface DeleteOutcome { warning: string | null; }
 
@@ -52,7 +76,7 @@ const tabCreate = $<HTMLButtonElement>("tab-create");
 const viewList = $<HTMLDivElement>("view-list");
 const viewCreate = $<HTMLDivElement>("view-create");
 const creationHome = $<HTMLElement>("creation-home");
-const uploadWorkspace = $<HTMLElement>("upload-creation-workspace");
+const uploadWorkspace = $<HTMLElement>("photo-avatar-workspace");
 const composerWorkspace = $<HTMLElement>("composer-creation-workspace");
 const adoptionWorkspace = $<HTMLElement>("adoption-creation-workspace");
 const creationStatus = $<HTMLDivElement>("creation-page-status");
@@ -62,12 +86,72 @@ const routeButtons = Array.from(
 const workspaceBackButtons = Array.from(
   document.querySelectorAll<HTMLButtonElement>(".workspace-back"),
 );
+const displaySizeSlider = $<HTMLInputElement>("display-size-slider");
+const displaySizeOutput = $<HTMLOutputElement>("display-size-output");
+const displaySizeStatus = $<HTMLElement>("display-size-status");
+const displaySizeError = $<HTMLElement>("display-size-error");
+const displaySizePresets = Array.from(
+  document.querySelectorAll<HTMLButtonElement>("[data-display-scale]"),
+);
+const calibrationSection = $<HTMLElement>("calibration-section");
+const calibrationPetName = $<HTMLElement>("calibration-pet-name");
+
+const calibrationControl = new PetCalibrationControl({
+  elements: {
+    root: calibrationSection,
+    petName: calibrationPetName,
+    breath: $<HTMLInputElement>("calibration-breath"),
+    breathOutput: $<HTMLOutputElement>("calibration-breath-output"),
+    feedback: $<HTMLInputElement>("calibration-feedback"),
+    feedbackOutput: $<HTMLOutputElement>("calibration-feedback-output"),
+    reset: $<HTMLButtonElement>("calibration-reset"),
+    feedbackTest: $<HTMLButtonElement>("calibration-feedback-test"),
+    cancel: $<HTMLButtonElement>("calibration-cancel"),
+    save: $<HTMLButtonElement>("calibration-save"),
+    status: $<HTMLElement>("calibration-status"),
+    error: $<HTMLElement>("calibration-error"),
+  },
+  ports: {
+    load: (petId) => invoke<PetCalibrationV1>("pet_calibration_load", { petId }),
+    save: (petId, value) => invoke<PetCalibrationV1>("pet_calibration_save", { petId, value }),
+    runtime: async (petId, action, value) => {
+      const result = await requestPetCalibrationPreview(petId, action, value, {
+        ports: {
+          listen: async (handler) => listen<unknown>(
+            PET_CALIBRATION_PREVIEW_RESULT,
+            ({ payload }) => handler(payload),
+          ),
+          emit: (request) => emitTo("pet", PET_CALIBRATION_PREVIEW_REQUEST, request),
+        },
+      });
+      if (!result.ok) throw new Error(result.message);
+    },
+  },
+});
+calibrationControl.mount();
+const calibrationCatalog = new PetCalibrationCatalogCoordinator(calibrationControl);
 
 let catalogEntries: PetCatalogEntry[] = [];
 let catalogBusy: "switch" | "delete" | null = null;
 let selectedView: "list" | "create" = "list";
 let activeCreationRoute: CreationRoute | null = null;
 const creationBusy = { router: false, adoption: false, activity: false };
+
+const profileEditor = new PetProfileEditor(createPetProfileClient(), {
+  elements: {
+    root: $<HTMLElement>("pet-profile-editor"),
+    form: $<HTMLFormElement>("pet-profile-form"),
+    name: $<HTMLInputElement>("pet-profile-name"),
+    gender: $<HTMLSelectElement>("pet-profile-gender"),
+    birthDate: $<HTMLInputElement>("pet-profile-birth-date"),
+    cancel: $<HTMLButtonElement>("pet-profile-cancel"),
+    save: $<HTMLButtonElement>("pet-profile-save"),
+    loading: $<HTMLElement>("pet-profile-loading"),
+    error: $<HTMLElement>("pet-profile-error"),
+  },
+  refreshCatalog: () => renderList(),
+  setStatus: setCatalogStatus,
+});
 
 const creationActivity = new CreationPageActivity(
   (busy) => setCreationBusy("activity", busy),
@@ -83,12 +167,15 @@ function setCatalogStatus(message: string, tone: "info" | "error" | "warning" = 
 function renderCatalogRows(): void {
   listEl.replaceChildren();
   if (catalogEntries.length === 0) {
+    profileEditor.reconcileAnchor(null, null);
     const empty = document.createElement("div");
     empty.className = "empty";
     empty.textContent = "还没有宠物。前往“创建宠物”上传一张猫咪照片吧。";
     listEl.append(empty);
     return;
   }
+  let editorAnchor: HTMLElement | null = null;
+  let editorOpener: HTMLButtonElement | null = null;
   for (const row of buildPetListRows(catalogEntries)) {
     const entry = catalogEntries.find((item) => item.petId === row.petId);
     const item = document.createElement("div");
@@ -120,26 +207,44 @@ function renderCatalogRows(): void {
       button.textContent = catalogBusy === action.kind
         ? action.kind === "switch" ? "正在切换…" : "正在删除…"
         : action.label;
-      button.addEventListener("click", () => { void handleCatalogAction(row.petId, action); });
+      button.addEventListener("click", () => {
+        void handleCatalogAction(row.petId, action, item, button);
+      });
+      if (action.kind === "edit" && row.petId === profileEditor.editingPetId) {
+        editorAnchor = item;
+        editorOpener = button;
+      }
       actions.append(button);
     }
     item.append(copy, actions);
     listEl.append(item);
   }
+  profileEditor.reconcileAnchor(editorAnchor, editorOpener);
 }
 
 async function renderList(): Promise<boolean> {
   try {
     catalogEntries = await invoke<PetCatalogEntry[]>("pet_catalog_list");
     renderCatalogRows();
+    await calibrationCatalog.reconcile(catalogEntries);
     return true;
   } catch (error) {
+    calibrationCatalog.unavailable("当前宠物目录不可用，无法安全校准。请稍后重试。");
     setCatalogStatus(`读取宠物目录失败。请确认桌面宠物正在运行后重试：${String(error)}`, "error");
     return false;
   }
 }
 
-async function handleCatalogAction(petId: string, action: PetListAction): Promise<void> {
+async function handleCatalogAction(
+  petId: string,
+  action: PetListAction,
+  item: HTMLElement,
+  button: HTMLButtonElement,
+): Promise<void> {
+  if (action.kind === "edit") {
+    await profileEditor.open(petId, item, button);
+    return;
+  }
   if (action.kind === "continue") {
     switchView("create");
     return;
@@ -214,34 +319,13 @@ async function deleteCatalogPet(petId: string): Promise<void> {
   }
 }
 
-const candidatePreview = new CandidatePreviewController();
-const uploadView = new UploadCreationView(
+const photoAvatarView = new PhotoAvatarCreationView(
   {
-    creation: creationApi,
+    api: creationApi,
     finalize: finalizeCreation,
   },
-  {
-    elements: queryUploadCreationElements(document),
-    createElement: (tagName) => document.createElement(tagName),
-    loadApiKey: () => invoke<string | null>("app_setting_get", { key: "lk888_api_key" }),
-    saveApiKey: (value) => invoke<void>("app_setting_set", { key: "lk888_api_key", value }),
-    loadCandidate: (jobId) =>
-      invoke<CandidateDynamicAssets>("creation_upload_candidate_assets", { jobId }),
-    preview: candidatePreview,
-    setInterval: (callback, delayMs) => window.setInterval(callback, delayMs),
-    clearInterval: (id) => window.clearInterval(id),
-    createObjectURL: (file) => URL.createObjectURL(file),
-    revokeObjectURL: (url) => URL.revokeObjectURL(url),
-    confirm: (message) => window.confirm(message),
-    activity: creationActivity,
-    onCancel: () => switchView("list"),
-    onAbandoned: () => {
-      setCreationStatus("已放弃创建并清理本地草稿。");
-      showCreationHome();
-    },
-  },
+  createPhotoAvatarCreationDomPorts(document, { showThirdPartyConsent }, () => showCreationHome()),
 );
-uploadView.mount();
 
 const composerRoot = "/creation-content/composer/cat-cute-v1";
 const composerAssetUrl = (relativePath: string): string =>
@@ -325,8 +409,8 @@ const creationPage = new CreationPageRun({
   creation: creationApi,
   views: {
     upload: {
-      open: async () => { await uploadView.enter(); },
-      leave: () => uploadView.leave(),
+      open: async (sessionId) => { await photoAvatarView.enter(sessionId); },
+      leave: () => photoAvatarView.leave(),
     },
     composer: {
       open: async (sessionId) => {
@@ -403,6 +487,14 @@ function showDraftChoice(method: "upload" | "composer"): Promise<DraftChoice> {
       resolve(choice === "continue" || choice === "abandon" ? choice : "cancel");
     };
     dialog.addEventListener("close", settle, { once: true });
+    dialog.showModal();
+  });
+}
+
+function showThirdPartyConsent(): Promise<boolean> {
+  const dialog = $<HTMLDialogElement>("photo-avatar-consent-dialog");
+  return new Promise((resolve) => {
+    dialog.addEventListener("close", () => resolve(dialog.returnValue === "accept"), { once: true });
     dialog.showModal();
   });
 }
@@ -502,6 +594,7 @@ function switchView(view: "list" | "create"): void {
     creationFocus.cancel();
     void renderList();
   } else {
+    profileEditor.reconcileAnchor(null, null);
     showCreationHome();
   }
 }
@@ -509,4 +602,72 @@ function switchView(view: "list" | "create"): void {
 tabList.addEventListener("click", () => switchView("list"));
 tabCreate.addEventListener("click", () => switchView("create"));
 
+const displaySizeLifecycle = initializeDisplaySizeControl({
+  loadInitial: async () => {
+    const preferences = await loadPreferences();
+    if (!isProbePreferences(preferences)) {
+      throw new TypeError("桌面宠物返回了无效的显示偏好");
+    }
+    return preferences.displayScale;
+  },
+  createControl: (initial) => new DisplaySizeControl({
+    initial,
+    request: requestPetDisplayScale,
+    elements: {
+      slider: displaySizeSlider,
+      output: displaySizeOutput,
+      status: displaySizeStatus,
+      error: displaySizeError,
+      presets: displaySizePresets,
+    },
+  }),
+  onError: (error) => {
+    displaySizeSlider.disabled = true;
+    for (const preset of displaySizePresets) preset.disabled = true;
+    displaySizeOutput.textContent = "暂不可用";
+    displaySizeError.textContent = "暂时无法读取当前大小。请确认桌面宠物正在运行后重新打开设置。";
+  },
+});
+
+let calibrationNavigation: { destroy(): void } | undefined;
+const destroySettingsPage = (): void => {
+  calibrationNavigation?.destroy();
+  calibrationNavigation = undefined;
+  displaySizeLifecycle.destroy();
+  calibrationControl.finalizeClose();
+};
+
+const focusCalibrationSection = (): void => {
+  switchView("list");
+  calibrationSection.scrollIntoView({ block: "start" });
+  $<HTMLElement>("calibration-title").focus({ preventScroll: true });
+};
+calibrationNavigation = await initializeSettingsNavigation({
+  listen: async (handler) => listen<unknown>("settings:navigate", ({ payload }) => handler(payload)),
+  takePending: () => invoke<string | null>("settings_take_pending_navigation"),
+  focusCalibration: focusCalibrationSection,
+});
+const settingsWindow = getCurrentWindow();
+const closeCoordinator = new SettingsCloseCoordinator({
+  onCloseRequested: (handler) => settingsWindow.onCloseRequested(handler),
+  destroy: () => settingsWindow.destroy(),
+  freeze: () => calibrationControl.freezeForClose(),
+  unfreeze: () => calibrationControl.unfreezeAfterCloseFailure(),
+  settle: () => calibrationControl.settleForClose(),
+  restore: () => calibrationControl.restoreBeforeClose(),
+  hasActive: () => calibrationControl.needsRestoreBeforeClose(),
+  cleanup: destroySettingsPage,
+  diagnose: (error) => {
+    console.error("[settings] calibration close coordination", error);
+  },
+});
+await closeCoordinator.mount();
+wireSettingsPageLifecycle(window, {
+  suspend: () => calibrationCatalog.unavailable("设置页面已暂停，校准预览已恢复。"),
+  resume: () => { void renderList(); },
+  destroy: () => closeCoordinator.beforeUnload(),
+});
+
+await displaySizeLifecycle.ready;
 await renderList();
+if (window.location.hash === "#calibration") focusCalibrationSection();

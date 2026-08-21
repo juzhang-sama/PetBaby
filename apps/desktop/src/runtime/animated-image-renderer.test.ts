@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import { validMotionProfile } from "./animated-image-test-fixtures";
 import { LIFE_V1, planBreathSlices, type BreathSlice } from "./animated-image-motion";
 import { AnimatedImageRenderer } from "./animated-image-renderer";
+import { DEFAULT_PET_CALIBRATION } from "./pet-calibration";
 
 function rendererHarness() {
   const contexts = Array.from({ length: 3 }, () => ({
@@ -12,6 +13,7 @@ function rendererHarness() {
     restore: vi.fn(),
     translate: vi.fn(),
     rotate: vi.fn(),
+    scale: vi.fn(),
   }));
   const canvases = contexts.map((context) => ({
     width: 0,
@@ -33,6 +35,7 @@ function rendererHarness() {
     loadImage,
     planBreathSlices: (...args) => (lastPlans = planBreathSlices(...args)),
   });
+  renderer.setVisibility(true);
   return {
     renderer,
     root,
@@ -50,6 +53,11 @@ function rendererHarness() {
 }
 
 describe("AnimatedImageRenderer", () => {
+  it("does not expose the frozen whole-image blink effect", () => {
+    const { renderer } = rendererHarness();
+    expect("setBlink" in renderer).toBe(false);
+  });
+
   it("precomposes only raster-safe breath slices before swaying one texture", async () => {
     const test = rendererHarness();
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
@@ -137,6 +145,58 @@ describe("AnimatedImageRenderer", () => {
     expect(test.context.translate).toHaveBeenCalledWith(-200, -288);
   });
 
+  it("applies calibrated breathing without a whole-canvas blink transform", async () => {
+    const test = rendererHarness();
+    test.renderer.resize({ width: 400, height: 500, dpr: 1 });
+    await test.renderer.load({
+      kind: "animated-image",
+      imageUrl: "pet.png",
+      motionProfile: validMotionProfile(),
+    });
+    const hitDraws = test.hitContext.drawImage.mock.calls.length;
+    test.renderer.setCalibration({ ...DEFAULT_PET_CALIBRATION, breathAmplitudePercent: 4 });
+    test.context.translate.mockClear();
+    test.context.scale.mockClear();
+    test.renderer.playMotion("idle");
+
+    test.renderer.update(1400);
+
+    expect(test.context.scale).not.toHaveBeenCalledWith(1, 0.97);
+    expect(test.hitContext.drawImage).toHaveBeenCalledTimes(hitDraws);
+    const deformed = test.localPlans().find((slice) => slice.destWidth !== slice.sourceWidth)!;
+    const baseline = planBreathSlices(validMotionProfile(), 1000, 1000, 1, 24, 2)
+      .find((slice) => slice.sourceX === deformed.sourceX && slice.sourceY === deformed.sourceY)!;
+    expect(deformed.destWidth - deformed.sourceWidth).toBeCloseTo(
+      2 * (baseline.destWidth - baseline.sourceWidth),
+    );
+  });
+
+  it("does not render or advance calibrated motion while hidden", async () => {
+    const test = rendererHarness();
+    test.renderer.resize({ width: 400, height: 500, dpr: 1 });
+    await test.renderer.load({
+      kind: "animated-image",
+      imageUrl: "pet.png",
+      motionProfile: validMotionProfile(),
+    });
+    test.renderer.setCalibration({ ...DEFAULT_PET_CALIBRATION, breathAmplitudePercent: 4 });
+    test.renderer.playMotion("idle");
+    test.renderer.setVisibility(false);
+    test.context.drawImage.mockClear();
+
+    test.renderer.update(60_000);
+
+    expect(test.context.drawImage).not.toHaveBeenCalled();
+    test.renderer.setVisibility(true);
+    test.renderer.update(1_400);
+    const deformed = test.localPlans().find((slice) => slice.destWidth !== slice.sourceWidth)!;
+    const baseline = planBreathSlices(validMotionProfile(), 1000, 1000, 1, 24, 2)
+      .find((slice) => slice.sourceX === deformed.sourceX && slice.sourceY === deformed.sourceY)!;
+    expect(deformed.destWidth - deformed.sourceWidth).toBeCloseTo(
+      2 * (baseline.destWidth - baseline.sourceWidth),
+    );
+  });
+
   it("draws the correlated sway trajectory into a stable load-or-resize hit envelope", async () => {
     const test = rendererHarness();
     test.renderer.resize({ width: 420, height: 520, dpr: 2 });
@@ -216,7 +276,7 @@ describe("AnimatedImageRenderer", () => {
     expect(test.loadImage).toHaveBeenCalledWith("pet.png");
   });
 
-  it("only starts accumulation for idle motion", async () => {
+  it("renders full-image actions and resumes idle motion", async () => {
     const test = rendererHarness();
     test.renderer.resize({ width: 400, height: 400, dpr: 1 });
     await test.renderer.load({
@@ -228,11 +288,12 @@ describe("AnimatedImageRenderer", () => {
 
     test.renderer.playMotion("react-happy");
     test.renderer.update(1300);
-    expect(test.context.drawImage).toHaveBeenCalledTimes(drawsBefore);
+    const drawsAfterAction = test.context.drawImage.mock.calls.length;
+    expect(drawsAfterAction).toBeGreaterThan(drawsBefore);
 
     test.renderer.playMotion("idle");
     test.renderer.update(1300);
-    expect(test.context.drawImage.mock.calls.length).toBeGreaterThan(drawsBefore);
+    expect(test.context.drawImage.mock.calls.length).toBeGreaterThan(drawsAfterAction);
   });
 
   it("hides both canvases when visibility is disabled", () => {

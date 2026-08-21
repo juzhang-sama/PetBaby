@@ -1,4 +1,5 @@
 import type { PetRendererRuntime } from "./pet-renderer-bootstrap";
+import type { PetCalibrationV1 } from "./pet-calibration";
 import type {
   PetExpression,
   PetHitArea,
@@ -7,6 +8,8 @@ import type {
   PetRenderAsset,
   PetRenderer,
 } from "./pet-renderer";
+import type { CatMotionNameV1 } from "../runtime-live2d/cat-motion-contract";
+import type { CatAutomationMode } from "../runtime-live2d/cat-automation";
 
 export interface MountedPetRuntime extends PetRendererRuntime {
   petId: string;
@@ -201,6 +204,25 @@ export class PetRuntimeSlot implements PetRenderer {
     };
   }
 
+  supportsCatMotionV1(): boolean {
+    this.assertAlive();
+    return this.active.host.supportsCatMotionV1();
+  }
+
+  setCatAutomationMode(mode: CatAutomationMode): void {
+    this.assertAlive();
+    this.active.host.setCatAutomationMode(mode);
+  }
+
+  playCatMotion(
+    motion: CatMotionNameV1,
+    transition: { loop?: boolean; priority?: number; fadeInMs?: number; fadeOutMs?: number } = {},
+    onFinished?: () => void,
+  ): PetMotionHandle {
+    this.assertAlive();
+    return this.active.host.playCatMotion(motion, transition, onFinished);
+  }
+
   setExpression(value: PetExpression, weight?: number): void {
     this.assertAlive();
     this.active.host.setExpression(value, weight);
@@ -214,6 +236,11 @@ export class PetRuntimeSlot implements PetRenderer {
   setLipSync(value: number): void {
     this.assertAlive();
     this.active.host.setLipSync(value);
+  }
+
+  setCalibration(value: PetCalibrationV1): void {
+    this.assertAlive();
+    this.active.host.setCalibration(value);
   }
 
   hitTest(point: { x: number; y: number }): PetHitArea | null {

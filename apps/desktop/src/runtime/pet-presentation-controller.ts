@@ -1,12 +1,22 @@
 import type { BehaviorIntent } from "../behavior/intents";
+import type { CatMotionCommand } from "../behavior/intents";
 import type { RenderTier } from "./contracts";
 import type { PetRenderer } from "./pet-renderer";
+import {
+  canonicalPetCalibration,
+  DEFAULT_PET_CALIBRATION,
+  type PetCalibrationV1,
+} from "./pet-calibration";
 
 export type PetEffect = "hearts" | "sparkles" | "landing";
+export interface PetEffectVisualOptions {
+  opacity: number;
+  intensity: number;
+}
 
 export interface PetPresentationPorts {
   renderer: PetRenderer;
-  effects: { play(effect: PetEffect): void };
+  effects: { play(effect: PetEffect, options: PetEffectVisualOptions): void };
   windowMotion: {
     shake(options: { amplitude: number; durationMs: number }): void;
     bounce(options: { amplitude: number; durationMs: number }): void;
@@ -15,10 +25,17 @@ export interface PetPresentationPorts {
 }
 
 export class PetPresentationController {
+  private calibration: PetCalibrationV1 = { ...DEFAULT_PET_CALIBRATION };
+  private readonly catMotionHandles = new Map<number, ReturnType<PetRenderer["playMotion"]>>();
+
   constructor(private readonly ports: PetPresentationPorts) {}
 
+  setCalibration(value: PetCalibrationV1): void {
+    this.calibration = canonicalPetCalibration(value);
+  }
+
   dispatch(intent: BehaviorIntent): void {
-    const { renderer, effects, windowMotion, scheduler } = this.ports;
+    const { renderer, windowMotion, scheduler } = this.ports;
     switch (intent.type) {
       case "blink":
         return;
@@ -33,14 +50,19 @@ export class PetPresentationController {
       case "react-happy":
         renderer.setExpression("happy");
         renderer.playMotion("react-happy", { priority: 60 });
-        effects.play("hearts");
-        windowMotion.shake({ amplitude: 4, durationMs: 180 });
+        this.playEffect("hearts");
+        if (this.calibration.feedbackStrength > 0) {
+          windowMotion.shake({
+            amplitude: 4 * this.calibration.feedbackStrength,
+            durationMs: 180,
+          });
+        }
         scheduler.setTier("active");
         return;
       case "react-curious":
         renderer.setExpression("curious");
         renderer.playMotion("react-curious", { priority: 60 });
-        effects.play("sparkles");
+        this.playEffect("sparkles");
         scheduler.setTier("active");
         return;
       case "carried":
@@ -49,8 +71,13 @@ export class PetPresentationController {
         return;
       case "landed":
         renderer.playMotion("landed", { priority: 80 });
-        effects.play("landing");
-        windowMotion.bounce({ amplitude: 8, durationMs: 240 });
+        this.playEffect("landing");
+        if (this.calibration.feedbackStrength > 0) {
+          windowMotion.bounce({
+            amplitude: 8 * this.calibration.feedbackStrength,
+            durationMs: 240,
+          });
+        }
         scheduler.setTier("active");
         return;
       case "sleep":
@@ -64,5 +91,48 @@ export class PetPresentationController {
         renderer.playMotion("wake", { priority: 50 });
         scheduler.setTier("companion");
     }
+  }
+
+  dispatchCatMotion(
+    commands: readonly CatMotionCommand[],
+    onFinished: (token: number) => void,
+  ): void {
+    for (const command of commands) {
+      if (command.type === "cancel") {
+        this.catMotionHandles.get(command.token)?.cancel();
+        this.catMotionHandles.delete(command.token);
+        continue;
+      }
+      if (command.type === "hold") continue;
+      const renderer = this.ports.renderer;
+      if (!renderer.playCatMotion) continue;
+      let completedSynchronously = false;
+      const handle = renderer.playCatMotion(
+        command.motion,
+        {
+          priority: command.priority,
+          loop: command.loop,
+          fadeInMs: command.fadeInMs,
+          fadeOutMs: command.fadeOutMs,
+        },
+        () => {
+          completedSynchronously = true;
+          this.catMotionHandles.delete(command.token);
+          onFinished(command.token);
+        },
+      );
+      if (!completedSynchronously) this.catMotionHandles.set(command.token, handle);
+    }
+  }
+
+  cancelCatMotions(): void {
+    for (const handle of this.catMotionHandles.values()) handle.cancel();
+    this.catMotionHandles.clear();
+  }
+
+  private playEffect(effect: PetEffect): void {
+    const strength = this.calibration.feedbackStrength;
+    if (strength === 0) return;
+    this.ports.effects.play(effect, { opacity: strength, intensity: strength });
   }
 }

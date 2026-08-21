@@ -13,6 +13,28 @@ use std::sync::{Arc, Mutex};
 pub type SharedCreationFinalizationService = Arc<CreationFinalizationService>;
 pub type SharedSwitchTransaction = Arc<Mutex<()>>;
 
+pub trait PhotoAvatarFinalizationPort: Send + Sync {
+    fn preview_ready(&self, session_id: &str) -> Result<bool, String>;
+    fn install_preview(
+        &self,
+        session_id: &str,
+        pet_id: &str,
+        variant_id: &str,
+        destination: &Path,
+    ) -> Result<(), String>;
+    fn cleanup_after_accept(
+        &self,
+        session_id: &str,
+    ) -> Result<PhotoAvatarCleanupDisposition, String>;
+    fn restore_preview_after_abort(&self, session_id: &str) -> Result<(), String>;
+}
+
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub enum PhotoAvatarCleanupDisposition {
+    Complete,
+    Pending(String),
+}
+
 #[derive(Debug, Default, serde::Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
 pub struct RecoveryReport {
@@ -29,6 +51,7 @@ pub struct CreationFinalizationService {
     mutation_gate: SharedPetMutationGate,
     switch_transaction: SharedSwitchTransaction,
     deletion: Option<SharedPetDeletionService>,
+    photo_avatar: Option<Arc<dyn PhotoAvatarFinalizationPort>>,
     #[cfg(test)]
     after_owner_pin_hook: Mutex<Option<Box<dyn FnOnce() + Send>>>,
 }
@@ -54,7 +77,9 @@ struct FinalizationRecord {
     job_session_id: Option<String>,
     raw_path: PathBuf,
     body_path: PathBuf,
-    motion_profile_path: PathBuf,
+    motion_profile_path: Option<PathBuf>,
+    quality: String,
+    quality_report_json: Option<String>,
     accepted: bool,
     runtime_pet_id: Option<String>,
     manifest_path: Option<String>,
@@ -63,6 +88,60 @@ struct FinalizationRecord {
 struct SafePetPaths {
     assets_dir: PathBuf,
     assets_exist: bool,
+}
+
+#[derive(Debug)]
+struct PhotoAvatarFinalizationRecord {
+    session_id: String,
+    pet_id: String,
+    display_name: Option<String>,
+    status: String,
+    lifecycle: String,
+    variant_id: String,
+}
+
+fn require_acceptable_candidate(candidate: &FinalizationRecord) -> Result<(), String> {
+    if !matches!(candidate.quality.as_str(), "acceptable" | "user-accepted") {
+        return Err(
+            "automatic cutout did not pass quality review; regenerate or abandon this candidate"
+                .into(),
+        );
+    }
+    if candidate.quality == "user-accepted" {
+        let report: crate::generation::cutout::CandidateQualityReportV1 = serde_json::from_str(
+            candidate
+                .quality_report_json
+                .as_deref()
+                .ok_or("user-confirmed candidate has no quality report")?,
+        )
+        .map_err(|error| format!("user-confirmed candidate quality report is invalid: {error}"))?;
+        if !report.is_user_confirmable() {
+            return Err(
+                "user-confirmed candidate did not produce a usable transparent background".into(),
+            );
+        }
+    }
+    if candidate.motion_profile_path.is_none() {
+        return Err("acceptable candidate is missing its motion profile".into());
+    }
+    Ok(())
+}
+
+fn require_candidate_before_gate(
+    candidate: &FinalizationRecord,
+    confirm_needs_review: bool,
+) -> Result<(), String> {
+    if candidate.quality == "needs-review"
+        && confirm_needs_review
+        && candidate.method == "upload"
+        && matches!(
+            candidate.status.as_str(),
+            "candidateReady" | "retryableFailure"
+        )
+    {
+        return Ok(());
+    }
+    require_acceptable_candidate(candidate)
 }
 
 impl CreationFinalizationService {
@@ -80,6 +159,7 @@ impl CreationFinalizationService {
             mutation_gate,
             switch_transaction,
             deletion: None,
+            photo_avatar: None,
             #[cfg(test)]
             after_owner_pin_hook: Mutex::new(None),
         }
@@ -90,14 +170,33 @@ impl CreationFinalizationService {
         self
     }
 
+    pub fn with_photo_avatar(mut self, port: Arc<dyn PhotoAvatarFinalizationPort>) -> Self {
+        self.photo_avatar = Some(port);
+        self
+    }
+
+    #[cfg(test)]
     pub fn prepare(&self, session_id: &str, request_id: &str) -> Result<PreparedCreation, String> {
+        self.prepare_with_quality_confirmation(session_id, request_id, false)
+    }
+
+    pub fn prepare_with_quality_confirmation(
+        &self,
+        session_id: &str,
+        request_id: &str,
+        confirm_needs_review: bool,
+    ) -> Result<PreparedCreation, String> {
         validate_component(session_id, "session id")?;
         validate_component(request_id, "request id")?;
         let _switch_transaction = self
             .switch_transaction
             .lock()
             .map_err(|_| "switch transaction lock poisoned")?;
+        if let Some(photo_avatar) = self.photo_avatar_record(session_id)? {
+            return self.prepare_photo_avatar(photo_avatar, request_id);
+        }
         let initial_record = self.finalization_record(session_id)?;
+        require_candidate_before_gate(&initial_record, confirm_needs_review)?;
         if initial_record.status == "completed" {
             self.validate_record(&initial_record)?;
             self.validate_completed_install(&initial_record)?;
@@ -129,6 +228,12 @@ impl CreationFinalizationService {
                 return Err("creation session target changed while acquiring the gate".into());
             }
             self.validate_record(&record)?;
+            let record = if record.quality == "needs-review" && confirm_needs_review {
+                self.approve_reviewed_upload_candidate(&record)?
+            } else {
+                record
+            };
+            require_acceptable_candidate(&record)?;
             Ok(record)
         }) {
             Ok(record) => record,
@@ -198,13 +303,17 @@ impl CreationFinalizationService {
                 }
                 return Ok(prepared(&record, request_id, false));
             }
+            let motion_profile_path = record
+                .motion_profile_path
+                .as_deref()
+                .ok_or_else(|| "acceptable candidate is missing its motion profile".to_string())?;
             self.mark_finalizing(&record)?;
             let assets_dir = self.safe_pet_paths(&record.pet_id)?.assets_dir;
             let compiled = compile_animated_image(
                 &record.pet_id,
                 &record.candidate_id,
                 &record.body_path,
-                &record.motion_profile_path,
+                motion_profile_path,
                 &assets_dir,
             )?;
             self.safe_pet_paths(&record.pet_id)?;
@@ -238,6 +347,9 @@ impl CreationFinalizationService {
             .switch_transaction
             .lock()
             .map_err(|_| "switch transaction lock poisoned")?;
+        if let Some(photo_avatar) = self.photo_avatar_record(session_id)? {
+            return self.abort_photo_avatar(&photo_avatar, error);
+        }
         let record = self.finalization_record(session_id)?;
         if record.status == "completed" {
             return snapshot(&record);
@@ -309,11 +421,34 @@ impl CreationFinalizationService {
         };
         let mut report = RecoveryReport::default();
         for (session_id, status, pet_id) in session_rows {
+            if let Some(photo_avatar) = self.photo_avatar_record(&session_id)? {
+                if status == "completed" {
+                    match self.validate_photo_avatar_install(&photo_avatar) {
+                        Ok(()) => report.completed_session_ids.push(session_id),
+                        Err(error) => report.warnings.push(format!(
+                            "photo avatar recovery skipped completed session {session_id}: {error}"
+                        )),
+                    }
+                    continue;
+                }
+                if status != "abandoned"
+                    && self.photo_avatar_manifest_path(&photo_avatar)?.is_some()
+                {
+                    match self.validate_photo_avatar_install(&photo_avatar) {
+                        Ok(()) => report.retryable_session_ids.push(session_id),
+                        Err(error) => report.warnings.push(format!(
+                            "photo avatar recovery skipped {session_id}: {error}"
+                        )),
+                    }
+                    continue;
+                }
+            }
             if status == "completed" {
                 match self
                     .finalization_record(&session_id)
                     .and_then(|record| self.validate_record(&record).map(|()| record))
                     .and_then(|record| {
+                        require_acceptable_candidate(&record)?;
                         self.validate_completed_install(&record)?;
                         self.clear_completed_upload_source(&record)
                     }) {
@@ -350,6 +485,7 @@ impl CreationFinalizationService {
             if status == "finalizing" && self.session_has_durable_pet(&session_id)? {
                 let recovered = self.finalization_record(&session_id).and_then(|record| {
                     self.validate_durably_committed_record(&record)?;
+                    require_acceptable_candidate(&record)?;
                     self.validate_completed_install(&record)?;
                     self.mark_recovered_completed(&record)
                 });
@@ -365,6 +501,7 @@ impl CreationFinalizationService {
                 validate_component(&session_id, "session id")?;
                 let record = self.finalization_record(&session_id)?;
                 self.validate_record(&record)?;
+                require_acceptable_candidate(&record)?;
                 let had_install = self.install_is_owned(&record)?;
                 let had_runtime = record.runtime_pet_id.as_deref() == Some(record.pet_id.as_str());
                 if status == "retryableFailure" && !had_install && !had_runtime {
@@ -388,6 +525,355 @@ impl CreationFinalizationService {
             }
         }
         Ok(report)
+    }
+
+    pub fn photo_avatar_cleanup_pending(&self, session_id: &str) -> Result<bool, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        storage
+            .db
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM photo_avatar_runs WHERE session_id=?1 AND step='cleanupPending')",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())
+    }
+
+    fn photo_avatar_record(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<PhotoAvatarFinalizationRecord>, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        storage
+            .db
+            .query_row(
+                "SELECT cs.session_id, cs.pet_id, cs.status, p.lifecycle, run.revision, p.display_name
+                 FROM creation_sessions cs
+                 JOIN pets p ON p.pet_id=cs.pet_id
+                 JOIN photo_avatar_runs run ON run.session_id=cs.session_id
+                 WHERE cs.session_id=?1",
+                [session_id],
+                |row| {
+                    let stored_session_id: String = row.get(0)?;
+                    let revision: u32 = row.get(4)?;
+                    Ok(PhotoAvatarFinalizationRecord {
+                        variant_id: format!("photo-avatar-{stored_session_id}-{revision}"),
+                        session_id: stored_session_id,
+                        pet_id: row.get(1)?,
+                        display_name: row.get(5)?,
+                        status: row.get(2)?,
+                        lifecycle: row.get(3)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    fn prepare_photo_avatar(
+        &self,
+        record: PhotoAvatarFinalizationRecord,
+        request_id: &str,
+    ) -> Result<PreparedCreation, String> {
+        validate_component(&record.pet_id, "pet id")?;
+        validate_component(&record.variant_id, "variant id")?;
+        let display_name = record
+            .display_name
+            .as_deref()
+            .ok_or("creation pet name has not been saved")?;
+        if normalize_display_name(display_name)? != display_name {
+            return Err("creation pet name is not stored in normalized form".into());
+        }
+        let port = self
+            .photo_avatar
+            .as_ref()
+            .ok_or("photo avatar finalization is not configured")?;
+        if !port.preview_ready(&record.session_id)? {
+            return Err("photo avatar preview is not ready for finalization".into());
+        }
+        if record.status == "completed" {
+            self.validate_photo_avatar_install(&record)?;
+            return Ok(prepared_photo_avatar(&record, request_id, true));
+        }
+        if record.lifecycle != "draft"
+            || !matches!(
+                record.status.as_str(),
+                "draft" | "candidateReady" | "finalizing" | "retryableFailure"
+            )
+        {
+            return Err("photo avatar creation is not finalizable".into());
+        }
+
+        self.mutation_gate
+            .begin(request_id, MutationKind::Switch, &record.pet_id)?;
+        let owner_pin =
+            match self
+                .mutation_gate
+                .assert_owner(request_id, MutationKind::Switch, &record.pet_id)
+            {
+                Ok(pin) => pin,
+                Err(error) => {
+                    let _ = self.mutation_gate.finish(request_id);
+                    return Err(error);
+                }
+            };
+        let result = (|| {
+            let manifest_path = self.assets_dir(&record.pet_id).join("manifest.json");
+            let existing = self.photo_avatar_manifest_path(&record)?;
+            if let Some(existing) = existing {
+                if Path::new(&existing) != manifest_path {
+                    return Err("photo avatar runtime manifest is outside the pet assets".into());
+                }
+                self.validate_photo_avatar_install(&record)?;
+                self.record_photo_avatar_runtime(&record, &manifest_path)?;
+            } else {
+                let safe_paths = self.safe_pet_paths(&record.pet_id)?;
+                if safe_paths.assets_exist {
+                    return Err(
+                        "photo avatar pet assets already exist without an owned runtime".into(),
+                    );
+                }
+                port.install_preview(
+                    &record.session_id,
+                    &record.pet_id,
+                    &record.variant_id,
+                    &safe_paths.assets_dir,
+                )?;
+                if let Err(error) = self.record_photo_avatar_runtime(&record, &manifest_path) {
+                    let _ = std::fs::remove_dir_all(&safe_paths.assets_dir);
+                    return Err(error);
+                }
+                self.validate_photo_avatar_install(&record)?;
+            }
+            port.cleanup_after_accept(&record.session_id)?;
+            Ok(prepared_photo_avatar(&record, request_id, false))
+        })();
+        drop(owner_pin);
+        if result.is_err() {
+            let _ = self.mutation_gate.finish(request_id);
+        }
+        result
+    }
+
+    fn photo_avatar_manifest_path(
+        &self,
+        record: &PhotoAvatarFinalizationRecord,
+    ) -> Result<Option<String>, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        storage
+            .db
+            .query_row(
+                "SELECT manifest_path FROM variants WHERE variant_id=?1 AND pet_id=?2",
+                rusqlite::params![record.variant_id, record.pet_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    fn record_photo_avatar_runtime(
+        &self,
+        record: &PhotoAvatarFinalizationRecord,
+        manifest_path: &Path,
+    ) -> Result<(), String> {
+        let expected = self.assets_dir(&record.pet_id).join("manifest.json");
+        if manifest_path != expected {
+            return Err("photo avatar manifest is outside the target pet assets".into());
+        }
+        let now = crate::creation::profiles::now_iso();
+        let manifest = manifest_path.to_string_lossy().to_string();
+        // 像素路线产出 animated-image-v1（schemaVersion=3），Live2D 路线产出
+        // photo-avatar-live2d-v5（schemaVersion=5）；style_id 跟随 manifest.renderer，
+        // 不能写死为 live2d-v5，否则像素宠物会被登记成 Live2D 渲染器。
+        let style_id = std::fs::read(manifest_path)
+            .ok()
+            .and_then(|bytes| serde_json::from_slice::<serde_json::Value>(&bytes).ok())
+            .and_then(|value| {
+                value
+                    .get("renderer")
+                    .and_then(serde_json::Value::as_str)
+                    .map(str::to_owned)
+            })
+            .filter(|renderer| !renderer.is_empty())
+            .unwrap_or_else(|| "photo-avatar-live2d-v5".into());
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let updated = tx
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='finalizing', last_stable_status='candidateReady', current_step='finalizing', error=NULL, updated_at=?2
+                 WHERE session_id=?1 AND pet_id=?3 AND status IN ('draft','candidateReady','retryableFailure','finalizing')",
+                rusqlite::params![record.session_id, now, record.pet_id],
+            )
+            .map_err(|error| error.to_string())?;
+        if updated != 1 {
+            return Err("photo avatar creation changed before runtime recording".into());
+        }
+        let appearance_inserted = tx
+            .execute(
+                "INSERT INTO appearance_variants
+             (variant_id, pet_id, job_id, session_id, image_path, cutout_path,
+              motion_profile_path, quality, accepted, created_at)
+             VALUES (?1, ?2, NULL, ?3, ?4, ?4, NULL, 'acceptable', 0, ?5)
+             ON CONFLICT(variant_id) DO NOTHING",
+                rusqlite::params![
+                    record.variant_id,
+                    record.pet_id,
+                    record.session_id,
+                    manifest,
+                    now
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if appearance_inserted == 0 {
+            let owned: bool = tx
+                .query_row(
+                    "SELECT EXISTS(
+                        SELECT 1 FROM appearance_variants
+                        WHERE variant_id=?1 AND pet_id=?2 AND session_id=?3 AND accepted=0
+                     )",
+                    rusqlite::params![record.variant_id, record.pet_id, record.session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())?;
+            if !owned {
+                return Err("photo avatar appearance variant belongs to another creation".into());
+            }
+        }
+        let affected = tx
+            .execute(
+                "INSERT INTO variants (variant_id, pet_id, style_id, manifest_path, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5)
+                 ON CONFLICT(variant_id) DO UPDATE SET manifest_path=excluded.manifest_path
+                 WHERE variants.pet_id=excluded.pet_id",
+                rusqlite::params![record.variant_id, record.pet_id, style_id, manifest, now],
+            )
+            .map_err(|error| error.to_string())?;
+        if affected != 1 {
+            return Err("photo avatar runtime variant belongs to another pet".into());
+        }
+        tx.commit().map_err(|error| error.to_string())
+    }
+
+    fn validate_photo_avatar_install(
+        &self,
+        record: &PhotoAvatarFinalizationRecord,
+    ) -> Result<(), String> {
+        let path = self.assets_dir(&record.pet_id).join("manifest.json");
+        if self.photo_avatar_manifest_path(record)?.as_deref()
+            != Some(path.to_string_lossy().as_ref())
+        {
+            return Err("photo avatar runtime manifest is not recorded for this pet".into());
+        }
+        let bytes = std::fs::read(&path).map_err(|error| error.to_string())?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        if manifest
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != photo_avatar_expected_schema_version(&manifest)
+            || manifest.get("petId").and_then(serde_json::Value::as_str)
+                != Some(record.pet_id.as_str())
+            || manifest
+                .get("variantId")
+                .and_then(serde_json::Value::as_str)
+                != Some(record.variant_id.as_str())
+        {
+            return Err("installed photo avatar manifest identity is invalid".into());
+        }
+        Ok(())
+    }
+
+    fn abort_photo_avatar(
+        &self,
+        record: &PhotoAvatarFinalizationRecord,
+        error: &str,
+    ) -> Result<CreationSnapshot, String> {
+        if record.status == "completed" {
+            return Ok(snapshot_photo_avatar(
+                record,
+                CreationSessionStatus::Completed,
+                None,
+            ));
+        }
+        let port = self
+            .photo_avatar
+            .as_ref()
+            .ok_or("photo avatar finalization is not configured")?;
+        self.validate_photo_avatar_install(record)?;
+        port.restore_preview_after_abort(&record.session_id)?;
+        let now = crate::creation::profiles::now_iso();
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|db_error| db_error.to_string())?;
+        tx.execute(
+            "DELETE FROM variants
+             WHERE variant_id=?1 AND pet_id=?2
+               AND EXISTS (
+                 SELECT 1 FROM appearance_variants av
+                 WHERE av.variant_id=?1 AND av.session_id=?3 AND av.pet_id=?2 AND av.accepted=0
+               )",
+            rusqlite::params![record.variant_id, record.pet_id, record.session_id],
+        )
+        .map_err(|db_error| db_error.to_string())?;
+        tx.execute(
+            "DELETE FROM appearance_variants
+             WHERE variant_id=?1 AND pet_id=?2 AND session_id=?3 AND accepted=0",
+            rusqlite::params![record.variant_id, record.pet_id, record.session_id],
+        )
+        .map_err(|db_error| db_error.to_string())?;
+        let updated = tx
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='retryableFailure', last_stable_status='candidateReady', current_step='review', error=?2, updated_at=?3
+                 WHERE session_id=?1 AND pet_id=?4 AND status!='completed' AND status!='abandoned'",
+                rusqlite::params![record.session_id, error, now, record.pet_id],
+            )
+            .map_err(|db_error| db_error.to_string())?;
+        if updated != 1 {
+            return Err("photo avatar creation changed during abort".into());
+        }
+        tx.commit().map_err(|db_error| db_error.to_string())?;
+        drop(storage);
+        self.remove_owned_photo_avatar_install(record)?;
+        Ok(snapshot_photo_avatar(
+            record,
+            CreationSessionStatus::RetryableFailure,
+            Some(error.into()),
+        ))
+    }
+
+    fn remove_owned_photo_avatar_install(
+        &self,
+        record: &PhotoAvatarFinalizationRecord,
+    ) -> Result<(), String> {
+        let safe_paths = self.safe_pet_paths(&record.pet_id)?;
+        if !safe_paths.assets_exist {
+            return Ok(());
+        }
+        let manifest_path = safe_paths.assets_dir.join("manifest.json");
+        let bytes = std::fs::read(&manifest_path).map_err(|error| error.to_string())?;
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&bytes).map_err(|error| error.to_string())?;
+        if manifest
+            .get("schemaVersion")
+            .and_then(serde_json::Value::as_u64)
+            != photo_avatar_expected_schema_version(&manifest)
+            || manifest.get("petId").and_then(serde_json::Value::as_str)
+                != Some(record.pet_id.as_str())
+            || manifest
+                .get("variantId")
+                .and_then(serde_json::Value::as_str)
+                != Some(record.variant_id.as_str())
+        {
+            return Err("photo avatar install belongs to another pet or candidate".into());
+        }
+        std::fs::remove_dir_all(safe_paths.assets_dir).map_err(|error| error.to_string())
     }
 
     fn finalization_record(&self, session_id: &str) -> Result<FinalizationRecord, String> {
@@ -433,7 +919,8 @@ impl CreationFinalizationService {
                 "SELECT cs.session_id, cs.pet_id, cs.method, cs.status, cs.last_stable_status,
                         cs.current_step, p.display_name, cs.error,
                         av.variant_id, av.job_id, av.image_path, av.cutout_path,
-                        av.motion_profile_path, av.accepted, rv.pet_id, rv.manifest_path,
+                        av.motion_profile_path, av.quality, av.quality_report_json,
+                        av.accepted, rv.pet_id, rv.manifest_path,
                         gj.pet_id, gj.session_id, gj.status,
                         p.creation_method, p.lifecycle, p.completed_at,
                         (SELECT value FROM state WHERE key='app:active_pet_id')
@@ -456,9 +943,9 @@ impl CreationFinalizationService {
                 |row| {
                     let method: String = row.get(2)?;
                     let candidate_job_id: Option<String> = row.get(9)?;
-                    let job_pet_id: Option<String> = row.get(16)?;
-                    let job_session_id: Option<String> = row.get(17)?;
-                    let job_status: Option<String> = row.get(18)?;
+                    let job_pet_id: Option<String> = row.get(18)?;
+                    let job_session_id: Option<String> = row.get(19)?;
+                    let job_status: Option<String> = row.get(20)?;
                     let session_pet_id: String = row.get(1)?;
                     let stored_session_id: String = row.get(0)?;
                     Ok(FinalizationRecord {
@@ -469,10 +956,10 @@ impl CreationFinalizationService {
                         last_stable_status: row.get(4)?,
                         current_step: row.get(5)?,
                         display_name: row.get(6)?,
-                        pet_method: row.get(19)?,
-                        lifecycle: row.get(20)?,
-                        pet_completed_at: row.get(21)?,
-                        active_pet_id: row.get(22)?,
+                        pet_method: row.get(21)?,
+                        lifecycle: row.get(22)?,
+                        pet_completed_at: row.get(23)?,
+                        active_pet_id: row.get(24)?,
                         error: row.get(7)?,
                         candidate_id: row.get(8)?,
                         job_id: candidate_job_id,
@@ -481,10 +968,12 @@ impl CreationFinalizationService {
                         job_session_id,
                         raw_path: PathBuf::from(row.get::<_, String>(10)?),
                         body_path: PathBuf::from(row.get::<_, String>(11)?),
-                        motion_profile_path: PathBuf::from(row.get::<_, String>(12)?),
-                        accepted: row.get::<_, i64>(13)? != 0,
-                        runtime_pet_id: row.get(14)?,
-                        manifest_path: row.get(15)?,
+                        motion_profile_path: row.get::<_, Option<String>>(12)?.map(PathBuf::from),
+                        quality: row.get(13)?,
+                        quality_report_json: row.get(14)?,
+                        accepted: row.get::<_, i64>(15)? != 0,
+                        runtime_pet_id: row.get(16)?,
+                        manifest_path: row.get(17)?,
                     })
                 },
             )
@@ -664,6 +1153,131 @@ impl CreationFinalizationService {
         Ok(())
     }
 
+    fn approve_reviewed_upload_candidate(
+        &self,
+        record: &FinalizationRecord,
+    ) -> Result<FinalizationRecord, String> {
+        if record.method != "upload"
+            || record.quality != "needs-review"
+            || !matches!(
+                record.status.as_str(),
+                "candidateReady" | "retryableFailure"
+            )
+        {
+            return Err("candidate is not eligible for manual cutout confirmation".into());
+        }
+        if record.motion_profile_path.is_some() {
+            return Err("unconfirmed candidate unexpectedly has a motion profile".into());
+        }
+        let report_json = record
+            .quality_report_json
+            .as_deref()
+            .ok_or("candidate quality report is unavailable")?;
+        let report: crate::generation::cutout::CandidateQualityReportV1 =
+            serde_json::from_str(report_json)
+                .map_err(|error| format!("candidate quality report is invalid: {error}"))?;
+        if report.schema_version != 1 || !report.is_user_confirmable() {
+            return Err(
+                "candidate did not produce a usable transparent background for manual confirmation"
+                    .into(),
+            );
+        }
+        self.validate_candidate_paths(record)?;
+        let candidate_dir = record
+            .body_path
+            .parent()
+            .ok_or("candidate body has no owned directory")?;
+        let motion_profile_path = candidate_dir.join("motion-profile.json");
+        let rgba = image::open(&record.body_path)
+            .map_err(|error| format!("read manually confirmed cutout: {error}"))?
+            .to_rgba8();
+        let profile = crate::runtime_assets::motion_profile::generate_motion_profile(&rgba)
+            .map_err(|error| format!("manually confirmed cutout is unusable: {error}"))?;
+        let created_profile = match std::fs::symlink_metadata(&motion_profile_path) {
+            Ok(metadata) => {
+                if crate::platform::is_link_or_reparse_point(&metadata) || !metadata.is_file() {
+                    return Err("unconfirmed candidate motion profile is not a regular file".into());
+                }
+                let canonical = motion_profile_path
+                    .canonicalize()
+                    .map_err(|error| error.to_string())?;
+                if canonical.parent()
+                    != Some(
+                        candidate_dir
+                            .canonicalize()
+                            .map_err(|error| error.to_string())?
+                            .as_path(),
+                    )
+                {
+                    return Err(
+                        "unconfirmed candidate motion profile escapes its owned directory".into(),
+                    );
+                }
+                let existing = std::fs::read_to_string(&motion_profile_path)
+                    .map_err(|error| format!("read interrupted motion profile: {error}"))?;
+                if crate::runtime_assets::motion_profile::parse_motion_profile(&existing)?
+                    != profile
+                {
+                    return Err(
+                        "interrupted motion profile does not match the current cutout".into(),
+                    );
+                }
+                false
+            }
+            Err(error) if error.kind() == std::io::ErrorKind::NotFound => {
+                crate::runtime_assets::motion_profile::write_motion_profile_atomic(
+                    &motion_profile_path,
+                    &profile,
+                )?;
+                true
+            }
+            Err(error) => return Err(format!("inspect manual motion profile path: {error}")),
+        };
+
+        let persist_result = (|| {
+            let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+            let tx = storage
+                .db
+                .transaction()
+                .map_err(|error| error.to_string())?;
+            let affected = tx
+                .execute(
+                    "UPDATE appearance_variants
+                     SET quality='user-accepted', motion_profile_path=?4
+                     WHERE variant_id=?1 AND session_id=?2 AND pet_id=?3
+                       AND quality='needs-review' AND accepted=0
+                       AND motion_profile_path IS NULL
+                       AND EXISTS (
+                         SELECT 1 FROM creation_sessions cs
+                         WHERE cs.session_id=?2 AND cs.pet_id=?3 AND cs.method='upload'
+                           AND (cs.status='candidateReady'
+                                OR (cs.status='retryableFailure'
+                                    AND cs.last_stable_status='candidateReady'))
+                       )",
+                    rusqlite::params![
+                        record.candidate_id,
+                        record.session_id,
+                        record.pet_id,
+                        motion_profile_path.to_string_lossy()
+                    ],
+                )
+                .map_err(|error| error.to_string())?;
+            if affected != 1 {
+                return Err("candidate changed before manual cutout confirmation".into());
+            }
+            tx.commit().map_err(|error| error.to_string())
+        })();
+        if let Err(error) = persist_result {
+            let cleanup = created_profile
+                .then(|| std::fs::remove_file(&motion_profile_path))
+                .and_then(Result::err)
+                .map(|cleanup| format!("; motion profile cleanup failed: {cleanup}"))
+                .unwrap_or_default();
+            return Err(format!("{error}{cleanup}"));
+        }
+        self.finalization_record(&record.session_id)
+    }
+
     fn validate_candidate_paths(&self, record: &FinalizationRecord) -> Result<(), String> {
         let (root, session_dir, expected_dir, expected_body_name) =
             if let Some(job_id) = &record.job_id {
@@ -716,11 +1330,14 @@ impl CreationFinalizationService {
         } else {
             "raw.png"
         };
-        for (path, file_name) in [
+        let mut candidate_files = vec![
             (&record.raw_path, raw_name),
             (&record.body_path, expected_body_name),
-            (&record.motion_profile_path, "motion-profile.json"),
-        ] {
+        ];
+        if let Some(motion_profile_path) = record.motion_profile_path.as_ref() {
+            candidate_files.push((motion_profile_path, "motion-profile.json"));
+        }
+        for (path, file_name) in candidate_files {
             if path.file_name().and_then(|name| name.to_str()) != Some(file_name) {
                 return Err(format!("candidate path must end with {file_name}"));
             }
@@ -1045,6 +1662,45 @@ fn prepared(
     }
 }
 
+fn prepared_photo_avatar(
+    record: &PhotoAvatarFinalizationRecord,
+    request_id: &str,
+    already_completed: bool,
+) -> PreparedCreation {
+    PreparedCreation {
+        request_id: request_id.into(),
+        session_id: record.session_id.clone(),
+        pet_id: record.pet_id.clone(),
+        variant_id: record.variant_id.clone(),
+        already_completed,
+    }
+}
+
+fn snapshot_photo_avatar(
+    record: &PhotoAvatarFinalizationRecord,
+    status: CreationSessionStatus,
+    error: Option<String>,
+) -> CreationSnapshot {
+    CreationSnapshot {
+        session_id: record.session_id.clone(),
+        pet_id: record.pet_id.clone(),
+        method: CreationMethod::Upload,
+        status,
+        last_stable_status: CreationSessionStatus::CandidateReady,
+        current_step: if status == CreationSessionStatus::Completed {
+            "completed".into()
+        } else {
+            "review".into()
+        },
+        display_name: None,
+        job_id: None,
+        job_status: None,
+        candidate_id: Some(record.variant_id.clone()),
+        recipe: None,
+        error,
+    }
+}
+
 fn snapshot(record: &FinalizationRecord) -> Result<CreationSnapshot, String> {
     Ok(CreationSnapshot {
         session_id: record.session_id.clone(),
@@ -1094,6 +1750,19 @@ fn validate_component(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
+/// 照片分身资产包允许两种渲染路线，schemaVersion 必须与 renderer 匹配：
+/// 像素路线 animated-image-v1 → 3；Live2D 路线 photo-avatar-live2d-v5 → 5。
+fn photo_avatar_expected_schema_version(manifest: &serde_json::Value) -> Option<u64> {
+    match manifest
+        .get("renderer")
+        .and_then(serde_json::Value::as_str)
+    {
+        Some("animated-image-v1") => Some(3),
+        Some("photo-avatar-live2d-v5") => Some(5),
+        _ => None,
+    }
+}
+
 #[cfg(test)]
 mod tests {
     use super::*;
@@ -1104,7 +1773,7 @@ mod tests {
     use crate::pets::ActivePetSession;
     use crate::storage::Storage;
     use std::path::{Path, PathBuf};
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::{AtomicU32, AtomicUsize, Ordering};
     use std::sync::{Arc, Mutex};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
@@ -1121,7 +1790,92 @@ mod tests {
         body_path: PathBuf,
     }
 
+    #[derive(Debug, PartialEq, Eq)]
+    struct FinalizationSnapshot {
+        session: (String, String, Option<String>),
+        candidate: (String, Option<String>, Option<String>, i64),
+        pet: (String, Option<String>),
+        runtime_variant_count: i64,
+        job_files: Vec<(String, Vec<u8>)>,
+        runtime_manifest_exists: bool,
+    }
+
     struct ExternalTestDirectory(PathBuf);
+
+    struct FakePhotoAvatarFinalizationPort {
+        storage: Arc<Mutex<Storage>>,
+        installs: AtomicUsize,
+    }
+
+    impl PhotoAvatarFinalizationPort for FakePhotoAvatarFinalizationPort {
+        fn preview_ready(&self, session_id: &str) -> Result<bool, String> {
+            let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+            storage
+                .db
+                .query_row(
+                    "SELECT step IN ('previewReady','cleanupPending','completed') FROM photo_avatar_runs WHERE session_id=?1",
+                    [session_id],
+                    |row| row.get(0),
+                )
+                .map_err(|error| error.to_string())
+        }
+
+        fn install_preview(
+            &self,
+            _session_id: &str,
+            pet_id: &str,
+            variant_id: &str,
+            destination: &Path,
+        ) -> Result<(), String> {
+            self.installs.fetch_add(1, Ordering::SeqCst);
+            std::fs::create_dir_all(destination).map_err(|error| error.to_string())?;
+            let manifest = serde_json::json!({
+                "schemaVersion": 5,
+                "renderer": "photo-avatar-live2d-v5",
+                "petId": pet_id,
+                "variantId": variant_id,
+            });
+            std::fs::write(
+                destination.join("manifest.json"),
+                serde_json::to_vec(&manifest).map_err(|error| error.to_string())?,
+            )
+            .map_err(|error| error.to_string())
+        }
+
+        fn cleanup_after_accept(
+            &self,
+            session_id: &str,
+        ) -> Result<PhotoAvatarCleanupDisposition, String> {
+            let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+            storage
+                .db
+                .execute(
+                    "DELETE FROM photo_avatar_sources WHERE session_id=?1",
+                    [session_id],
+                )
+                .map_err(|error| error.to_string())?;
+            storage
+                .db
+                .execute(
+                    "UPDATE photo_avatar_runs SET step='completed' WHERE session_id=?1",
+                    [session_id],
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(PhotoAvatarCleanupDisposition::Complete)
+        }
+
+        fn restore_preview_after_abort(&self, session_id: &str) -> Result<(), String> {
+            let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+            storage
+                .db
+                .execute(
+                    "UPDATE photo_avatar_runs SET step='previewReady' WHERE session_id=?1",
+                    [session_id],
+                )
+                .map_err(|error| error.to_string())?;
+            Ok(())
+        }
+    }
 
     impl Drop for ExternalTestDirectory {
         fn drop(&mut self) {
@@ -1226,6 +1980,73 @@ mod tests {
             }
         }
 
+        fn upload_candidate(quality: &str) -> Self {
+            let test = Self::candidate_ready();
+            if quality != "acceptable" {
+                std::fs::remove_file(test.body_path.parent().unwrap().join("motion-profile.json"))
+                    .unwrap();
+                test.storage
+                    .lock()
+                    .unwrap()
+                    .db
+                    .execute(
+                        "UPDATE appearance_variants
+                         SET quality=?2, quality_report_json=?3, motion_profile_path=NULL
+                         WHERE variant_id=?1",
+                        rusqlite::params![
+                            test.variant_id,
+                            quality,
+                            r#"{"schemaVersion":1,"status":"needsReview","reasons":["excessiveTransparency"],"opaqueRatio":0.4,"transparentRatio":0.6,"partialAlphaRatio":0.0,"visibleBounds":[0,0,64,64]}"#
+                        ],
+                    )
+                    .unwrap();
+            }
+            test
+        }
+
+        fn snapshot(&self) -> FinalizationSnapshot {
+            let storage = self.storage.lock().unwrap();
+            let candidate = storage
+                .db
+                .query_row(
+                    "SELECT quality, quality_report_json, motion_profile_path, accepted
+                     FROM appearance_variants WHERE variant_id=?1",
+                    [&self.variant_id],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?, row.get(3)?)),
+                )
+                .unwrap();
+            let pet = storage
+                .db
+                .query_row(
+                    "SELECT lifecycle, completed_at FROM pets WHERE pet_id=?1",
+                    [&self.pet_id],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            drop(storage);
+
+            let mut job_files = std::fs::read_dir(self.body_path.parent().unwrap())
+                .unwrap()
+                .map(|entry| {
+                    let entry = entry.unwrap();
+                    (
+                        entry.file_name().to_string_lossy().into_owned(),
+                        std::fs::read(entry.path()).unwrap(),
+                    )
+                })
+                .collect::<Vec<_>>();
+            job_files.sort_by(|left, right| left.0.cmp(&right.0));
+
+            FinalizationSnapshot {
+                session: self.status(),
+                candidate,
+                pet,
+                runtime_variant_count: self.runtime_variant_count(),
+                job_files,
+                runtime_manifest_exists: self.runtime_manifest_exists(),
+            }
+        }
+
         fn status(&self) -> (String, String, Option<String>) {
             self.storage
                 .lock()
@@ -1289,6 +2110,10 @@ mod tests {
 
         fn assets(&self) -> PathBuf {
             self.root.join("pets").join(&self.pet_id).join("assets")
+        }
+
+        fn runtime_manifest_exists(&self) -> bool {
+            self.assets().join("manifest.json").exists()
         }
 
         fn external_directory(&self, label: &str) -> ExternalTestDirectory {
@@ -1399,6 +2224,310 @@ mod tests {
             .begin("req-other", MutationKind::Switch, "pet-other")
             .is_err());
         test.gate.finish("req-1").unwrap();
+    }
+
+    #[test]
+    fn photo_avatar_preview_installs_v5_once_without_using_the_animated_image_compiler() {
+        let mut test = FinalizationHarness::candidate_ready();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO photo_avatar_runs
+                 (session_id, revision, step, generation_token, updated_at)
+                 VALUES (?1, 1, 'previewReady', 'photo-token', '10')",
+                [&test.session_id],
+            )
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO photo_avatar_sources
+                 (session_id, source_id, ordinal, normalized_png, sha256, width, height, byte_size, created_at)
+                 VALUES (?1, 'source-0', 0, X'89', ?2, 256, 256, 1, '10')",
+                rusqlite::params![test.session_id, "0".repeat(64)],
+            )
+            .unwrap();
+        let port = Arc::new(FakePhotoAvatarFinalizationPort {
+            storage: test.storage.clone(),
+            installs: AtomicUsize::new(0),
+        });
+        test.service = CreationFinalizationService::new(
+            test.storage.clone(),
+            test.root.clone(),
+            test.root.join("jobs"),
+            test.gate.clone(),
+            test.switch_transaction.clone(),
+        )
+        .with_photo_avatar(port.clone());
+
+        let prepared = test
+            .service
+            .prepare(&test.session_id, "photo-request")
+            .unwrap();
+        let manifest: serde_json::Value =
+            serde_json::from_slice(&std::fs::read(test.assets().join("manifest.json")).unwrap())
+                .unwrap();
+
+        assert_eq!(manifest["schemaVersion"], 5);
+        assert_eq!(prepared.pet_id, test.pet_id);
+        assert_eq!(port.installs.load(Ordering::SeqCst), 1);
+        test.gate.finish("photo-request").unwrap();
+
+        let repeated = test
+            .service
+            .prepare(&test.session_id, "photo-repeat")
+            .unwrap();
+        assert_eq!(repeated.variant_id, prepared.variant_id);
+        assert_eq!(port.installs.load(Ordering::SeqCst), 1);
+        test.gate.finish("photo-repeat").unwrap();
+
+        test.service
+            .abort(&test.session_id, "desktop unavailable")
+            .unwrap();
+        let photo_variant = format!("photo-avatar-{}-1", test.session_id);
+        let storage = test.storage.lock().unwrap();
+        let remaining_photo_appearance: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM appearance_variants
+                 WHERE variant_id=?1 AND pet_id=?2 AND session_id=?3",
+                rusqlite::params![photo_variant, test.pet_id, test.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let remaining_photo_runtime: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM variants WHERE variant_id=?1 AND pet_id=?2",
+                rusqlite::params![photo_variant, test.pet_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let remaining_source_candidate: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM appearance_variants
+                 WHERE variant_id=?1 AND pet_id=?2 AND session_id=?3",
+                rusqlite::params![test.variant_id, test.pet_id, test.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let photo_run_step: String = storage
+            .db
+            .query_row(
+                "SELECT step FROM photo_avatar_runs WHERE session_id=?1",
+                [&test.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let remaining_sources: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM photo_avatar_sources WHERE session_id=?1",
+                [&test.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        drop(storage);
+        assert!(!test.assets().exists());
+        assert_eq!(remaining_photo_appearance, 0);
+        assert_eq!(remaining_photo_runtime, 0);
+        assert_eq!(remaining_source_candidate, 1);
+        assert_eq!(remaining_sources, 0);
+        assert_eq!(photo_run_step, "previewReady");
+        let retried = test
+            .service
+            .prepare(&test.session_id, "photo-retry")
+            .unwrap();
+        assert_eq!(retried.variant_id, prepared.variant_id);
+        assert_eq!(test.status().0, "finalizing");
+        assert_eq!(port.installs.load(Ordering::SeqCst), 2);
+        test.gate.finish("photo-retry").unwrap();
+
+        let recovery = test.service.recover().unwrap();
+        assert_eq!(
+            recovery.retryable_session_ids,
+            vec![test.session_id.clone()]
+        );
+        assert!(recovery.warnings.is_empty());
+        assert_eq!(port.installs.load(Ordering::SeqCst), 2);
+    }
+
+    #[test]
+    fn finalization_rejects_needs_review_candidate_without_state_change() {
+        let test = FinalizationHarness::upload_candidate("needs-review");
+        let before = test.snapshot();
+
+        let error = test
+            .service
+            .prepare(&test.session_id, "req-needs-review")
+            .unwrap_err();
+
+        assert!(error.contains("automatic cutout did not pass quality review"));
+        assert_eq!(test.snapshot(), before);
+        assert!(!test.runtime_manifest_exists());
+        test.assert_gate_is_free("req-after-needs-review");
+    }
+
+    #[test]
+    fn user_confirmed_visible_needs_review_candidate_generates_profile_and_prepares() {
+        let test = FinalizationHarness::upload_candidate("needs-review");
+
+        let prepared = test
+            .service
+            .prepare_with_quality_confirmation(&test.session_id, "req-reviewed", true)
+            .unwrap();
+
+        assert_eq!(prepared.pet_id, test.pet_id);
+        assert!(test
+            .body_path
+            .parent()
+            .unwrap()
+            .join("motion-profile.json")
+            .is_file());
+        let snapshot = test.snapshot();
+        assert_eq!(snapshot.candidate.0, "user-accepted");
+        assert!(snapshot.candidate.2.is_some());
+        assert_eq!(snapshot.session.0, "finalizing");
+        assert!(snapshot.runtime_manifest_exists);
+        test.gate.finish("req-reviewed").unwrap();
+    }
+
+    #[test]
+    fn user_confirmation_recovers_a_matching_profile_left_before_database_update() {
+        let test = FinalizationHarness::upload_candidate("needs-review");
+        let profile_path = test.body_path.parent().unwrap().join("motion-profile.json");
+        let rgba = image::open(&test.body_path).unwrap().to_rgba8();
+        let profile =
+            crate::runtime_assets::motion_profile::generate_motion_profile(&rgba).unwrap();
+        crate::runtime_assets::motion_profile::write_motion_profile_atomic(&profile_path, &profile)
+            .unwrap();
+
+        let prepared = test
+            .service
+            .prepare_with_quality_confirmation(&test.session_id, "req-review-recovery", true)
+            .unwrap();
+
+        assert_eq!(prepared.pet_id, test.pet_id);
+        assert_eq!(test.snapshot().candidate.0, "user-accepted");
+        test.gate.finish("req-review-recovery").unwrap();
+    }
+
+    #[test]
+    fn user_confirmation_rejects_a_candidate_without_a_visible_subject() {
+        let test = FinalizationHarness::upload_candidate("needs-review");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants SET quality_report_json=?2 WHERE variant_id=?1",
+                rusqlite::params![
+                    test.variant_id,
+                    r#"{"schemaVersion":1,"status":"needsReview","reasons":["excessiveTransparency"],"opaqueRatio":0.0,"transparentRatio":1.0,"partialAlphaRatio":0.0,"visibleBounds":null}"#
+                ],
+            )
+            .unwrap();
+        let before = test.snapshot();
+
+        let error = test
+            .service
+            .prepare_with_quality_confirmation(&test.session_id, "req-no-subject", true)
+            .unwrap_err();
+
+        assert!(error.contains("usable transparent background"));
+        assert_eq!(test.snapshot(), before);
+        test.assert_gate_is_free("req-after-no-subject");
+    }
+
+    #[test]
+    fn user_confirmation_rejects_an_opaque_background_fallback() {
+        let test = FinalizationHarness::upload_candidate("needs-review");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants SET quality_report_json=?2 WHERE variant_id=?1",
+                rusqlite::params![
+                    test.variant_id,
+                    r#"{"schemaVersion":1,"status":"needsReview","reasons":["nonUniformBackground"],"opaqueRatio":1.0,"transparentRatio":0.0,"partialAlphaRatio":0.0,"visibleBounds":[0,0,816,1088]}"#
+                ],
+            )
+            .unwrap();
+        let before = test.snapshot();
+
+        let error = test
+            .service
+            .prepare_with_quality_confirmation(&test.session_id, "req-opaque-fallback", true)
+            .unwrap_err();
+
+        assert!(error.contains("usable transparent background"));
+        assert_eq!(test.snapshot(), before);
+        test.assert_gate_is_free("req-after-opaque-fallback");
+    }
+
+    #[test]
+    fn finalization_rejects_acceptable_candidate_without_motion_profile() {
+        let test = FinalizationHarness::upload_candidate("acceptable");
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants SET motion_profile_path=NULL WHERE variant_id=?1",
+                [&test.variant_id],
+            )
+            .unwrap();
+        let before = test.snapshot();
+
+        let error = test
+            .service
+            .prepare(&test.session_id, "req-missing-motion-profile")
+            .unwrap_err();
+
+        assert!(error.contains("acceptable candidate is missing its motion profile"));
+        assert_eq!(test.snapshot(), before);
+        assert!(!test.runtime_manifest_exists());
+        test.assert_gate_is_free("req-after-missing-motion-profile");
+    }
+
+    #[test]
+    fn recovery_rejects_needs_review_candidate_without_state_or_file_change() {
+        let test = FinalizationHarness::candidate_ready();
+        test.service
+            .prepare(&test.session_id, "req-before-needs-review-recovery")
+            .unwrap();
+        test.gate
+            .finish("req-before-needs-review-recovery")
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants
+                 SET quality='needs-review', quality_report_json=?2, motion_profile_path=NULL
+                 WHERE variant_id=?1",
+                rusqlite::params![
+                    test.variant_id,
+                    r#"{"schemaVersion":1,"status":"needsReview","reasons":["excessiveTransparency"],"opaqueRatio":0.0,"transparentRatio":1.0,"partialAlphaRatio":0.0,"visibleBounds":null}"#
+                ],
+            )
+            .unwrap();
+        let before = test.snapshot();
+
+        let report = test.service.recover().unwrap();
+
+        assert!(report.retryable_session_ids.is_empty());
+        assert!(report.cleaned_session_ids.is_empty());
+        assert_eq!(report.warnings.len(), 1);
+        assert!(report.warnings[0].contains("automatic cutout did not pass quality review"));
+        assert_eq!(test.snapshot(), before);
     }
 
     #[test]

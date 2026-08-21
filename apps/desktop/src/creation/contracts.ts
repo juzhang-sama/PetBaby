@@ -1,4 +1,36 @@
+import type { MotionProfileV1 } from "../runtime/animated-image-manifest";
+
+export * from "./photo-avatar-contracts";
+
 export type CreationMethod = "upload" | "composer" | "adoption";
+
+export type CandidateQualityStatus = "acceptable" | "needsReview";
+
+export type CandidateQualityReason =
+  | "excessiveTransparency"
+  | "interiorHoles"
+  | "lowContrastSubject"
+  | "nonUniformBackground"
+  | "invalidSourceAlpha";
+
+export interface CandidateQualityReportV1 {
+  schemaVersion: number;
+  status: CandidateQualityStatus;
+  reasons: CandidateQualityReason[];
+  opaqueRatio: number;
+  transparentRatio: number;
+  partialAlphaRatio: number;
+  visibleBounds: [number, number, number, number] | null;
+}
+
+export interface UploadCandidateAssets {
+  schemaVersion: number;
+  rawUrl: string;
+  cutoutUrl: string;
+  motionProfile: MotionProfileV1 | null;
+  qualityDisposition: "automatic" | "userAccepted" | "unconfirmed";
+  quality: CandidateQualityReportV1;
+}
 
 export type CreationSessionStatus =
   | "draft"

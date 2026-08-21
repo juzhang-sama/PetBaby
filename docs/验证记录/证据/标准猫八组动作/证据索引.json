@@ -1,0 +1,675 @@
+﻿{
+    "schemaVersion":  1,
+    "generatedAt":  "2026-08-14T21:11:15.5556839+08:00",
+    "petId":  "cat-a-standard-v1",
+    "packageSchemaVersion":  4,
+    "skeletonVersion":  "cat-a-live2d-v1",
+    "modelSha256":  "e3bfebc384831a25c2deff6baff3af9fd8950a4dc7e88fa2a9bbb2b22102b863",
+    "browser":  "Playwright Chromium",
+    "viewport":  {
+                     "height":  520,
+                     "width":  420
+                 },
+    "entries":  [
+                    {
+                        "motion":  "blink",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "blink/00-neutral.png"
+                    },
+                    {
+                        "motion":  "blink",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "blink/01-peak.png"
+                    },
+                    {
+                        "motion":  "blink",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "blink/02-fallback.png"
+                    },
+                    {
+                        "motion":  "blink",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.14,
+                        "frozen":  true,
+                        "file":  "blink/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "blink",
+                        "phase":  "frame",
+                        "atMs":  55,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "blink/sequence/01-0055ms.png"
+                    },
+                    {
+                        "motion":  "blink",
+                        "phase":  "frame",
+                        "atMs":  110,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "blink/sequence/02-0110ms.png"
+                    },
+                    {
+                        "motion":  "blink",
+                        "phase":  "frame",
+                        "atMs":  164,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.02,
+                        "frozen":  true,
+                        "file":  "blink/sequence/03-0164ms.png"
+                    },
+                    {
+                        "motion":  "blink",
+                        "phase":  "frame",
+                        "atMs":  219,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "blink/sequence/04-0219ms.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "breathing/00-neutral.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "breathing/01-peak.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  59.99,
+                        "frozen":  true,
+                        "file":  "breathing/02-fallback.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "breathing/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "frame",
+                        "atMs":  1000,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.02,
+                        "frozen":  true,
+                        "file":  "breathing/sequence/01-1000ms.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "frame",
+                        "atMs":  2000,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "breathing/sequence/02-2000ms.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "frame",
+                        "atMs":  2999,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "breathing/sequence/03-2999ms.png"
+                    },
+                    {
+                        "motion":  "breathing",
+                        "phase":  "frame",
+                        "atMs":  3999,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "breathing/sequence/04-3999ms.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  59.99,
+                        "frozen":  true,
+                        "file":  "ear-twitch/00-neutral.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "ear-twitch/01-peak.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  59.99,
+                        "frozen":  true,
+                        "file":  "ear-twitch/02-fallback.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "ear-twitch/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "frame",
+                        "atMs":  200,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "ear-twitch/sequence/01-0200ms.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "frame",
+                        "atMs":  400,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "ear-twitch/sequence/02-0400ms.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "frame",
+                        "atMs":  599,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "ear-twitch/sequence/03-0599ms.png"
+                    },
+                    {
+                        "motion":  "ear-twitch",
+                        "phase":  "frame",
+                        "atMs":  799,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "ear-twitch/sequence/04-0799ms.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  61.63,
+                        "frozen":  true,
+                        "file":  "pet-happy/00-neutral.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pet-happy/01-peak.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "pet-happy/02-fallback.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.02,
+                        "frozen":  true,
+                        "file":  "pet-happy/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "frame",
+                        "atMs":  450,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pet-happy/sequence/01-0450ms.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "frame",
+                        "atMs":  900,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "pet-happy/sequence/02-0900ms.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "frame",
+                        "atMs":  1349,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "pet-happy/sequence/03-1349ms.png"
+                    },
+                    {
+                        "motion":  "pet-happy",
+                        "phase":  "frame",
+                        "atMs":  1799,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pet-happy/sequence/04-1799ms.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  61.19,
+                        "frozen":  true,
+                        "file":  "pointer-focus/00-neutral.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "pointer-focus/01-peak.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pointer-focus/02-fallback.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pointer-focus/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "frame",
+                        "atMs":  300,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pointer-focus/sequence/01-0300ms.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "frame",
+                        "atMs":  600,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pointer-focus/sequence/02-0600ms.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "frame",
+                        "atMs":  899,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  59.99,
+                        "frozen":  true,
+                        "file":  "pointer-focus/sequence/03-0899ms.png"
+                    },
+                    {
+                        "motion":  "pointer-focus",
+                        "phase":  "frame",
+                        "atMs":  1199,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "pointer-focus/sequence/04-1199ms.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  61.59,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/00-neutral.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60.14,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/01-peak.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/02-fallback.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  59.99,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "frame",
+                        "atMs":  650,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  59.99,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/sequence/01-0650ms.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "frame",
+                        "atMs":  1300,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/sequence/02-1300ms.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "frame",
+                        "atMs":  1949,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/sequence/03-1949ms.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "frame",
+                        "atMs":  2599,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/sequence/04-2599ms.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "tail-idle/00-neutral.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "tail-idle/01-peak.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  60.02,
+                        "frozen":  true,
+                        "file":  "tail-idle/02-fallback.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "tail-idle/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "frame",
+                        "atMs":  800,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.06,
+                        "frozen":  true,
+                        "file":  "tail-idle/sequence/01-0800ms.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "frame",
+                        "atMs":  1600,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "tail-idle/sequence/02-1600ms.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "frame",
+                        "atMs":  2399,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "tail-idle/sequence/03-2399ms.png"
+                    },
+                    {
+                        "motion":  "tail-idle",
+                        "phase":  "frame",
+                        "atMs":  3199,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.09,
+                        "frozen":  true,
+                        "file":  "tail-idle/sequence/04-3199ms.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "fallback",
+                        "atMs":  null,
+                        "trigger":  "completed action returns to breathing idle",
+                        "runtimeState":  "fallback",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/02-fallback.png"
+                    },
+                    {
+                        "motion":  "sleepy-yawn",
+                        "phase":  "interrupt-drag",
+                        "atMs":  null,
+                        "trigger":  "user drag interrupts autonomous yawn",
+                        "runtimeState":  "interrupted-drag",
+                        "fps":  59.98,
+                        "frozen":  true,
+                        "file":  "sleepy-yawn/03-interrupt-drag.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "frame",
+                        "atMs":  2399,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/sequence/04-2399ms.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "frame",
+                        "atMs":  600,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/sequence/01-0600ms.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "frame",
+                        "atMs":  1799,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/sequence/03-1799ms.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "frame",
+                        "atMs":  0,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/sequence/00-0000ms.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "frame",
+                        "atMs":  1200,
+                        "trigger":  "fixed five-frame sequence",
+                        "runtimeState":  "frame",
+                        "fps":  60,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/sequence/02-1200ms.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "interrupt-pet",
+                        "atMs":  null,
+                        "trigger":  "user pet interrupts autonomous stretch",
+                        "runtimeState":  "interrupted-pet",
+                        "fps":  60.08,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/03-interrupt-pet.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "peak",
+                        "atMs":  null,
+                        "trigger":  "direct action at fixed peak",
+                        "runtimeState":  "peak",
+                        "fps":  60.01,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/01-peak.png"
+                    },
+                    {
+                        "motion":  "half-stand-stretch",
+                        "phase":  "neutral",
+                        "atMs":  null,
+                        "trigger":  "fixed neutral first frame",
+                        "runtimeState":  "ready",
+                        "fps":  61.43,
+                        "frozen":  true,
+                        "file":  "half-stand-stretch/00-neutral.png"
+                    }
+                ]
+}

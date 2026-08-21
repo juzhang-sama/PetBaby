@@ -5,7 +5,7 @@ import type {
   RuntimePetDescriptor,
 } from "./pet-switch-protocol";
 
-export const BUILTIN_PET_ID = "pet-live2d-v1";
+export const BUILTIN_PET_ID = "cat-a-standard-v1";
 
 export interface StartupRuntimePorts {
   prepare(petId: string): Promise<RuntimePetDescriptor>;

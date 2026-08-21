@@ -1,0 +1,24 @@
+{
+	"Version": 3,
+	"FileReferences": {
+		"Moc": "body-rounded-v1.moc3",
+		"Textures": [
+			"body-rounded-v1.2048/texture_00.png"
+		],
+		"DisplayInfo": "body-rounded-v1.cdi3.json",
+		"Motions": {
+			"breathing": [{ "File": "motions/breathing.motion3.json" }],
+			"blink": [{ "File": "motions/blink.motion3.json" }],
+			"ear-twitch": [{ "File": "motions/ear-twitch.motion3.json" }],
+			"tail-idle": [{ "File": "motions/tail-idle.motion3.json" }],
+			"pointer-focus": [{ "File": "motions/pointer-focus.motion3.json" }],
+			"pet-happy": [{ "File": "motions/pet-happy.motion3.json" }],
+			"sleepy-yawn": [{ "File": "motions/sleepy-yawn.motion3.json" }],
+			"half-stand-stretch": [{ "File": "motions/half-stand-stretch.motion3.json" }],
+			"edge-tail-left": [{ "File": "motions/edge-tail-left.motion3.json" }],
+			"edge-tail-right": [{ "File": "motions/edge-tail-right.motion3.json" }],
+			"edge-tail-top": [{ "File": "motions/edge-tail-top.motion3.json" }],
+			"edge-tail-bottom": [{ "File": "motions/edge-tail-bottom.motion3.json" }]
+		}
+	}
+}

@@ -1,10 +1,12 @@
 import type { MotionProfileV1 } from "./animated-image-manifest";
 import {
   computeMotionFrame,
+  computeFullImageActionFrame,
   planBreathSlices,
   planHitEnvelopeTransforms,
   planRasterSafeBreathSlice,
   type BreathSlice,
+  type FullImageAction,
 } from "./animated-image-motion";
 import { computeContainRect, type LayoutRect } from "./geometry";
 import type {
@@ -16,6 +18,11 @@ import type {
   PetRenderer,
 } from "./pet-renderer";
 import { loadBrowserImage } from "./static-png-renderer";
+import {
+  canonicalPetCalibration,
+  DEFAULT_PET_CALIBRATION,
+  type PetCalibrationV1,
+} from "./pet-calibration";
 
 type AnimatedImage = CanvasImageSource & { width: number; height: number };
 type BreathPlanner = (
@@ -24,6 +31,7 @@ type BreathPlanner = (
   imageHeight: number,
   breath: number,
   sliceCount: number,
+  breathAmplitudePercent: number,
 ) => BreathSlice[];
 
 export interface AnimatedImageRendererOptions {
@@ -56,6 +64,11 @@ export class AnimatedImageRenderer implements PetRenderer {
   private visible = false;
   private destroyed = false;
   private loadToken = 0;
+  private calibration: PetCalibrationV1 = { ...DEFAULT_PET_CALIBRATION };
+  private action: FullImageAction = "idle";
+  private actionElapsedMs = 0;
+  private actionLoop = false;
+  private actionGeneration = 0;
 
   constructor(
     private readonly root: HTMLElement,
@@ -74,6 +87,9 @@ export class AnimatedImageRenderer implements PetRenderer {
     this.displayContext = displayContext;
     this.hitContext = hitContext;
     this.composeContext = composeContext;
+    this.displayContext.imageSmoothingEnabled = false;
+    this.hitContext.imageSmoothingEnabled = false;
+    this.composeContext.imageSmoothingEnabled = false;
     this.loadImage = options.loadImage ?? loadBrowserImage;
     this.makeBreathSlices = options.planBreathSlices ?? planBreathSlices;
     this.displayCanvas.style.display = "block";
@@ -121,20 +137,34 @@ export class AnimatedImageRenderer implements PetRenderer {
     this.displayContext.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     this.hitContext.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
     this.composeContext.setTransform(viewport.dpr, 0, 0, viewport.dpr, 0, 0);
+    this.displayContext.imageSmoothingEnabled = false;
+    this.hitContext.imageSmoothingEnabled = false;
+    this.composeContext.imageSmoothingEnabled = false;
     this.recomputeLayout();
     this.renderDisplay();
     this.renderHitEnvelope();
   }
 
   playMotion(motion: PetMotion, _options?: { loop?: boolean; priority?: number }): PetMotionHandle {
-    if (motion !== "idle" || this.destroyed) return { cancel: () => undefined };
+    if (this.destroyed) return { cancel: () => undefined };
+    const action = toFullImageAction(motion);
+    if (action === null) return { cancel: () => undefined };
+    const generation = ++this.actionGeneration;
+    this.action = action;
+    this.actionElapsedMs = 0;
+    this.actionLoop = _options?.loop ?? (action === "idle" || action === "carried");
     this.idle = true;
     let active = true;
     return {
       cancel: () => {
         if (!active) return;
         active = false;
-        this.idle = false;
+        if (generation === this.actionGeneration) {
+          this.action = "idle";
+          this.actionElapsedMs = 0;
+          this.actionLoop = false;
+          this.idle = false;
+        }
       },
     };
   }
@@ -144,6 +174,12 @@ export class AnimatedImageRenderer implements PetRenderer {
   setLookTarget(_target: { x: number; y: number } | null): void {}
 
   setLipSync(_value: number): void {}
+
+  setCalibration(value: PetCalibrationV1): void {
+    this.assertAlive();
+    this.calibration = canonicalPetCalibration(value);
+    this.renderDisplay();
+  }
 
   hitTest(point: { x: number; y: number }): PetHitArea | null {
     if (!this.image || !this.profile || !this.bounds || !this.visible || this.destroyed) return null;
@@ -164,8 +200,15 @@ export class AnimatedImageRenderer implements PetRenderer {
   }
 
   update(deltaMs: number): void {
-    if (!this.idle || this.destroyed || !Number.isFinite(deltaMs) || deltaMs < 0) return;
+    if (!this.visible || !this.idle || this.destroyed || !Number.isFinite(deltaMs) || deltaMs < 0) return;
     this.elapsedMs += deltaMs;
+    this.actionElapsedMs += deltaMs;
+    const actionFrame = computeFullImageActionFrame(this.action, this.actionElapsedMs, this.actionLoop);
+    if (actionFrame.completed) {
+      this.action = "idle";
+      this.actionElapsedMs = 0;
+      this.actionLoop = false;
+    }
     this.renderDisplay();
   }
 
@@ -205,12 +248,14 @@ export class AnimatedImageRenderer implements PetRenderer {
   private renderDisplay(): void {
     if (!this.image || !this.profile || !this.viewport || !this.bounds || this.destroyed) return;
     const frame = computeMotionFrame(this.elapsedMs);
+    const action = computeFullImageActionFrame(this.action, this.actionElapsedMs, this.actionLoop);
     const slices = this.makeBreathSlices(
       this.profile,
       this.image.width,
       this.image.height,
       frame.breath,
       24,
+      this.calibration.breathAmplitudePercent,
     );
     const pivotX = this.bounds.x + this.profile.swayPivot.x * this.bounds.width;
     const pivotY = this.bounds.y + this.profile.swayPivot.y * this.bounds.height;
@@ -238,8 +283,12 @@ export class AnimatedImageRenderer implements PetRenderer {
     }
     this.displayContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
     this.displayContext.save();
-    this.displayContext.translate(pivotX + shiftX, pivotY);
-    this.displayContext.rotate(frame.swayRadians);
+    this.displayContext.translate(
+      pivotX + shiftX + this.viewport.width * action.translateXRatio,
+      pivotY + this.viewport.height * action.translateYRatio,
+    );
+    this.displayContext.rotate(frame.swayRadians + action.rotationRadians);
+    this.displayContext.scale(action.scaleX, action.scaleY);
     this.displayContext.translate(-pivotX, -pivotY);
     this.displayContext.drawImage(
       this.composeCanvas,
@@ -284,5 +333,22 @@ export class AnimatedImageRenderer implements PetRenderer {
 
   private assertAlive(): void {
     if (this.destroyed) throw new Error("AnimatedImageRenderer has been destroyed");
+  }
+}
+
+function toFullImageAction(motion: PetMotion): FullImageAction | null {
+  switch (motion) {
+    case "idle":
+    case "look-left":
+    case "look-right":
+    case "react-happy":
+    case "react-curious":
+    case "sleep":
+    case "wake":
+    case "carried":
+    case "landed":
+      return motion;
+    default:
+      return null;
   }
 }

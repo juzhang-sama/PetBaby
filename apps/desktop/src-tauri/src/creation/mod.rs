@@ -5,6 +5,7 @@ pub mod content;
 pub mod domain;
 pub mod finalization;
 pub mod name;
+pub mod photo_avatar;
 pub mod profiles;
 pub mod service;
 pub mod store;

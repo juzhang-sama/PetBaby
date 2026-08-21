@@ -1,4 +1,9 @@
 import { computeContainRect, type LayoutRect } from "./geometry";
+import {
+  canonicalPetCalibration,
+  DEFAULT_PET_CALIBRATION,
+  type PetCalibrationV1,
+} from "./pet-calibration";
 import type {
   PetExpression,
   PetHitArea,
@@ -46,6 +51,8 @@ export class StaticPngRenderer implements PetRenderer {
   private visible = false;
   private destroyed = false;
   private loadToken = 0;
+  private elapsedMs = 0;
+  private calibration: PetCalibrationV1 = { ...DEFAULT_PET_CALIBRATION };
 
   constructor(
     private readonly root: HTMLElement,
@@ -104,6 +111,12 @@ export class StaticPngRenderer implements PetRenderer {
 
   setLipSync(_value: number): void {}
 
+  setCalibration(value: PetCalibrationV1): void {
+    this.assertAlive();
+    this.calibration = canonicalPetCalibration(value);
+    this.render();
+  }
+
   hitTest(point: { x: number; y: number }): PetHitArea | null {
     if (!this.loaded || !this.visible || this.destroyed || !this.bounds) return null;
     const inside = point.x >= this.bounds.x
@@ -119,7 +132,11 @@ export class StaticPngRenderer implements PetRenderer {
     this.canvas.style.visibility = visible ? "visible" : "hidden";
   }
 
-  update(_deltaMs: number): void {}
+  update(deltaMs: number): void {
+    if (!this.visible || this.destroyed || !Number.isFinite(deltaMs) || deltaMs < 0) return;
+    this.elapsedMs += deltaMs;
+    this.render();
+  }
 
   destroy(): void {
     if (this.destroyed) return;
@@ -145,6 +162,14 @@ export class StaticPngRenderer implements PetRenderer {
       { width: this.image.width, height: this.image.height },
       { width: this.viewport.width, height: this.viewport.height },
     );
+    const phase = 2 * Math.PI * (this.elapsedMs % 2_800) / 2_800;
+    const breathScale = 1 + Math.sin(phase) * this.calibration.breathAmplitudePercent / 100;
+    const pivotX = this.bounds.x + this.bounds.width / 2;
+    const pivotY = this.bounds.y + this.bounds.height;
+    this.context.save();
+    this.context.translate(pivotX, pivotY);
+    this.context.scale(breathScale, breathScale);
+    this.context.translate(-pivotX, -pivotY);
     this.context.drawImage(
       this.image,
       this.bounds.x,
@@ -152,6 +177,7 @@ export class StaticPngRenderer implements PetRenderer {
       this.bounds.width,
       this.bounds.height,
     );
+    this.context.restore();
   }
 
   private assertAlive(): void {

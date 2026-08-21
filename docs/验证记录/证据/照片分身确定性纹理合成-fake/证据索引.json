@@ -1,0 +1,250 @@
+﻿{
+    "schemaVersion":  1,
+    "generatedAt":  "2026-08-17T05:55:34.686Z",
+    "fixture":  "balanced-success",
+    "provider":  "deterministic fake provider with synthetic non-identity atlas; no network",
+    "claimBoundary":  "fake provider proves chain and dynamics only; synthetic atlas does not claim pet identity or similarity",
+    "manifestSha256":  "4ce406111955f80b29ce48af25e2117ec41626e9eec7ac76b1f7ab9cc6704124",
+    "packageSchemaVersion":  5,
+    "renderer":  "cat-spatial-live2d-v1",
+    "rendererReady":  true,
+    "runtimeCheckPassed":  true,
+    "zeroV3OrStaticFallback":  true,
+    "viewport":  {
+                     "width":  420,
+                     "height":  520
+                 },
+    "checks":  {
+                   "nonEmpty":  true,
+                   "consistentDimensions":  true,
+                   "realRendererActions":  true,
+                   "rawManifestHash":  true,
+                   "keyFramePixelDifference":  true
+               },
+    "entries":  [
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "breathing",
+                        "phase":  "neutral",
+                        "source":  "authored-motion-plus-runtime-idle-automation",
+                        "file":  "breathing/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "breathing",
+                        "phase":  "peak",
+                        "source":  "authored-motion-plus-runtime-idle-automation",
+                        "file":  "breathing/01-peak.png",
+                        "bytes":  27298,
+                        "pixelDiffFromNeutral":  8913
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "breathing",
+                        "phase":  "fallback",
+                        "source":  "authored-motion-plus-runtime-idle-automation",
+                        "file":  "breathing/02-fallback.png",
+                        "bytes":  27955,
+                        "pixelDiffFromPeak":  2760
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "blink",
+                        "phase":  "neutral",
+                        "source":  "authored-motion",
+                        "file":  "blink/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "blink",
+                        "phase":  "peak",
+                        "source":  "authored-motion",
+                        "file":  "blink/01-peak.png",
+                        "bytes":  30210,
+                        "pixelDiffFromNeutral":  7539
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "blink",
+                        "phase":  "fallback",
+                        "source":  "authored-motion",
+                        "file":  "blink/02-fallback.png",
+                        "bytes":  29024,
+                        "pixelDiffFromPeak":  9134
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "ear-twitch",
+                        "phase":  "neutral",
+                        "source":  "authored-motion",
+                        "file":  "ear-twitch/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "ear-twitch",
+                        "phase":  "peak",
+                        "source":  "authored-motion",
+                        "file":  "ear-twitch/01-peak.png",
+                        "bytes":  32292,
+                        "pixelDiffFromNeutral":  1271
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "ear-twitch",
+                        "phase":  "fallback",
+                        "source":  "authored-motion",
+                        "file":  "ear-twitch/02-fallback.png",
+                        "bytes":  32360,
+                        "pixelDiffFromPeak":  1045
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "tail-idle",
+                        "phase":  "neutral",
+                        "source":  "authored-motion",
+                        "file":  "tail-idle/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "tail-idle",
+                        "phase":  "peak",
+                        "source":  "authored-motion",
+                        "file":  "tail-idle/01-peak.png",
+                        "bytes":  32870,
+                        "pixelDiffFromNeutral":  10218
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "tail-idle",
+                        "phase":  "fallback",
+                        "source":  "authored-motion",
+                        "file":  "tail-idle/02-fallback.png",
+                        "bytes":  31234,
+                        "pixelDiffFromPeak":  11272
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "pointer-focus",
+                        "phase":  "neutral",
+                        "source":  "authored-motion",
+                        "file":  "pointer-focus/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "pointer-focus",
+                        "phase":  "peak",
+                        "source":  "authored-motion",
+                        "file":  "pointer-focus/01-peak.png",
+                        "bytes":  31735,
+                        "pixelDiffFromNeutral":  5385
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "pointer-focus",
+                        "phase":  "fallback",
+                        "source":  "authored-motion",
+                        "file":  "pointer-focus/02-fallback.png",
+                        "bytes":  32160,
+                        "pixelDiffFromPeak":  5385
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "pet-happy",
+                        "phase":  "neutral",
+                        "source":  "authored-motion",
+                        "file":  "pet-happy/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "pet-happy",
+                        "phase":  "peak",
+                        "source":  "authored-motion",
+                        "file":  "pet-happy/01-peak.png",
+                        "bytes":  31183,
+                        "pixelDiffFromNeutral":  5504
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "pet-happy",
+                        "phase":  "fallback",
+                        "source":  "authored-motion",
+                        "file":  "pet-happy/02-fallback.png",
+                        "bytes":  31669,
+                        "pixelDiffFromPeak":  6186
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "sleepy-yawn",
+                        "phase":  "neutral",
+                        "source":  "authored-motion",
+                        "file":  "sleepy-yawn/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "sleepy-yawn",
+                        "phase":  "peak",
+                        "source":  "authored-motion",
+                        "file":  "sleepy-yawn/01-peak.png",
+                        "bytes":  31484,
+                        "pixelDiffFromNeutral":  3446
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "sleepy-yawn",
+                        "phase":  "fallback",
+                        "source":  "authored-motion",
+                        "file":  "sleepy-yawn/02-fallback.png",
+                        "bytes":  31671,
+                        "pixelDiffFromPeak":  3489
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "half-stand-stretch",
+                        "phase":  "neutral",
+                        "source":  "authored-motion",
+                        "file":  "half-stand-stretch/00-neutral.png",
+                        "bytes":  32163
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "half-stand-stretch",
+                        "phase":  "peak",
+                        "source":  "authored-motion",
+                        "file":  "half-stand-stretch/01-peak.png",
+                        "bytes":  30978,
+                        "pixelDiffFromNeutral":  2127
+                    },
+                    {
+                        "evidenceType":  "motion-frame",
+                        "motion":  "half-stand-stretch",
+                        "phase":  "fallback",
+                        "source":  "authored-motion",
+                        "file":  "half-stand-stretch/02-fallback.png",
+                        "bytes":  30788,
+                        "pixelDiffFromPeak":  518
+                    },
+                    {
+                        "evidenceType":  "interruption",
+                        "interaction":  "pet",
+                        "interruptedMotion":  "half-stand-stretch",
+                        "phase":  "interrupt-pet",
+                        "file":  "interruptions/00-pet-interrupt.png",
+                        "bytes":  32597
+                    },
+                    {
+                        "evidenceType":  "interruption",
+                        "interaction":  "drag",
+                        "interruptedMotion":  "sleepy-yawn",
+                        "phase":  "interrupt-drag",
+                        "file":  "interruptions/01-drag-interrupt.png",
+                        "bytes":  27387
+                    }
+                ]
+}

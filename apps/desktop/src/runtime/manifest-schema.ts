@@ -4,6 +4,14 @@ import {
   type RuntimeAssetManifestV2,
 } from "../runtime-assets/live2d-manifest";
 import { parseAnimatedImageManifest, type RuntimeAssetManifestV3 } from "./animated-image-manifest";
+import {
+  parseCatCharacterManifest,
+  type RuntimeAssetManifestV4,
+} from "../runtime-assets/cat-character-manifest";
+import {
+  parseCatSpatialManifest,
+  type RuntimeAssetManifestV5,
+} from "../runtime-assets/cat-spatial-manifest";
 
 export const MANIFEST_SCHEMA_VERSION = 1 as const;
 
@@ -102,7 +110,7 @@ export function parseManifestV1(json: unknown): RuntimeAssetManifestV1 {
 
 export function parseRuntimeAssetManifest(
   json: unknown,
-): RuntimeAssetManifestV1 | RuntimeAssetManifestV2 | RuntimeAssetManifestV3 {
+): RuntimeAssetManifestV1 | RuntimeAssetManifestV2 | RuntimeAssetManifestV3 | RuntimeAssetManifestV4 | RuntimeAssetManifestV5 {
   if (typeof json !== "object" || json === null) throw new Error("manifest must be an object");
   switch ((json as Record<string, unknown>).schemaVersion) {
     case 1:
@@ -111,6 +119,10 @@ export function parseRuntimeAssetManifest(
       return parseLive2DManifest(json);
     case 3:
       return parseAnimatedImageManifest(json);
+    case 4:
+      return parseCatCharacterManifest(json);
+    case 5:
+      return parseCatSpatialManifest(json);
     default:
       throw new Error(`unsupported schemaVersion: ${String((json as Record<string, unknown>).schemaVersion)}`);
   }

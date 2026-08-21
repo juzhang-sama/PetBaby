@@ -9,12 +9,124 @@
   <body class="settings-shell">
     <h1>桌面宠物设置</h1>
     <div class="tabs" role="tablist" aria-label="设置页面">
-      <button id="tab-list" class="tab active" role="tab" aria-selected="true">我的宠物</button>
-      <button id="tab-create" class="tab" role="tab" aria-selected="false">创建宠物</button>
+      <button type="button" id="tab-list" class="tab active" role="tab" aria-selected="true">我的宠物</button>
+      <button type="button" id="tab-create" class="tab" role="tab" aria-selected="false">创建宠物</button>
     </div>
 
     <div id="view-list">
+      <section class="display-size-card" aria-labelledby="display-size-title">
+        <div class="display-size-heading">
+          <div>
+            <p class="display-size-kicker">显示</p>
+            <h2 id="display-size-title">宠物大小</h2>
+            <p id="display-size-help">拖动时实时预览；松开滑块或使用键盘后立即应用。</p>
+          </div>
+          <output id="display-size-output" for="display-size-slider">读取中</output>
+        </div>
+        <div class="display-size-scale">
+          <label for="display-size-slider">桌面宠物显示比例</label>
+          <input
+            id="display-size-slider"
+            type="range"
+            min="0.5" max="1.5" step="0.05"
+            aria-describedby="display-size-help display-size-status display-size-error"
+            disabled
+          />
+          <div class="display-size-ticks" aria-hidden="true">
+            <span data-position="0">50%</span>
+            <span data-position="25">75%</span>
+            <span data-position="50">100%</span>
+            <span data-position="75">125%</span>
+            <span data-position="100">150%</span>
+          </div>
+        </div>
+        <div class="display-size-presets" role="group" aria-label="常用宠物大小">
+          <span>常用大小</span>
+          <button type="button" data-display-scale="0.75" disabled>小巧 · 75%</button>
+          <button type="button" data-display-scale="1" disabled>标准 · 100%</button>
+          <button type="button" data-display-scale="1.25" disabled>醒目 · 125%</button>
+        </div>
+        <p id="display-size-status" role="status" aria-live="polite"></p>
+        <p id="display-size-error" role="alert"></p>
+      </section>
+      <section id="calibration-section" class="calibration-card" aria-labelledby="calibration-title" aria-busy="true">
+        <header class="calibration-heading">
+          <div>
+            <p class="display-size-kicker">当前宠物 · 实时</p>
+            <h2 id="calibration-title" tabindex="-1">动作校准</h2>
+            <p>只调整 <strong id="calibration-pet-name">当前宠物</strong>。拖动会临时预览，保存后才会长期生效。</p>
+          </div>
+          <span class="calibration-live-mark" aria-hidden="true">LIVE</span>
+        </header>
+        <div class="calibration-controls">
+          <div class="calibration-row">
+            <span class="calibration-track-mark" aria-hidden="true">B</span>
+            <div class="calibration-copy">
+              <label for="calibration-breath">呼吸幅度</label>
+              <small id="calibration-breath-help">控制身体呼吸起伏；0% 表示不呼吸。</small>
+            </div>
+            <input id="calibration-breath" type="range" min="0" max="5" step="0.1" value="2" aria-describedby="calibration-breath-help calibration-status calibration-error" disabled />
+            <output id="calibration-breath-output" for="calibration-breath">2%</output>
+          </div>
+          <div class="calibration-row">
+            <span class="calibration-track-mark" aria-hidden="true">F</span>
+            <div class="calibration-copy">
+              <label for="calibration-feedback">点击反馈</label>
+              <small id="calibration-feedback-help">缩放已有摇晃和弹跳，不改变宠物的反应选择。</small>
+            </div>
+            <input id="calibration-feedback" type="range" min="0" max="1" step="0.05" value="0.6" aria-describedby="calibration-feedback-help calibration-status calibration-error" disabled />
+            <output id="calibration-feedback-output" for="calibration-feedback">60%</output>
+          </div>
+        </div>
+        <footer class="calibration-footer">
+          <div class="calibration-feedback-copy">
+            <p id="calibration-status" role="status" aria-live="polite">正在读取当前宠物的校准参数…</p>
+            <p id="calibration-error" role="alert"></p>
+          </div>
+          <div class="calibration-actions">
+            <button id="calibration-reset" type="button" disabled>恢复默认</button>
+            <button id="calibration-feedback-test" type="button" disabled>测试点击反馈</button>
+            <button id="calibration-cancel" type="button" disabled>取消更改</button>
+            <button id="calibration-save" class="primary" type="button" disabled>保存校准</button>
+          </div>
+        </footer>
+      </section>
       <div class="pet-list" id="list"></div>
+      <section id="pet-profile-editor" class="pet-profile-card" aria-labelledby="pet-profile-editor-title" aria-busy="false" hidden>
+        <form id="pet-profile-form">
+          <fieldset id="pet-profile-fieldset">
+            <legend id="pet-profile-editor-title">宠物档案</legend>
+            <div class="pet-profile-fields">
+              <div class="pet-profile-field">
+                <label for="pet-profile-name">名称</label>
+                <input id="pet-profile-name" type="text" autocomplete="off" aria-describedby="pet-profile-error" />
+              </div>
+              <div class="pet-profile-field">
+                <label for="pet-profile-gender">性别</label>
+                <select id="pet-profile-gender">
+                  <option value="unknown">未知</option>
+                  <option value="male">公</option>
+                  <option value="female">母</option>
+                </select>
+              </div>
+              <div class="pet-profile-field">
+                <label for="pet-profile-birth-date">出生日期</label>
+                <input id="pet-profile-birth-date" type="date" />
+              </div>
+            </div>
+            <div class="pet-profile-footer">
+              <div class="pet-profile-feedback">
+                <p id="pet-profile-loading" role="status" aria-live="polite"></p>
+                <p id="pet-profile-error" role="alert"></p>
+              </div>
+              <div class="pet-profile-actions">
+                <button id="pet-profile-cancel" type="button">取消</button>
+                <button id="pet-profile-save" class="primary" type="submit">保存资料</button>
+              </div>
+            </div>
+          </fieldset>
+        </form>
+      </section>
       <div id="status" role="status" aria-live="polite"></div>
     </div>
 
@@ -44,66 +156,42 @@
         <div id="creation-page-status" class="creation-inline-status" role="status" aria-live="polite"></div>
       </section>
 
-      <section id="upload-creation-workspace" class="wizard" aria-labelledby="wizard-title" hidden>
+      <section id="photo-avatar-workspace" class="wizard" aria-labelledby="photo-avatar-title" hidden>
         <button type="button" class="workspace-back" data-creation-back>返回创建方式</button>
-        <p class="wizard-kicker">上传创建 · 猫咪</p>
-        <h2 id="wizard-title" data-creation-entry-focus tabindex="-1">把一张照片变成桌面伙伴</h2>
-        <p class="wizard-intro">选择照片，等待生成，再确认会呼吸微动的候选。完成前不会替换当前宠物。</p>
-        <div id="wizard-status" class="wizard-status" role="status" aria-live="polite"></div>
-        <div class="wizard-step key-row">
-          <div class="field-group">
-            <label for="api-key">生成 API Key（lk888.ai）</label>
-            <input type="password" id="api-key" placeholder="sk-..." autocomplete="off" aria-describedby="key-help key-status" />
-            <p id="key-help" class="field-help">Key 只保存在本机，用于本次及后续生成。</p>
-          </div>
-          <button id="save-key" type="button">保存 Key</button>
-          <div id="key-status" role="status" aria-live="polite"></div>
+        <p class="wizard-kicker">照片分身猫</p>
+        <h2 id="photo-avatar-title" data-creation-entry-focus tabindex="-1">把我的猫变成桌面伙伴</h2>
+        <p class="wizard-intro">一次选择 1 至 8 张照片，只在完整像素宠物通过运行时检查后预览。</p>
+        <div id="photo-avatar-status" class="wizard-status" role="status" aria-live="polite"></div>
+        <div id="photo-avatar-collecting" class="wizard-step">
+          <label class="field-group" for="photo-avatar-files">猫咪照片
+            <input id="photo-avatar-files" type="file" accept="image/png,image/jpeg" multiple />
+          </label>
+          <button id="photo-avatar-generate" class="primary" type="button" disabled>生成我的猫</button>
         </div>
-        <div class="wizard-step" id="wizard-step">
-          <div id="step-upload">
-            <div class="field-group">
-              <label for="photo-input">猫咪照片</label>
-              <input type="file" id="photo-input" accept="image/png,image/jpeg" />
-              <p class="field-help">正面、全身清晰、背景简单的照片效果更稳定。</p>
-            </div>
-            <img id="photo-preview" alt="已选择的猫咪照片预览" hidden />
-            <div class="privacy-note">
-              隐私提示：原图会仅在本机临时保存用于失败恢复，完成或放弃后删除；
-              生成时照片会上传到第三方生成平台（gpt-image-2），平台侧生成结果默认保留。
-            </div>
-            <div class="wizard-actions">
-              <button id="upload-abandon" class="danger" type="button">放弃创建</button>
-            </div>
+        <div id="photo-avatar-generating" class="wizard-step" aria-live="polite" hidden></div>
+        <div id="photo-avatar-preview" class="wizard-step" hidden>
+          <div id="photo-avatar-live2d" class="photo-avatar-live2d" role="img" aria-label="照片分身像素动态预览"></div>
+          <ul id="photo-avatar-completions"></ul>
+          <label class="field-group" for="photo-avatar-name">宠物名字
+            <input id="photo-avatar-name" maxlength="20" placeholder="给我的猫起个名字" aria-label="宠物名字" />
+          </label>
+          <div class="wizard-actions">
+            <button id="photo-avatar-accept" class="primary" type="button">接受并安装</button>
           </div>
-          <div id="step-generating" hidden>
-            <h3>正在生成候选</h3>
-            <p>通常需要 1–2 分钟。可以返回宠物列表，稍后会从本地创建记录继续。</p>
-            <div class="job-grid" id="job-grid"></div>
-          </div>
-          <div id="step-review" hidden>
-            <h3>看看它在桌面上的样子</h3>
-            <p>棋盘格舞台会播放真实的呼吸与整体微动预览。</p>
-            <div class="candidate-grid" id="candidate-grid"></div>
-            <div class="field-group name-field">
-              <label for="pet-name">给它取个名字</label>
-              <input id="pet-name" type="text" autocomplete="off" aria-describedby="pet-name-help pet-name-error" />
-              <p id="pet-name-help" class="field-help">请输入 1–20 个可见字符（按完整字素计）；最终名称以后端校验为准。</p>
-              <p id="pet-name-error" class="field-error" role="alert"></p>
-            </div>
-            <div class="wizard-actions" id="review-actions">
-              <button id="review-accept" class="primary" type="button" disabled>满意，出现在桌面</button>
-              <button id="review-retry" type="button">不满意，重新生成</button>
-              <button id="review-abandon" class="danger" type="button">放弃创建</button>
-            </div>
-          </div>
-          <div id="step-complete" hidden>
-            <h3>已经到桌面啦</h3>
-            <p>这只会呼吸微动的猫咪现在是当前桌面宠物。</p>
+          <label class="field-group" for="photo-avatar-revision">局部修改要求
+            <input id="photo-avatar-revision" maxlength="120" aria-label="局部修改要求" />
+          </label>
+          <button id="photo-avatar-revise" type="button">修改这一处</button>
+        </div>
+        <div id="photo-avatar-complete" class="wizard-step" hidden>
+          <p class="wizard-success">照片分身已安装。</p>
+          <div class="wizard-actions">
+            <button id="photo-avatar-done" class="primary" type="button">完成，返回创建方式</button>
           </div>
         </div>
         <div class="wizard-actions">
-          <button id="wizard-next" class="primary" type="button">上传照片，生成候选</button>
-          <button id="wizard-cancel" type="button" hidden>返回我的宠物</button>
+          <button id="photo-avatar-regenerate" type="button">重新生成</button>
+          <button id="photo-avatar-cancel" class="danger" type="button">取消创建</button>
         </div>
       </section>
 
@@ -115,7 +203,7 @@
           <p>每次选择都会保存到本机。只有“已保存”时，关闭后才能从同一步继续。</p>
         </header>
         <div class="composer-layout">
-          <div class="composer-stage" aria-label="猫咪组合实时预览">
+          <div class="composer-stage" role="img" aria-label="猫咪组合实时预览">
             <canvas data-composer-canvas width="1024" height="1024"></canvas>
             <span class="composer-stage-label">LIVE PET WORKBENCH · 1024</span>
           </div>
@@ -125,7 +213,7 @@
               <strong data-composer-save aria-live="polite">尚未开始</strong>
               <span data-composer-message role="status" aria-live="polite">请选择身体底型开始组合。</span>
             </div>
-            <div class="composer-options" data-composer-options aria-label="当前步骤可选内容"></div>
+            <div class="composer-options" data-composer-options role="region" aria-label="当前步骤可选内容"></div>
             <div class="composer-navigation">
               <button type="button" data-composer-previous>上一步</button>
               <button type="button" data-composer-next>下一步</button>
@@ -187,6 +275,17 @@
             <button type="submit" class="primary" value="continue">继续当前草稿</button>
             <button type="submit" class="danger" value="abandon">放弃并开始新方法</button>
             <button type="submit" value="cancel">取消</button>
+          </div>
+        </form>
+      </dialog>
+      <dialog id="photo-avatar-consent-dialog" aria-labelledby="photo-avatar-consent-title" aria-describedby="photo-avatar-consent-copy">
+        <form method="dialog" class="draft-choice-card">
+          <p class="wizard-kicker">照片分身猫 · 首次同意</p>
+          <h2 id="photo-avatar-consent-title">是否同意提交照片？</h2>
+          <p id="photo-avatar-consent-copy">照片会提交给第三方 AI 服务 lk888.ai。gpt-4o 仅用于分析与补全，gpt-image-2 仅用于生成纹理。lk888 没有公开删除 API；保存期限尚未核验，隐私政策版本尚未核验。资料不足部分由 AI 补全，补全可能与真实宠物存在差异。</p>
+          <div class="wizard-actions">
+            <button type="submit" value="cancel">不同意并返回</button>
+            <button type="submit" value="accept" class="primary">同意并开始生成</button>
           </div>
         </form>
       </dialog>

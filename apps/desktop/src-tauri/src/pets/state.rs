@@ -48,22 +48,24 @@ impl StateStore {
 #[cfg(test)]
 mod tests {
     use super::*;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use crate::test_support::TestStorageRoot;
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
-
-    fn temp_store() -> (StateStore, std::path::PathBuf) {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root =
-            std::env::temp_dir().join(format!("desktop-pet-state-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
-        let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
+    fn temp_store() -> (StateStore, TestStorageRoot) {
+        let root = TestStorageRoot::claim("desktop-pet-state").unwrap();
+        let storage = Arc::new(Mutex::new(Storage::open(root.path()).unwrap()));
         (StateStore::new(storage), root)
     }
 
     #[test]
-    fn round_trips_state_value() {
+    fn temp_store_owns_a_unique_root() {
         let (store, root) = temp_store();
+        assert!(root.path().exists());
+        drop(store);
+    }
+
+    #[test]
+    fn round_trips_state_value() {
+        let (store, _root) = temp_store();
         assert_eq!(store.load("pet:pet-1:behavior").unwrap(), None);
         store
             .save("pet:pet-1:behavior", r#"{"energy":0.5}"#)
@@ -72,26 +74,26 @@ mod tests {
             store.load("pet:pet-1:behavior").unwrap().as_deref(),
             Some(r#"{"energy":0.5}"#)
         );
-        let _ = std::fs::remove_dir_all(root);
+        drop(store);
     }
 
     #[test]
     fn save_overwrites_existing_value() {
-        let (store, root) = temp_store();
+        let (store, _root) = temp_store();
         store.save("k", "v1").unwrap();
         store.save("k", "v2").unwrap();
         assert_eq!(store.load("k").unwrap().as_deref(), Some("v2"));
-        let _ = std::fs::remove_dir_all(root);
+        drop(store);
     }
 
     #[test]
     fn remove_deletes_existing_value() {
-        let (store, root) = temp_store();
+        let (store, _root) = temp_store();
         store
             .save("creation:pet-1:compile_error", "failed")
             .unwrap();
         store.remove("creation:pet-1:compile_error").unwrap();
         assert_eq!(store.load("creation:pet-1:compile_error").unwrap(), None);
-        let _ = std::fs::remove_dir_all(root);
+        drop(store);
     }
 }

@@ -1,6 +1,12 @@
 import type { Live2DAssetTransport } from "../runtime-assets/live2d-asset-loader";
 
 export const BUILTIN_LIVE2D_PET = {
+  petId: "cat-a-standard-v1",
+  manifestUrl: "/builtin-pets/cat-a-standard-v1/manifest.json",
+  previewUrl: "/builtin-pets/cat-a-standard-v1/preview.png",
+} as const;
+
+const LEGACY_BUILTIN_LIVE2D_PET = {
   petId: "pet-live2d-v1",
   manifestUrl: "/builtin-pets/pet-live2d-v1/manifest.json",
   previewUrl: "/builtin-pets/pet-live2d-v1/preview.png",
@@ -8,7 +14,7 @@ export const BUILTIN_LIVE2D_PET = {
 
 export type StartupPetSource =
   | { kind: "installed"; petId: string }
-  | ({ kind: "builtin" } & typeof BUILTIN_LIVE2D_PET);
+  | ({ kind: "builtin" } & (typeof BUILTIN_LIVE2D_PET | typeof LEGACY_BUILTIN_LIVE2D_PET));
 
 interface BuiltinPetTransportOptions {
   manifestUrl: string;
@@ -17,9 +23,10 @@ interface BuiltinPetTransportOptions {
 }
 
 export function selectStartupPetSource(activePetId: string | null): StartupPetSource {
-  if (activePetId && activePetId !== BUILTIN_LIVE2D_PET.petId) {
-    return { kind: "installed", petId: activePetId };
+  if (activePetId === LEGACY_BUILTIN_LIVE2D_PET.petId) {
+    return { kind: "builtin", ...LEGACY_BUILTIN_LIVE2D_PET };
   }
+  if (activePetId && activePetId !== BUILTIN_LIVE2D_PET.petId) return { kind: "installed", petId: activePetId };
   return { kind: "builtin", ...BUILTIN_LIVE2D_PET };
 }
 

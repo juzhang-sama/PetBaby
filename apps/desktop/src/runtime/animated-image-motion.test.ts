@@ -268,4 +268,26 @@ describe("animated image motion", () => {
     expect(atBottomSeam!.destWidth).toBe(600);
     expect(atBottomSeam!.destY + atBottomSeam!.destHeight).toBeCloseTo(840);
   });
+
+  it("scales the legacy breath deformation by breathAmplitudePercent divided by two", () => {
+    const disabled = planBreathSlices(validMotionProfile(), 1000, 1000, 1, 24, 0);
+    const baseline = planBreathSlices(validMotionProfile(), 1000, 1000, 1, 24, 2);
+    const doubled = planBreathSlices(validMotionProfile(), 1000, 1000, 1, 24, 4);
+    const isDeformed = (slice: (typeof baseline)[number]) => slice.destWidth !== slice.sourceWidth;
+    const baselineChest = baseline.find(isDeformed)!;
+    const disabledChest = disabled.find((slice) =>
+      slice.sourceX === baselineChest.sourceX && slice.sourceY === baselineChest.sourceY
+    )!;
+    const doubledChest = doubled.find((slice) =>
+      slice.sourceX === disabledChest.sourceX && slice.sourceY === disabledChest.sourceY
+    )!;
+
+    expect(disabledChest.destWidth).toBe(disabledChest.sourceWidth);
+    expect(doubledChest.destWidth - doubledChest.sourceWidth).toBeCloseTo(
+      2 * (baselineChest.destWidth - baselineChest.sourceWidth),
+    );
+    expect(doubledChest.destY - doubledChest.sourceY).toBeCloseTo(
+      2 * (baselineChest.destY - baselineChest.sourceY),
+    );
+  });
 });

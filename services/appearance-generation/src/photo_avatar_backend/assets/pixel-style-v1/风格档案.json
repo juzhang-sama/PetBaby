@@ -1,0 +1,33 @@
+{
+  "styleProfileId": "pixel-style-v1",
+  "version": 1,
+  "route": "pixel-v1",
+  "provider": "lk888",
+  "model": "gpt-image-2",
+  "modelDisplayName": "GPT-image-2.0",
+  "visualLanguage": "16-bit pixel art game sprite with chunky visible pixels, hard edges, and a limited palette",
+  "headShareOfHeight": [0.38, 0.42],
+  "bodyShareOfHeight": [0.58, 0.62],
+  "pose": "compact seated three-quarter front view",
+  "background": "transparent",
+  "preserveTraits": [
+    "face shape and proportions",
+    "ear shape",
+    "eye color",
+    "face markings",
+    "chest fur",
+    "paw socks",
+    "body patches",
+    "tail shape and markings"
+  ],
+  "forbidden": [
+    "low-resolution mosaic filter",
+    "face patch compositing",
+    "body-part assembly",
+    "semantic layer output",
+    "Live2D rig",
+    "generic cat replacement",
+    "smooth vector gradients"
+  ],
+  "referenceAsset": "认可参考图.png"
+}

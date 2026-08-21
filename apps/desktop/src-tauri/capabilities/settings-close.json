@@ -1,0 +1,7 @@
+{
+  "$schema": "../gen/schemas/desktop-schema.json",
+  "identifier": "settings-close",
+  "description": "Allows the settings window to force-close after coordinated save and restore.",
+  "windows": ["settings"],
+  "permissions": ["core:window:allow-destroy"]
+}

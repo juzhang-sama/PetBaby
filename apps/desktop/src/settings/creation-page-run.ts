@@ -146,6 +146,13 @@ export class CreationPageRun {
       if (!this.isCurrent(visit)) return null;
       if (!draft) return await this.openRoute(requestedRoute, null, visit);
       if (draft.method === requestedRoute) {
+        if (requestedRoute === "upload") {
+          // 照片分身：每次进入创建页都从全新会话开始（生成快、进度恢复价值低）。
+          // 若自动恢复旧草稿，会残留上一次的预览/完成界面（用户已明确要求每次全新）。
+          await this.abandonDraft(draft.sessionId, requestedRoute);
+          if (!this.isCurrent(visit)) return null;
+          return await this.openRoute(requestedRoute, null, visit);
+        }
         return await this.openRoute(requestedRoute, draft.sessionId, visit);
       }
       if (draft.method === "adoption") {

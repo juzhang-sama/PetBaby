@@ -1,5 +1,9 @@
 node_modules/
 dist/
+__pycache__/
+*.py[cod]
+.pytest_cache/
+.env
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
 *.log
@@ -8,4 +12,8 @@ apps/desktop/public/live2d/
 .superpowers/
 .worktrees/
 .playwright-cli/
+.omo/evidence/
+_debug/
 output/
+services/saas-backend/data/*.db
+services/appearance-generation/models/

@@ -18,7 +18,7 @@ export class MicroMotionController {
   private elapsedMs = 0;
   private paused = false;
   private carried = false;
-  private frame: MicroMotionFrame = { breath: 0.5, bodySway: 0 };
+  private frame: MicroMotionFrame = { breath: 0, bodySway: 0 };
 
   setCarried(carried: boolean): void {
     this.carried = carried;
@@ -32,7 +32,7 @@ export class MicroMotionController {
     if (this.paused) return this.frame;
 
     this.elapsedMs += normalizeDelta(deltaMs);
-    const breathWave = 0.5 + 0.5 * Math.sin(TAU * this.elapsedMs / 4_000);
+    const breathWave = Math.sin(TAU * this.elapsedMs / 4_000);
     const bodySway = this.carried
       ? 0
       : clamp(
@@ -43,7 +43,7 @@ export class MicroMotionController {
         );
 
     this.frame = {
-      breath: this.carried ? 0.5 + (breathWave - 0.5) * 0.25 : breathWave,
+      breath: this.carried ? breathWave * 0.25 : breathWave,
       bodySway,
     };
     return this.frame;

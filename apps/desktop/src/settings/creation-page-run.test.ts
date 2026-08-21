@@ -138,6 +138,18 @@ describe("CreationPageRun", () => {
     expect(test.onRoute).toHaveBeenLastCalledWith("composer");
   });
 
+  it("abandons an upload draft and starts fresh through the upload route", async () => {
+    const draft = snapshot("upload", "photo-avatar-session");
+    const test = routerPorts({ draft });
+
+    await test.page.open("upload");
+
+    expect(test.creation.abandon).toHaveBeenCalledWith("photo-avatar-session");
+    expect(test.views.upload.open).toHaveBeenCalledWith(null);
+    expect(test.dialog.showDraftChoice).not.toHaveBeenCalled();
+    expect(test.onRoute).toHaveBeenLastCalledWith("upload");
+  });
+
   it("abandons before opening a different long-lived method", async () => {
     const draft = snapshot("composer");
     const test = routerPorts({ draft, choice: "abandon" });

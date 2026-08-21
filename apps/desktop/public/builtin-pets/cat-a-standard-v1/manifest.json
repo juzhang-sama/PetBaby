@@ -1,0 +1,189 @@
+{
+    "schemaVersion":  5,
+    "renderer":  "cat-spatial-live2d-v1",
+    "petId":  "cat-a-standard-v1",
+    "variantId":  "standard-v1",
+    "skeletonVersion":  "cat-a-live2d-v1",
+    "bodyModuleId":  "body-balanced-v1",
+    "modelEntry":  "cat-a-standard-v1.model3.json",
+    "previewImage":  "preview.png",
+    "motionSpatialProfile":  "motion-spatial-profile.json",
+    "files":  [
+                  {
+                      "role":  "texture",
+                      "relativePath":  "cat-a-standard-v1.2048/texture_00.png",
+                      "sha256":  "aab81085f63d43c5632d8991995fd332ad76886fe7da5c98cbaef332f3358c43"
+                  },
+                  {
+                      "role":  "metadata",
+                      "relativePath":  "cat-a-standard-v1.cdi3.json",
+                      "sha256":  "78fbe5a83ef1b094cdcaa8976d527aa2849134452eb2b6991c1137df28337c81"
+                  },
+                  {
+                      "role":  "moc",
+                      "relativePath":  "cat-a-standard-v1.moc3",
+                      "sha256":  "069068b996e5778185d1c13c69e1a5661593ef87e9372d58d7fb4ea62ae653e5"
+                  },
+                  {
+                      "role":  "model",
+                      "relativePath":  "cat-a-standard-v1.model3.json",
+                      "sha256":  "97483e49db670d06b8253f0b3543bef7f277dc3269904f83614b6854e414ec5d"
+                  },
+                  {
+                      "role":  "metadata",
+                      "relativePath":  "license.json",
+                      "sha256":  "a49e9f9f4bae81c8f55209ca36e21611ec6bf330e965f6b1e88a0233c6d4af78"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/blink.motion3.json",
+                      "sha256":  "79898ffc54db44dcd8dc3afb6f0690e8cb8f3e9cf7fc6e2dd8156c71e8306290"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/breathing.motion3.json",
+                      "sha256":  "9a7451ebad2ad5b7c4bec04af5c1eee31032e6f74723eedd9ac8fa5529788fc5"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/ear-twitch.motion3.json",
+                      "sha256":  "ad45f35ccf0bce1dee3458d8b177abc0c56661027da3a29d4e3f13924c14cd1e"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/edge-tail-bottom.motion3.json",
+                      "sha256":  "f7bb5914e0ab1e8b2be2c73d8727d1b973ac8526f2218c2afed1bdf0514403e1"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/edge-tail-left.motion3.json",
+                      "sha256":  "935d0a5bb87eda2d33c8a39fee3de00a78bee8f82af74e93911ae2b713eff476"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/edge-tail-right.motion3.json",
+                      "sha256":  "82ea995b89c2903f2c183930f2ea4cbc0ab71840e732f334e789e0f88244578a"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/edge-tail-top.motion3.json",
+                      "sha256":  "c3776b8e653f70a4e907b6e22c218042a1648ebc2e9484b4cbd217299718966b"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/half-stand-stretch.motion3.json",
+                      "sha256":  "c93c382c15d45f790e1d1713f24ae5b8e6ce60f151571c2be3966b2731895689"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/pet-happy.motion3.json",
+                      "sha256":  "869e2c30bf94afa70041d886a13f98fd6b4ba0180f139c21c9fbd32f924b4c7c"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/pointer-focus.motion3.json",
+                      "sha256":  "318ea3f4ca2da5f17c19afa7f9ba0317dbbf0de09045a61428a8edeb6a9d897a"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/sleepy-yawn.motion3.json",
+                      "sha256":  "8d955f64c25e32f1e6c2d7d60394f51bd917f250bfd71d214cbd6d885d62fbdb"
+                  },
+                  {
+                      "role":  "motion",
+                      "relativePath":  "motions/tail-idle.motion3.json",
+                      "sha256":  "8ed9d087e0bbb6a35340b5bd1d77c47a0abe91eb703bcefcb480cf7a97009814"
+                  },
+                  {
+                      "role":  "motion-spatial-profile",
+                      "relativePath":  "motion-spatial-profile.json",
+                      "sha256":  "aa10d09312e8ca84d74f7f93684bc4d8ce631f6c3560a640f44b96b777fb6ee4"
+                  },
+                  {
+                      "role":  "preview",
+                      "relativePath":  "preview.png",
+                      "sha256":  "d14e0ec3cd8d250dd22d9991e578958fcae87093780f657788157d336451fc5f"
+                  }
+              ],
+    "motions":  {
+                    "breathing":  {
+                                      "group":  "breathing",
+                                      "index":  0
+                                  },
+                    "blink":  {
+                                  "group":  "blink",
+                                  "index":  0
+                              },
+                    "ear-twitch":  {
+                                       "group":  "ear-twitch",
+                                       "index":  0
+                                   },
+                    "tail-idle":  {
+                                      "group":  "tail-idle",
+                                      "index":  0
+                                  },
+                    "pointer-focus":  {
+                                          "group":  "pointer-focus",
+                                          "index":  0
+                                      },
+                    "pet-happy":  {
+                                      "group":  "pet-happy",
+                                      "index":  0
+                                  },
+                    "sleepy-yawn":  {
+                                        "group":  "sleepy-yawn",
+                                        "index":  0
+                                    },
+                    "half-stand-stretch":  {
+                                               "group":  "half-stand-stretch",
+                                               "index":  0
+                                           }
+                },
+    "parameters":  {
+                       "eyeOpenLeft":  "ParamEyeLOpen",
+                       "eyeOpenRight":  "ParamEyeROpen",
+                       "eyeBallX":  "ParamEyeBallX",
+                       "eyeBallY":  "ParamEyeBallY",
+                       "earLeft":  "ParamEarL",
+                       "earRight":  "ParamEarR",
+                       "tailAngle":  "ParamTailAngle",
+                       "tailCurl":  "ParamTailCurl",
+                       "tailTip":  "ParamTailTip",
+                       "bodyBreath":  "ParamBreath",
+                       "bodyStretch":  "ParamBodyStretch",
+                       "mouthOpen":  "ParamMouthOpenY"
+                   },
+    "hitAreas":  {
+                     "body":  "ArtMeshBody",
+                     "edgeTail":  "ArtMeshTail"
+                 },
+    "edgeTailStates":  {
+                           "left":  {
+                                        "group":  "edge-tail-left",
+                                        "index":  0,
+                                        "tailArtMesh":  "ArtMeshTail"
+                                    },
+                           "right":  {
+                                         "group":  "edge-tail-right",
+                                         "index":  0,
+                                         "tailArtMesh":  "ArtMeshTail"
+                                     },
+                           "top":  {
+                                       "group":  "edge-tail-top",
+                                       "index":  0,
+                                       "tailArtMesh":  "ArtMeshTail"
+                                   },
+                           "bottom":  {
+                                          "group":  "edge-tail-bottom",
+                                          "index":  0,
+                                          "tailArtMesh":  "ArtMeshTail"
+                                      }
+                       },
+    "license":  {
+                    "id":  "cat-a-standard-v1-project-owned",
+                    "author":  "PetBaby",
+                    "source":  "Project-owned standard cat artwork and Cubism binding",
+                    "commercialUse":  true,
+                    "redistributable":  true
+                }
+}

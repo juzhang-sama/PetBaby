@@ -1,5 +1,5 @@
-import { describe, expect, it, vi } from "vitest";
-import { createCreationApi } from "./api";
+import { describe, expect, expectTypeOf, it, vi } from "vitest";
+import { createCreationApi, type PhotoAvatarSnapshot } from "./api";
 
 describe("creationApi", () => {
   it("invokes creation_start with the selected method", async () => {
@@ -164,5 +164,64 @@ describe("creationApi", () => {
       "templateId",
       "displayName",
     ]);
+  });
+
+  it("submits all photos once and exposes no provider key", async () => {
+    const invoke = vi.fn().mockResolvedValue({ sessionId: "session-1" });
+    const api = createCreationApi(invoke);
+
+    await api.photoAvatarBegin("session-1", "photo-avatar-third-party-ai-lk888-no-delete-v2", [
+      { bytesB64: "cG5nMQ==", sha256: "a".repeat(64) },
+      { bytesB64: "cG5nMg==", sha256: "b".repeat(64) },
+    ]);
+
+    expect(invoke).toHaveBeenCalledWith(
+      "creation_photo_avatar_begin",
+      expect.objectContaining({
+        sessionId: "session-1",
+        consentVersion: "photo-avatar-third-party-ai-lk888-no-delete-v2",
+        photos: expect.any(Array),
+      }),
+    );
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain("apiKey");
+  });
+
+  it("maps the photo avatar lifecycle commands without provider credentials", async () => {
+    const invoke = vi.fn().mockResolvedValue({ sessionId: "session-1" });
+    const api = createCreationApi(invoke);
+
+    await api.photoAvatarConsent(true);
+    await api.photoAvatarStatus("session-1");
+    await api.photoAvatarRuntimeCheckPassed("session-1", 2, "c".repeat(64));
+    await api.photoAvatarCancel("session-1");
+    await api.photoAvatarRegenerate("session-1");
+    await api.photoAvatarRevise("session-1", "fluffier tail");
+    await api.photoAvatarPreviewManifest("session-1", 2);
+    await api.photoAvatarPreviewFileB64("session-1", 2, "model3.json");
+
+    expect(invoke.mock.calls.map(([command]) => command)).toEqual([
+      "creation_photo_avatar_consent",
+      "creation_photo_avatar_status",
+      "creation_photo_avatar_runtime_check_passed",
+      "creation_photo_avatar_cancel",
+      "creation_photo_avatar_regenerate",
+      "creation_photo_avatar_revise",
+      "creation_photo_avatar_preview_manifest",
+      "creation_photo_avatar_preview_file_b64",
+    ]);
+    expect(JSON.stringify(invoke.mock.calls)).not.toContain("apiKey");
+  });
+
+  it("passes through a null photo avatar status for a pre-begin draft", async () => {
+    const invoke = vi.fn().mockResolvedValue(null);
+    const api = createCreationApi(invoke);
+
+    const status = await api.photoAvatarStatus("durable-session");
+
+    expectTypeOf(status).toEqualTypeOf<PhotoAvatarSnapshot | null>();
+    expect(status).toBeNull();
+    expect(invoke).toHaveBeenCalledWith("creation_photo_avatar_status", {
+      sessionId: "durable-session",
+    });
   });
 });

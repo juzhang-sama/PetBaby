@@ -1,0 +1,24 @@
+{
+  "schemaVersion": 2,
+  "allowedRustFiles": [
+    "creation/adoption.rs",
+    "creation/candidate.rs",
+    "pets/profile.rs",
+    "platform/windows.rs",
+    "runtime_assets/motion_profile.rs"
+  ],
+  "directWindowsPatterns": [
+    "#\\s*\\[\\s*link\\s*\\(",
+    "\\b(?:Win32WindowHandle|WindowsDisplayHandle|RawWindowHandle\\s*::\\s*Win32|RawDisplayHandle\\s*::\\s*Windows)\\b",
+    "\\bAsRawHandle\\b",
+    "\\bFromRawHandle\\b",
+    "\\bOwnedHandle\\b",
+    "\\bRawHandle\\b",
+    "\\bWin32_",
+    "\\bextern\\s*\"system\"",
+    "\\bstd\\s*::\\s*os\\s*::\\s*(?:windows\\b|\\{[^{}]*\\bwindows\\s*::)",
+    "\\bwinapi\\b(?=\\s*(?:::|as\\b))",
+    "\\bwindows\\s*::\\s*Win32\\b",
+    "\\bwindows_sys\\b(?=\\s*(?:::|as\\b))"
+  ]
+}

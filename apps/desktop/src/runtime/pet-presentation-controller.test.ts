@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PetRenderer } from "./pet-renderer";
 import { PetPresentationController, type PetPresentationPorts } from "./pet-presentation-controller";
+import { DEFAULT_PET_CALIBRATION } from "./pet-calibration";
 
 function fakePorts(): PetPresentationPorts {
   return {
@@ -11,6 +12,7 @@ function fakePorts(): PetPresentationPorts {
       setExpression: vi.fn(),
       setLookTarget: vi.fn(),
       setLipSync: vi.fn(),
+      setCalibration: vi.fn(),
       hitTest: vi.fn(() => null),
       setVisibility: vi.fn(),
       update: vi.fn(),
@@ -23,6 +25,33 @@ function fakePorts(): PetPresentationPorts {
 }
 
 describe("PetPresentationController", () => {
+  it("does not retain a handle when a cat motion completes synchronously", () => {
+    const ports = fakePorts();
+    const cancel = vi.fn();
+    ports.renderer.playCatMotion = vi.fn((_motion, _options, onFinished) => {
+      onFinished?.();
+      return { cancel };
+    });
+    const controller = new PetPresentationController(ports);
+    const completed = vi.fn();
+
+    controller.dispatchCatMotion([
+      {
+        type: "play",
+        token: 7,
+        motion: "pet-happy",
+        priority: 90,
+        loop: false,
+        fadeInMs: 180,
+        fadeOutMs: 140,
+      },
+    ], completed);
+    controller.cancelCatMotions();
+
+    expect(completed).toHaveBeenCalledWith(7);
+    expect(cancel).not.toHaveBeenCalled();
+  });
+
   it("maps a happy reaction to expression, motion, particles and window shake", () => {
     const ports = fakePorts();
     const controller = new PetPresentationController(ports);
@@ -31,8 +60,8 @@ describe("PetPresentationController", () => {
 
     expect(ports.renderer.setExpression).toHaveBeenCalledWith("happy");
     expect(ports.renderer.playMotion).toHaveBeenCalledWith("react-happy", { priority: 60 });
-    expect(ports.effects.play).toHaveBeenCalledWith("hearts");
-    expect(ports.windowMotion.shake).toHaveBeenCalledWith({ amplitude: 4, durationMs: 180 });
+    expect(ports.effects.play).toHaveBeenCalledWith("hearts", { opacity: 0.6, intensity: 0.6 });
+    expect(ports.windowMotion.shake).toHaveBeenCalledWith({ amplitude: 2.4, durationMs: 180 });
     expect(ports.scheduler.setTier).toHaveBeenCalledWith("active");
   });
 
@@ -58,5 +87,57 @@ describe("PetPresentationController", () => {
 
     expect(ports.renderer.playMotion).toHaveBeenCalledWith("carried", { priority: 80, loop: true });
     expect(ports.scheduler.setTier).toHaveBeenCalledWith("active");
+  });
+
+  it("scales happy click feedback without changing behavior selection", () => {
+    const ports = fakePorts();
+    const controller = new PetPresentationController(ports);
+    controller.setCalibration({ ...DEFAULT_PET_CALIBRATION, feedbackStrength: 0.25 });
+
+    controller.dispatch({ type: "react-happy" });
+
+    expect(ports.renderer.setExpression).toHaveBeenCalledWith("happy");
+    expect(ports.renderer.playMotion).toHaveBeenCalledWith("react-happy", { priority: 60 });
+    expect(ports.effects.play).toHaveBeenCalledWith("hearts", { opacity: 0.25, intensity: 0.25 });
+    expect(ports.windowMotion.shake).toHaveBeenCalledWith({ amplitude: 1, durationMs: 180 });
+    expect(ports.scheduler.setTier).toHaveBeenCalledWith("active");
+  });
+
+  it("keeps behavior and cooldown tier while suppressing zero-strength visual feedback", () => {
+    const ports = fakePorts();
+    const controller = new PetPresentationController(ports);
+    controller.setCalibration({ ...DEFAULT_PET_CALIBRATION, feedbackStrength: 0 });
+
+    controller.dispatch({ type: "react-happy" });
+
+    expect(ports.renderer.setExpression).toHaveBeenCalledWith("happy");
+    expect(ports.renderer.playMotion).toHaveBeenCalledWith("react-happy", { priority: 60 });
+    expect(ports.effects.play).not.toHaveBeenCalled();
+    expect(ports.windowMotion.shake).not.toHaveBeenCalled();
+    expect(ports.scheduler.setTier).toHaveBeenCalledWith("active");
+  });
+
+  it("scales curious particles and landed bounce through the same calibration", () => {
+    const ports = fakePorts();
+    const controller = new PetPresentationController(ports);
+    controller.setCalibration({ ...DEFAULT_PET_CALIBRATION, feedbackStrength: 0.25 });
+
+    controller.dispatch({ type: "react-curious" });
+    controller.dispatch({ type: "landed" });
+
+    expect(ports.effects.play).toHaveBeenNthCalledWith(
+      1,
+      "sparkles",
+      { opacity: 0.25, intensity: 0.25 },
+    );
+    expect(ports.effects.play).toHaveBeenNthCalledWith(
+      2,
+      "landing",
+      { opacity: 0.25, intensity: 0.25 },
+    );
+    expect(ports.windowMotion.bounce).toHaveBeenCalledWith({ amplitude: 2, durationMs: 240 });
+    expect(ports.renderer.playMotion).toHaveBeenCalledWith("react-curious", { priority: 60 });
+    expect(ports.renderer.playMotion).toHaveBeenCalledWith("landed", { priority: 80 });
+    expect(ports.scheduler.setTier).toHaveBeenCalledTimes(2);
   });
 });

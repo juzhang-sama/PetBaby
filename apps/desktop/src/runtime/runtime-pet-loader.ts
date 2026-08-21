@@ -158,13 +158,18 @@ export async function loadRuntimePet(
       isPreviewFallback: () => previewFallback,
     };
   } catch (error) {
+    const failedManifestVersion = manifestVersionOf(manifest);
     options.diagnose?.({
       petId: descriptor.petId,
-      manifestVersion: manifestVersionOf(manifest),
+      manifestVersion: failedManifestVersion,
       stage: "manifest-load",
       message: error instanceof Error ? error.message : String(error),
     });
-    if (descriptor.source !== "builtin" || !options.allowPreviewFallback) throw error;
+    if (
+      descriptor.source !== "builtin"
+      || failedManifestVersion === 4
+      || !options.allowPreviewFallback
+    ) throw error;
     return {
       petId: descriptor.petId,
       ...(await ports.createPreviewRuntime(previewUrl!, {

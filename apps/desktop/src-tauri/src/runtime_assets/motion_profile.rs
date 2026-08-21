@@ -98,7 +98,10 @@ fn validate_motion_profile(profile: &MotionProfileV1) -> Result<(), String> {
     }
     let face_safety_line =
         profile.alpha_bounds.top + (profile.alpha_bounds.bottom - profile.alpha_bounds.top) * 0.40;
-    if profile.breath_zone.top < face_safety_line {
+    // breath_zone.top 由 write_preview 用 f64 计算、经 JSON 序列化后以 f32 落盘，
+    // 与此处 f32 重算的 face_safety_line 可能相差 1 个 f32 ULP（约 3e-8）。
+    // 加容差避免把这种浮点舍入误差误判为"呼吸区侵入头部"。
+    if profile.breath_zone.top + 1e-5 < face_safety_line {
         return Err("breath zone violates face safety line".into());
     }
     if profile.sway_pivot.x < profile.alpha_bounds.left
@@ -330,6 +333,28 @@ mod tests {
         assert!(parse_motion_profile(&json)
             .unwrap_err()
             .contains("face safety"));
+    }
+
+    #[test]
+    fn accepts_breath_zone_at_face_safety_line_despite_f64_to_f32_roundtrip() {
+        // 复现 session-4150：write_preview 用 f64 算 face_safety、经 JSON 序列化后以 f32 落盘，
+        // breath_zone.top 恰好等于 face_safety_line，但 f64→f32 舍入产生 1 ULP 差异。
+        // 修复后（加 1e-5 容差）必须能通过校验，否则像素化后的产物会卡在 build_preview。
+        let bounds_left = 312.0f64 / 2048.0;
+        let bounds_top = 80.0f64 / 2048.0;
+        let bounds_right = 1860.0f64 / 2048.0;
+        let bounds_bottom = 1944.0f64 / 2048.0;
+        let face_safety = bounds_top + (bounds_bottom - bounds_top) * 0.4;
+
+        let motion = serde_json::json!({
+            "profileVersion": 1,
+            "engineProfile": "life-v1",
+            "alphaBounds": {"left": bounds_left, "top": bounds_top, "right": bounds_right, "bottom": bounds_bottom},
+            "breathZone": {"left": bounds_left, "top": face_safety, "right": bounds_right, "bottom": bounds_bottom},
+            "swayPivot": {"x": (bounds_left + bounds_right) / 2.0, "y": face_safety}
+        });
+        parse_motion_profile(&motion.to_string())
+            .expect("breath zone at face safety line must parse");
     }
 
     #[test]

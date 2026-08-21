@@ -1,0 +1,10 @@
+{
+  "schemaVersion": 1,
+  "semanticVersion": "cat-a-live2d-v1",
+  "readOnly": true,
+  "moduleIds": [
+    "body-slender-v1",
+    "body-balanced-v1",
+    "body-rounded-v1"
+  ]
+}

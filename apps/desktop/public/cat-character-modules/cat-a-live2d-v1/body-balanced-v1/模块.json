@@ -1,0 +1,97 @@
+{
+  "schemaVersion": 1,
+  "moduleId": "body-balanced-v1",
+  "semanticVersion": "cat-a-live2d-v1",
+  "readOnly": true,
+  "compatibleModules": {
+    "face": ["face-standard-v1"],
+    "ears": ["ears-independent-v1"],
+    "eyes": ["eyes-independent-v1"],
+    "tail": ["tail-independent-v1"]
+  },
+  "requiredParameters": [
+    "ParamEyeLOpen",
+    "ParamEyeROpen",
+    "ParamEarL",
+    "ParamEarR",
+    "ParamTailAngle",
+    "ParamTailCurl",
+    "ParamTailTip",
+    "ParamBreath",
+    "ParamBodyStretch"
+  ],
+  "tailArtMesh": "ArtMeshTail",
+  "files": {
+    "moc3": "body-balanced-v1.moc3",
+    "model3": "body-balanced-v1.model3.json",
+    "displayInfo": "body-balanced-v1.cdi3.json",
+    "neutralTexture": "body-balanced-v1.2048/texture_00.png"
+  },
+  "hashes": {
+    "moc3": "069068b996e5778185d1c13c69e1a5661593ef87e9372d58d7fb4ea62ae653e5",
+    "model3": "8824b55c2e59c8efef69be17117bdb162a1589f93fa869036d6c4f166a82cbea",
+    "displayInfo": "78fbe5a83ef1b094cdcaa8976d527aa2849134452eb2b6991c1137df28337c81",
+    "neutralTexture": "e1909f26ed3e0f3fb988d171af39541525558c7b4f35b3ef916cdbb13ace873d"
+  },
+  "motions": {
+    "breathing": { "relativePath": "motions/breathing.motion3.json", "sha256": "993e266681a241cfee0222011f2145376e27a253ef9c1a7dce5b1c2c876ee4d0" },
+    "blink": { "relativePath": "motions/blink.motion3.json", "sha256": "68fff9ada32cc5b98419014561a9a573000b142e2a6b098e1f5c9ff613e95b7f" },
+    "ear-twitch": { "relativePath": "motions/ear-twitch.motion3.json", "sha256": "47a25a976b036bfea4ada8a218ed50afb0fe439e7de7accbfba95722894073bd" },
+    "tail-idle": { "relativePath": "motions/tail-idle.motion3.json", "sha256": "466371ec4a71df720ddacde76f4df056ef986f5c7dc793f47d89d694b9a814e3" },
+    "pointer-focus": { "relativePath": "motions/pointer-focus.motion3.json", "sha256": "b8d7cb615103ebefdaebcb732728b5b26b0703138f0db4495897d3824b0b5bd5" },
+    "pet-happy": { "relativePath": "motions/pet-happy.motion3.json", "sha256": "824ed751509f239e0e4a08ab15aea9e60dce135126fe0c4846bafe454913a125" },
+    "sleepy-yawn": { "relativePath": "motions/sleepy-yawn.motion3.json", "sha256": "851f07b23b1feb4292b33f493a9291dd2d6a095cf6623aabf188aacd4fceb2ae" },
+    "half-stand-stretch": { "relativePath": "motions/half-stand-stretch.motion3.json", "sha256": "4f6a18059a788b2d2a49505de88172e58c24e1bc84734f9e5e123ea4634afbe7" },
+    "edge-tail-left": { "relativePath": "motions/edge-tail-left.motion3.json", "sha256": "a49988cd0e2e3226f36385053c9c737db9445dc39b03c72e4c23766a7b14ba07" },
+    "edge-tail-right": { "relativePath": "motions/edge-tail-right.motion3.json", "sha256": "ae0217108b17d55db6d952a6fc90ef545432451b4d9bd3fa86993e48b9ad9edf" },
+    "edge-tail-top": { "relativePath": "motions/edge-tail-top.motion3.json", "sha256": "e5522e274ba5dc7e0a0a8a72a13c500d3f9ecd400ce807eaa6063e545a671021" },
+    "edge-tail-bottom": { "relativePath": "motions/edge-tail-bottom.motion3.json", "sha256": "fa1e9ce7c188aba46555312f2e62020f8174ebd4949cf9e2b52cc94a5e1ec493" }
+  },
+  "approvedAmplitude": {
+    "breath": { "min": 0, "max": 0.8 },
+    "blink": { "min": 0, "max": 1 },
+    "ear": { "min": -0.15, "max": 0.15 },
+    "tailAngle": { "min": -16, "max": 16 },
+    "tailCurl": { "min": -0.4, "max": 0.4 },
+    "tailTip": { "min": -0.45, "max": 0.45 },
+    "bodyStretch": { "min": 0, "max": 0.9 }
+  },
+  "motionSpatialProfile": {
+    "schemaVersion": 1,
+    "bodyModuleId": "body-balanced-v1",
+    "canvas": { "width": 2048, "height": 2048 },
+    "alphaBounds": { "left": 0.2, "top": 0.05, "right": 0.92, "bottom": 0.94 },
+    "faceSafeZone": { "left": 0.36, "top": 0.05, "right": 0.72, "bottom": 0.32 },
+    "eyes": {
+      "left": {
+        "center": { "x": 0.46, "y": 0.19 },
+        "bounds": { "left": 0.41, "top": 0.14, "right": 0.51, "bottom": 0.24 }
+      },
+      "right": {
+        "center": { "x": 0.62, "y": 0.19 },
+        "bounds": { "left": 0.57, "top": 0.14, "right": 0.67, "bottom": 0.24 }
+      }
+    },
+    "earRoots": {
+      "left": { "x": 0.42, "y": 0.12 },
+      "right": { "x": 0.66, "y": 0.12 }
+    },
+    "breathZone": { "left": 0.4, "top": 0.34, "right": 0.68, "bottom": 0.72 },
+    "stretchAxis": {
+      "origin": { "x": 0.54, "y": 0.5 },
+      "direction": { "x": 0, "y": 1 }
+    },
+    "swayPivot": { "x": 0.54, "y": 0.58 },
+    "tailRoot": { "x": 0.74, "y": 0.69 },
+    "edgeTailBounds": { "left": 0.68, "top": 0.3, "right": 0.92, "bottom": 0.84 },
+    "amplitude": {
+      "breath": { "min": 0, "max": 0.8 },
+      "blink": { "min": 0, "max": 1 },
+      "ear": { "min": -0.15, "max": 0.15 },
+      "tailAngle": { "min": -16, "max": 16 },
+      "tailCurl": { "min": -0.4, "max": 0.4 },
+      "tailTip": { "min": -0.45, "max": 0.45 },
+      "bodyStretch": { "min": 0, "max": 0.9 }
+    }
+  }
+}

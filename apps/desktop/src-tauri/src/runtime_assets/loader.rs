@@ -1,7 +1,9 @@
 use crate::runtime_assets::manifest::{
     manifest_files, parse_manifest, validate_relative_path, RuntimeAssetManifest,
 };
-use crate::runtime_assets::motion_profile::parse_motion_profile;
+use crate::runtime_assets::{
+    cat_character::parse_motion_spatial_profile_v1, motion_profile::parse_motion_profile,
+};
 use sha2::{Digest, Sha256};
 use std::path::Path;
 
@@ -54,6 +56,12 @@ fn validate_asset_manifest(path: &Path) -> Result<RuntimeAssetManifest, AssetRea
             .map_err(|_| AssetReadError::Corrupt)?;
         parse_motion_profile(&profile).map_err(|_| AssetReadError::Corrupt)?;
     }
+    if let RuntimeAssetManifest::V5(value) = &manifest {
+        let profile = std::fs::read_to_string(assets_dir.join(&value.motion_spatial_profile))
+            .map_err(|_| AssetReadError::Corrupt)?;
+        parse_motion_spatial_profile_v1(&profile, &value.body_module_id)
+            .map_err(|_| AssetReadError::Corrupt)?;
+    }
     Ok(manifest)
 }
 
@@ -69,7 +77,12 @@ pub fn inspect_pet_asset(pets_dir: &Path, pet_id: &str) -> AssetHealth {
     let manifest_path = pets_dir.join(pet_id).join("assets").join("manifest.json");
     let status = match validate_asset_manifest(&manifest_path) {
         Ok(RuntimeAssetManifest::V1(_)) => "legacy",
-        Ok(RuntimeAssetManifest::V2(_) | RuntimeAssetManifest::V3(_)) => "healthy",
+        Ok(
+            RuntimeAssetManifest::V2(_)
+            | RuntimeAssetManifest::V3(_)
+            | RuntimeAssetManifest::V4(_)
+            | RuntimeAssetManifest::V5(_),
+        ) => "healthy",
         Err(AssetReadError::Missing) => "missing",
         Err(AssetReadError::Corrupt) => "corrupt",
     };
@@ -137,6 +150,84 @@ mod tests {
         std::fs::write(
             assets.join("manifest.json"),
             serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        (pets_dir, root)
+    }
+
+    fn setup_v5_with_profile(
+        profile: serde_json::Value,
+    ) -> (std::path::PathBuf, std::path::PathBuf) {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("desktop-pet-v5-loader-{}-{n}", std::process::id()));
+        let pets_dir = root.join("pets");
+        let assets = pets_dir.join("cat-a").join("assets");
+        std::fs::create_dir_all(&assets).unwrap();
+        let model = b"cat-model";
+        let preview = b"cat-preview";
+        let profile_bytes = serde_json::to_vec(&profile).unwrap();
+        std::fs::write(assets.join("cat.model3.json"), model).unwrap();
+        std::fs::write(assets.join("preview.png"), preview).unwrap();
+        std::fs::create_dir_all(assets.join("profiles")).unwrap();
+        std::fs::write(assets.join("profiles/body-balanced.json"), &profile_bytes).unwrap();
+        let motions = [
+            "breathing",
+            "blink",
+            "ear-twitch",
+            "tail-idle",
+            "pointer-focus",
+            "pet-happy",
+            "sleepy-yawn",
+            "half-stand-stretch",
+        ]
+        .into_iter()
+        .map(|name| {
+            (
+                name.to_string(),
+                serde_json::json!({ "group": name, "index": 0 }),
+            )
+        })
+        .collect::<serde_json::Map<_, _>>();
+        let parameters = [
+            "eyeOpenLeft",
+            "eyeOpenRight",
+            "eyeBallX",
+            "eyeBallY",
+            "earLeft",
+            "earRight",
+            "tailAngle",
+            "tailCurl",
+            "tailTip",
+            "bodyBreath",
+            "bodyStretch",
+            "mouthOpen",
+        ]
+        .into_iter()
+        .map(|name| (name.to_string(), serde_json::json!(format!("Param{name}"))))
+        .collect::<serde_json::Map<_, _>>();
+        let manifest = serde_json::json!({
+            "schemaVersion": 5, "renderer": "cat-spatial-live2d-v1", "petId": "cat-a", "variantId": "balanced-v1",
+            "skeletonVersion": "cat-a-live2d-v1", "bodyModuleId": "body-balanced-v1",
+            "modelEntry": "cat.model3.json", "previewImage": "preview.png", "motionSpatialProfile": "profiles/body-balanced.json",
+            "files": [
+                { "role": "model", "relativePath": "cat.model3.json", "sha256": sha256_hex(model) },
+                { "role": "preview", "relativePath": "preview.png", "sha256": sha256_hex(preview) },
+                { "role": "motion-spatial-profile", "relativePath": "profiles/body-balanced.json", "sha256": sha256_hex(&profile_bytes) }
+            ],
+            "motions": motions, "parameters": parameters,
+            "hitAreas": { "body": "ArtMeshBody", "edgeTail": "ArtMeshTail" },
+            "edgeTailStates": {
+                "left": { "group": "EdgeTail", "index": 0, "tailArtMesh": "ArtMeshTail" },
+                "right": { "group": "EdgeTail", "index": 0, "tailArtMesh": "ArtMeshTail" },
+                "top": { "group": "EdgeTail", "index": 0, "tailArtMesh": "ArtMeshTail" },
+                "bottom": { "group": "EdgeTail", "index": 0, "tailArtMesh": "ArtMeshTail" }
+            },
+            "license": { "id": "project", "author": "PetBaby", "source": "project", "commercialUse": true, "redistributable": true }
+        });
+        std::fs::write(
+            assets.join("manifest.json"),
+            serde_json::to_vec(&manifest).unwrap(),
         )
         .unwrap();
         (pets_dir, root)
@@ -237,6 +328,17 @@ mod tests {
         let (pets_dir, root) = setup_v3();
         std::fs::remove_file(pets_dir.join("pet-a/assets/motion-profile.json")).unwrap();
         assert_eq!(inspect_pet_asset(&pets_dir, "pet-a").status, "corrupt");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_corrupt_when_a_v5_spatial_profile_has_invalid_geometry() {
+        let profile = serde_json::json!({
+            "schemaVersion": 1, "bodyModuleId": "body-balanced-v1", "canvas": { "width": 1000, "height": 1200 },
+            "alphaBounds": { "left": 0.1, "top": 0.05, "right": 0.1, "bottom": 0.95 }
+        });
+        let (pets_dir, root) = setup_v5_with_profile(profile);
+        assert_eq!(inspect_pet_asset(&pets_dir, "cat-a").status, "corrupt");
         let _ = std::fs::remove_dir_all(root);
     }
 

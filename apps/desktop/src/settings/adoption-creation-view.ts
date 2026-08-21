@@ -260,6 +260,7 @@ export class AdoptionCreationView {
       if (this.isCurrent(visit)) {
         this.status = `已切换到${selected.template.defaultName}。`;
         this.render();
+        this.ports.onBack?.();
       }
       return;
     }
@@ -354,6 +355,7 @@ export class AdoptionCreationView {
     if (this.isCurrent(visit)) {
       this.status = `${projected.template.defaultName}已认领并显示在桌面。`;
       this.render();
+      this.ports.onBack?.();
     }
   }
 

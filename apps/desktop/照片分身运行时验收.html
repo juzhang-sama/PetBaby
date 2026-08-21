@@ -1,0 +1,81 @@
+<!doctype html>
+<html lang="zh-CN">
+<head>
+  <meta charset="UTF-8" />
+  <meta name="viewport" content="width=device-width, initial-scale=1" />
+  <title>照片分身运行时验收</title>
+  <style>html,body,main{margin:0;width:420px;height:520px;overflow:hidden}main{background:#e9edf2}</style>
+</head>
+<body>
+  <main id="preview-root" data-photo-avatar-fixture="balanced-success"></main>
+  <script type="module">
+    import { mountPhotoAvatarPreview, photoAvatarFrameSha256, photoAvatarRenderedFrame, photoAvatarRenderedPixelCount } from "/src/settings/photo-avatar-live2d-preview.ts";
+    import { renderCatMotionEvidencePhase, parseCatMotionEvidencePhase, parseCatMotionEvidenceRequest } from "/src/runtime-live2d/cat-motion-evidence.ts";
+    import { loadLive2DAsset } from "/src/runtime-assets/live2d-asset-loader.ts";
+    import { Live2DRenderer } from "/src/runtime-live2d/live2d-renderer.ts";
+
+    const root = document.querySelector("#preview-root");
+    const query = new URLSearchParams(location.search);
+    const fixtureBase = query.get("fixtureBase") || "";
+    if (!fixtureBase) {
+      root.dataset.photoAvatarPreviewState = "fixtureBaseRequired";
+    } else {
+      const manifestResponse = await fetch(`${fixtureBase}/manifest.json`, { cache: "no-store" });
+      if (!manifestResponse.ok) throw new Error(`fixture manifest HTTP ${manifestResponse.status}`);
+      const rawManifestBytes = new Uint8Array(await manifestResponse.arrayBuffer());
+      const manifest = JSON.parse(new TextDecoder().decode(rawManifestBytes));
+      const rawManifestSha256 = Array.from(new Uint8Array(await crypto.subtle.digest("SHA-256", rawManifestBytes)), (value) => value.toString(16).padStart(2, "0")).join("");
+      let capturedRenderer = null;
+      const ports = {
+        loadLive2DAsset,
+        createLive2DRenderer: (canvas) => {
+          capturedRenderer = new Live2DRenderer(canvas);
+          return capturedRenderer;
+        },
+        previewManifest: async () => ({ revision: 1, step: "runtimeCheckPending", manifest }),
+        previewTransport: () => ({
+          readManifest: async () => manifest,
+          readFile: async (_petId, relativePath) => new Uint8Array(await fetch(`${fixtureBase}/${relativePath}`).then((response) => response.arrayBuffer())),
+        }),
+        runtimeCheckPassed: async (_sessionId, _revision, manifestSha256) => {
+          if (manifestSha256 !== rawManifestSha256) throw new Error("raw manifest hash mismatch");
+          return { step: "previewReady" };
+        },
+        manifestSha256: async () => rawManifestSha256,
+        createCanvas: () => document.createElement("canvas"),
+        renderedPixelCount: photoAvatarRenderedPixelCount,
+        renderedFrame: photoAvatarRenderedFrame,
+        frameSha256: photoAvatarFrameSha256,
+        requestAnimationFrame: (callback) => window.requestAnimationFrame(callback),
+        cancelAnimationFrame: (id) => window.cancelAnimationFrame(id),
+        createResizeObserver: (callback) => new ResizeObserver(callback),
+        devicePixelRatio: () => Math.max(1, window.devicePixelRatio || 1),
+        prefersReducedMotion: () => true,
+        onReducedMotionChange: () => () => {},
+      };
+      const preview = await mountPhotoAvatarPreview(root, `fake-${manifest.bodyModuleId}`, ports);
+      if (!capturedRenderer) throw new Error("photo avatar renderer was not captured");
+      root.dataset.packageSchemaVersion = String(manifest.schemaVersion);
+      root.dataset.renderer = manifest.renderer;
+      root.dataset.rendererReady = "1";
+      root.dataset.runtimeCheckPassed = "1";
+      root.dataset.bodyModuleId = manifest.bodyModuleId;
+      root.dataset.manifestSha256 = rawManifestSha256;
+      window.photoAvatarEvidence = {
+        renderer: capturedRenderer,
+        runtimeEvidence: preview.evidence,
+        render(request) {
+          const parsedRequest = parseCatMotionEvidenceRequest(`?catMotionEvidence=1&motion=${encodeURIComponent(request.motion)}`);
+          const evidencePhase = request.phase === "peak" ? "frame" : request.phase;
+          const phase = parseCatMotionEvidencePhase(`?phase=${encodeURIComponent(evidencePhase)}&atMs=${encodeURIComponent(String(request.atMs ?? 0))}`, parsedRequest.timing.durationMs);
+          root.dataset.motion = request.motion;
+          root.dataset.phase = request.phase;
+          root.dataset.runtimeState = renderCatMotionEvidencePhase(capturedRenderer, parsedRequest, phase);
+          root.dataset.evidenceFrozen = "1";
+          return root.dataset.runtimeState;
+        },
+      };
+    }
+  </script>
+</body>
+</html>

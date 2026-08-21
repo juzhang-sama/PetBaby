@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseManifestV1, parseRuntimeAssetManifest, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
 import { validAnimatedManifest } from "./animated-image-test-fixtures";
+import type { RuntimeAssetManifestV5 } from "../runtime-assets/cat-spatial-manifest";
 
 describe("parseManifestV1", () => {
   it("accepts a valid manifest", () => {
@@ -86,7 +87,85 @@ describe("parseManifestV1", () => {
     });
   });
 
+  it("dispatches a complete schema v4 cat character manifest", () => {
+    const motions = Object.fromEntries([
+      "breathing", "blink", "ear-twitch", "tail-idle", "pointer-focus", "pet-happy",
+      "sleepy-yawn", "half-stand-stretch",
+    ].map((name) => [name, { group: name, index: 0 }]));
+    const parameters = Object.fromEntries([
+      "eyeOpenLeft", "eyeOpenRight", "eyeBallX", "eyeBallY", "earLeft", "earRight",
+      "tailAngle", "tailCurl", "tailTip", "bodyBreath", "bodyStretch", "mouthOpen",
+    ].map((name) => [name, `Param-${name}`]));
+    const edgeTailStates = Object.fromEntries(
+      ["left", "right", "top", "bottom"].map((name) => [name, {
+        group: `edge-tail-${name}`, index: 0, tailArtMesh: "ArtMeshTail",
+      }]),
+    );
+
+    expect(parseRuntimeAssetManifest({
+      schemaVersion: 4,
+      renderer: "cat-live2d-v1",
+      petId: "cat-a-standard-v1",
+      variantId: "standard-v1",
+      skeletonVersion: "cat-a-live2d-v1",
+      modelEntry: "cat.model3.json",
+      previewImage: "preview.png",
+      files: [
+        { role: "model", relativePath: "cat.model3.json", sha256: "ab".repeat(32) },
+        { role: "preview", relativePath: "preview.png", sha256: "cd".repeat(32) },
+      ],
+      motions,
+      parameters,
+      hitAreas: { body: "ArtMeshBody", edgeTail: "ArtMeshTail" },
+      edgeTailStates,
+      license: { id: "project", author: "PetBaby", source: "project", commercialUse: true, redistributable: true },
+    })).toMatchObject({ schemaVersion: 4, renderer: "cat-live2d-v1" });
+  });
+
+  it("dispatches a complete schema v5 spatial cat character manifest", () => {
+    const motions = Object.fromEntries([
+      "breathing", "blink", "ear-twitch", "tail-idle", "pointer-focus", "pet-happy",
+      "sleepy-yawn", "half-stand-stretch",
+    ].map((name) => [name, { group: name, index: 0 }]));
+    const parameters = Object.fromEntries([
+      "eyeOpenLeft", "eyeOpenRight", "eyeBallX", "eyeBallY", "earLeft", "earRight",
+      "tailAngle", "tailCurl", "tailTip", "bodyBreath", "bodyStretch", "mouthOpen",
+    ].map((name) => [name, `Param-${name}`]));
+    const edgeTailStates = Object.fromEntries(
+      ["left", "right", "top", "bottom"].map((name) => [name, {
+        group: `edge-tail-${name}`, index: 0, tailArtMesh: "ArtMeshTail",
+      }]),
+    );
+    const manifest: RuntimeAssetManifestV5 = {
+      schemaVersion: 5,
+      renderer: "cat-spatial-live2d-v1",
+      petId: "cat-a-standard-v1",
+      variantId: "standard-v1",
+      skeletonVersion: "cat-a-live2d-v1",
+      bodyModuleId: "body-balanced-v1",
+      modelEntry: "cat.model3.json",
+      previewImage: "preview.png",
+      motionSpatialProfile: "profiles/body-balanced.json",
+      files: [
+        { role: "model", relativePath: "cat.model3.json", sha256: "ab".repeat(32) },
+        { role: "preview", relativePath: "preview.png", sha256: "cd".repeat(32) },
+        { role: "motion-spatial-profile", relativePath: "profiles/body-balanced.json", sha256: "ef".repeat(32) },
+      ],
+      motions: motions as RuntimeAssetManifestV5["motions"],
+      parameters: parameters as RuntimeAssetManifestV5["parameters"],
+      hitAreas: { body: "ArtMeshBody", edgeTail: "ArtMeshTail" },
+      edgeTailStates: edgeTailStates as RuntimeAssetManifestV5["edgeTailStates"],
+      license: { id: "project", author: "PetBaby", source: "project", commercialUse: true, redistributable: true },
+    };
+
+    expect(parseRuntimeAssetManifest(manifest)).toMatchObject({
+      schemaVersion: 5,
+      renderer: "cat-spatial-live2d-v1",
+      bodyModuleId: "body-balanced-v1",
+    });
+  });
+
   it("rejects unsupported schema versions instead of treating them as v1", () => {
-    expect(() => parseRuntimeAssetManifest({ schemaVersion: 4 })).toThrow(/schemaVersion/i);
+    expect(() => parseRuntimeAssetManifest({ schemaVersion: 6 })).toThrow(/schemaVersion/i);
   });
 });

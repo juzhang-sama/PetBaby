@@ -14,6 +14,7 @@ html, body { user-select: none; }
 
 .pet-render-host,
 .pet-render-surface,
+.pet-blink-overlay,
 .pet-effect-overlay {
   position: absolute;
   inset: 0;
@@ -29,7 +30,32 @@ html, body { user-select: none; }
   display: block;
 }
 
+.pet-blink-overlay {
+  display: block;
+  z-index: 1;
+  object-fit: fill;
+  pointer-events: none;
+  transform-origin: 50% 21.35%;
+}
+
+.pet-blink-overlay[data-eye="left"] {
+  clip-path: inset(0 50% 0 0);
+}
+
+.pet-blink-overlay[data-eye="right"] {
+  clip-path: inset(0 0 0 50%);
+}
+
 .pet-effect-overlay {
+  --pet-effect-rise-start-y: 12px;
+  --pet-effect-rise-end-y: -54px;
+  --pet-effect-heart-start-scale: .65;
+  --pet-effect-heart-end-scale: 1.08;
+  --pet-effect-spark-end-rotation: 90deg;
+  --pet-effect-spark-start-scale: .4;
+  --pet-effect-spark-end-scale: 1.25;
+  --pet-effect-land-start-scale-x: .2;
+  --pet-effect-land-end-scale-x: 1.8;
   overflow: hidden;
   pointer-events: none;
 }
@@ -60,21 +86,21 @@ html, body { user-select: none; }
 }
 
 @keyframes pet-particle-rise {
-  0% { opacity: 0; transform: translateY(12px) scale(.65); }
+  0% { opacity: 0; transform: translateY(var(--pet-effect-rise-start-y)) scale(var(--pet-effect-heart-start-scale)); }
   28% { opacity: 1; }
-  100% { opacity: 0; transform: translateY(-54px) scale(1.08); }
+  100% { opacity: 0; transform: translateY(var(--pet-effect-rise-end-y)) scale(var(--pet-effect-heart-end-scale)); }
 }
 
 @keyframes pet-particle-spark {
-  0% { opacity: 0; transform: rotate(0deg) scale(.4); }
+  0% { opacity: 0; transform: rotate(0deg) scale(var(--pet-effect-spark-start-scale)); }
   40% { opacity: 1; }
-  100% { opacity: 0; transform: rotate(90deg) scale(1.25); }
+  100% { opacity: 0; transform: rotate(var(--pet-effect-spark-end-rotation)) scale(var(--pet-effect-spark-end-scale)); }
 }
 
 @keyframes pet-particle-land {
-  0% { opacity: 0; transform: translateX(0) scaleX(.2); }
+  0% { opacity: 0; transform: translateX(0) scaleX(var(--pet-effect-land-start-scale-x)); }
   35% { opacity: 1; }
-  100% { opacity: 0; transform: translateX(var(--particle-drift)) scaleX(1.8); }
+  100% { opacity: 0; transform: translateX(var(--particle-drift)) scaleX(var(--pet-effect-land-end-scale-x)); }
 }
 
 @media (prefers-reduced-motion: reduce) {
@@ -172,6 +198,18 @@ body.settings-shell {
 
 .settings-shell button:disabled { cursor: not-allowed; opacity: .56; }
 
+.settings-shell .visually-hidden {
+  position: absolute;
+  width: 1px;
+  height: 1px;
+  padding: 0;
+  margin: -1px;
+  overflow: hidden;
+  clip: rect(0, 0, 0, 0);
+  white-space: nowrap;
+  border: 0;
+}
+
 .settings-shell .tab {
   flex: 1;
   border-color: transparent;
@@ -191,6 +229,326 @@ body.settings-shell {
   color: #874513;
 }
 
+.settings-shell .window-mode-card {
+  display: grid;
+  max-width: 780px;
+  margin-bottom: 14px;
+  border: 1px solid #c7d4d2;
+  border-radius: 12px;
+  background: var(--paper);
+  box-shadow: inset 5px 0 0 color-mix(in srgb, #466893 72%, white);
+}
+
+.settings-shell .window-mode-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 18px 20px 14px;
+  border-bottom: 1px solid #d7e1df;
+}
+
+.settings-shell .window-mode-heading h2 { font-size: 20px; }
+.settings-shell .window-mode-heading p:last-child {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.settings-shell .window-mode-layer-mark {
+  display: grid;
+  width: 44px;
+  padding-top: 3px;
+  gap: 3px;
+  transform: skewY(-6deg);
+}
+
+.settings-shell .window-mode-layer-mark i {
+  display: block;
+  height: 7px;
+  border: 1px solid color-mix(in srgb, #466893 55%, white);
+  background: color-mix(in srgb, #466893 12%, var(--paper));
+}
+
+.settings-shell .window-mode-layer-mark i:nth-child(2) { margin-inline: 5px; }
+.settings-shell .window-mode-layer-mark i:nth-child(3) { margin-inline: 10px; }
+
+.settings-shell .window-mode-grid {
+  display: grid;
+  grid-template-columns: repeat(2, minmax(0, 1fr));
+  gap: 10px;
+  margin: 0;
+  padding: 14px 20px;
+  border: 0;
+}
+
+.settings-shell .window-mode-choice {
+  position: relative;
+  display: grid;
+  grid-template-columns: auto minmax(0, 1fr) auto;
+  align-items: center;
+  gap: 10px;
+  min-height: 76px;
+  padding: 13px;
+  border: 1px solid #c7d4d2;
+  border-radius: 10px;
+  background: color-mix(in srgb, var(--wash) 24%, var(--paper));
+  cursor: pointer;
+  transition: border-color 140ms ease, background-color 140ms ease, transform 140ms ease;
+}
+
+.settings-shell .window-mode-choice:hover {
+  border-color: #466893;
+  transform: translateY(-1px);
+}
+
+.settings-shell .window-mode-choice:focus-within {
+  outline: 3px solid color-mix(in srgb, #466893 38%, white);
+  outline-offset: 2px;
+}
+
+.settings-shell .window-mode-choice:has(input:checked) {
+  border-color: #466893;
+  background: color-mix(in srgb, #466893 10%, var(--paper));
+  box-shadow: inset 0 0 0 1px color-mix(in srgb, #466893 38%, white);
+}
+
+.settings-shell .window-mode-choice:has(input:disabled) {
+  cursor: not-allowed;
+  opacity: .58;
+  transform: none;
+}
+
+.settings-shell .window-mode-choice input {
+  width: 17px;
+  height: 17px;
+  margin: 0;
+  accent-color: #466893;
+}
+
+.settings-shell .window-mode-choice-copy { display: grid; gap: 4px; }
+.settings-shell .window-mode-choice-copy strong { font-size: 13px; }
+.settings-shell .window-mode-choice-copy small { color: var(--muted); font-size: 11px; line-height: 1.45; }
+.settings-shell .window-mode-choice-tag {
+  padding: 4px 6px;
+  border: 1px solid color-mix(in srgb, #466893 24%, white);
+  border-radius: 999px;
+  color: #3b597e;
+  font: 700 9px/1 "Cascadia Mono", Consolas, monospace;
+  white-space: nowrap;
+}
+
+.settings-shell .window-mode-feedback {
+  display: flex;
+  align-items: center;
+  justify-content: space-between;
+  gap: 12px;
+  min-height: 48px;
+  padding: 9px 20px 12px;
+  border-top: 1px solid #edf0ee;
+}
+
+.settings-shell .window-mode-feedback p { min-height: 16px; margin: 0; font-size: 11px; line-height: 1.45; }
+.settings-shell #window-mode-status { color: var(--muted); }
+.settings-shell #window-mode-error { color: #9b3f24; }
+.settings-shell .window-mode-compatibility { color: #73531f; }
+
+.settings-shell .display-size-card {
+  display: grid;
+  max-width: 780px;
+  margin-bottom: 14px;
+  padding: clamp(16px, 3vw, 24px);
+  border: 1px solid #c7d4d2;
+  border-radius: 12px;
+  background: var(--paper);
+  box-shadow: inset 5px 0 0 color-mix(in srgb, var(--pine) 72%, white);
+}
+
+.settings-shell .display-size-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 20px;
+}
+
+.settings-shell .display-size-kicker {
+  margin: 0 0 3px;
+  color: var(--pine);
+  font: 700 10px/1.3 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: .12em;
+  text-transform: uppercase;
+}
+
+.settings-shell .display-size-heading h2 { font-size: 20px; }
+.settings-shell .display-size-heading p:last-child {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+
+.settings-shell #display-size-output {
+  min-width: 112px;
+  color: var(--pine);
+  font: 700 clamp(30px, 6vw, 44px)/1 Georgia, "Times New Roman", serif;
+  font-variant-numeric: tabular-nums;
+  letter-spacing: -.04em;
+  text-align: right;
+  white-space: nowrap;
+}
+
+.settings-shell .display-size-scale {
+  display: grid;
+  gap: 8px;
+  margin-top: 20px;
+}
+
+.settings-shell .display-size-scale label {
+  font-size: 12px;
+  font-weight: 700;
+}
+
+.settings-shell #display-size-slider {
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  accent-color: var(--pine);
+  cursor: ew-resize;
+}
+
+.settings-shell #display-size-slider:disabled { cursor: not-allowed; opacity: .55; }
+.settings-shell .display-size-ticks {
+  position: relative;
+  height: 12px;
+  color: var(--muted);
+  font: 600 10px/1.2 "Cascadia Mono", Consolas, monospace;
+}
+.settings-shell .display-size-ticks span { position: absolute; transform: translateX(-50%); }
+.settings-shell .display-size-ticks span[data-position="0"] { left: 0; transform: none; }
+.settings-shell .display-size-ticks span[data-position="25"] { left: 25%; }
+.settings-shell .display-size-ticks span[data-position="50"] { left: 50%; }
+.settings-shell .display-size-ticks span[data-position="75"] { left: 75%; }
+.settings-shell .display-size-ticks span[data-position="100"] { right: 0; transform: none; }
+
+.settings-shell .display-size-presets {
+  display: flex;
+  flex-wrap: wrap;
+  align-items: center;
+  gap: 7px;
+  margin-top: 16px;
+  padding-top: 14px;
+  border-top: 1px solid #d7e1df;
+}
+.settings-shell .display-size-presets > span {
+  margin-right: 3px;
+  color: var(--muted);
+  font-size: 11px;
+  font-weight: 700;
+}
+.settings-shell .display-size-presets button[aria-pressed="true"] {
+  border-color: var(--pine);
+  background: color-mix(in srgb, var(--pine) 10%, var(--paper));
+  color: var(--pine);
+}
+.settings-shell #display-size-status,
+.settings-shell #display-size-error {
+  min-height: 18px;
+  margin: 7px 0 0;
+  font-size: 12px;
+  line-height: 1.5;
+}
+.settings-shell #display-size-status { color: var(--muted); }
+.settings-shell #display-size-error { color: #9b3f24; }
+
+.settings-shell .calibration-card {
+  display: grid;
+  max-width: 780px;
+  margin-bottom: 14px;
+  border: 1px solid #c7d4d2;
+  border-radius: 12px;
+  background: var(--paper);
+  box-shadow: inset 5px 0 0 color-mix(in srgb, var(--amber) 72%, white);
+  scroll-margin-top: 18px;
+}
+.settings-shell .calibration-heading {
+  display: flex;
+  align-items: start;
+  justify-content: space-between;
+  gap: 18px;
+  padding: 17px 20px 14px;
+  border-bottom: 1px solid #d7e1df;
+}
+.settings-shell .calibration-heading h2 { font-size: 20px; }
+.settings-shell .calibration-heading p:last-child {
+  margin: 5px 0 0;
+  color: var(--muted);
+  font-size: 12px;
+  line-height: 1.55;
+}
+.settings-shell .calibration-heading strong { color: var(--ink); }
+.settings-shell .calibration-live-mark {
+  margin-top: 2px;
+  padding: 5px 7px;
+  border: 1px solid color-mix(in srgb, var(--amber) 34%, white);
+  border-radius: 5px;
+  color: #874513;
+  font: 700 9px/1 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: .12em;
+}
+.settings-shell .calibration-controls { display: grid; }
+.settings-shell .calibration-row {
+  display: grid;
+  grid-template-columns: 28px minmax(152px, .7fr) minmax(180px, 1.25fr) 54px;
+  align-items: center;
+  gap: 10px;
+  padding: 12px 20px;
+}
+.settings-shell .calibration-row + .calibration-row { border-top: 1px solid #edf0ee; }
+.settings-shell .calibration-track-mark {
+  display: grid;
+  width: 25px;
+  height: 25px;
+  place-items: center;
+  border: 1px solid #d4b28f;
+  border-radius: 50%;
+  color: #874513;
+  font: 700 10px/1 "Cascadia Mono", Consolas, monospace;
+}
+.settings-shell .calibration-copy { display: grid; gap: 2px; }
+.settings-shell .calibration-copy label { font-size: 12px; font-weight: 700; }
+.settings-shell .calibration-copy small { color: var(--muted); font-size: 10px; line-height: 1.4; }
+.settings-shell .calibration-row input[type="range"] {
+  width: 100%;
+  min-height: 28px;
+  margin: 0;
+  accent-color: var(--amber);
+  cursor: ew-resize;
+}
+.settings-shell .calibration-row input[type="range"]:disabled { cursor: not-allowed; opacity: .55; }
+.settings-shell .calibration-row output {
+  color: #874513;
+  font: 700 15px/1 "Cascadia Mono", Consolas, monospace;
+  font-variant-numeric: tabular-nums;
+  text-align: right;
+}
+.settings-shell .calibration-footer {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 14px;
+  padding: 12px 20px 15px;
+  border-top: 1px solid #d7e1df;
+  background: color-mix(in srgb, var(--wash) 36%, var(--paper));
+  border-radius: 0 0 12px 12px;
+}
+.settings-shell .calibration-feedback-copy { min-width: 0; flex: 1; }
+.settings-shell .calibration-feedback-copy p { min-height: 17px; margin: 0; font-size: 11px; line-height: 1.45; }
+.settings-shell #calibration-status { color: var(--muted); }
+.settings-shell #calibration-error { color: #9b3f24; }
+.settings-shell .calibration-actions { display: flex; flex-wrap: wrap; justify-content: flex-end; gap: 6px; }
+.settings-shell .calibration-actions button { min-height: 31px; padding: 6px 9px; font-size: 12px; }
+
 .settings-shell .pet-list {
   display: grid;
   gap: 9px;
@@ -200,6 +558,7 @@ body.settings-shell {
 .settings-shell .pet-item {
   position: relative;
   display: flex;
+  flex-wrap: wrap;
   align-items: center;
   gap: 18px;
   min-height: 84px;
@@ -228,6 +587,57 @@ body.settings-shell {
 }
 .settings-shell .pet-detail { margin: 7px 0 0; color: var(--muted); font-size: 13px; line-height: 1.45; }
 .settings-shell .actions { display: flex; flex: 0 0 auto; flex-wrap: wrap; justify-content: flex-end; gap: 7px; }
+
+.settings-shell .pet-profile-card {
+  flex: 0 0 100%;
+  width: 100%;
+  margin-top: 1px;
+  padding: 14px;
+  border: 1px solid color-mix(in srgb, var(--pine) 28%, #c7d4d2);
+  border-radius: 9px;
+  background: color-mix(in srgb, var(--wash) 46%, var(--paper));
+}
+
+.settings-shell .pet-profile-card form,
+.settings-shell .pet-profile-card fieldset { margin: 0; }
+.settings-shell .pet-profile-card fieldset { min-width: 0; padding: 0; border: 0; }
+.settings-shell .pet-profile-card legend {
+  margin-bottom: 11px;
+  padding: 0;
+  color: var(--pine);
+  font: 700 11px/1.3 "Cascadia Mono", Consolas, monospace;
+  letter-spacing: .08em;
+}
+.settings-shell .pet-profile-fields {
+  display: grid;
+  grid-template-columns: minmax(150px, 1.35fr) minmax(110px, .65fr) minmax(150px, 1fr);
+  gap: 11px;
+}
+.settings-shell .pet-profile-field { display: grid; align-content: start; gap: 6px; min-width: 0; }
+.settings-shell .pet-profile-field label { font-size: 12px; font-weight: 700; }
+.settings-shell .pet-profile-field input,
+.settings-shell .pet-profile-field select {
+  width: 100%;
+  min-height: 38px;
+  padding: 7px 9px;
+  border: 1px solid #b8c6c5;
+  border-radius: 8px;
+  background: #fff;
+  color: var(--ink);
+  font: 14px/1.4 "Microsoft YaHei UI", system-ui, sans-serif;
+}
+.settings-shell .pet-profile-footer {
+  display: flex;
+  align-items: end;
+  justify-content: space-between;
+  gap: 12px;
+  margin-top: 12px;
+}
+.settings-shell .pet-profile-feedback { min-width: 0; flex: 1; }
+.settings-shell .pet-profile-feedback p { min-height: 18px; margin: 0; font-size: 12px; line-height: 1.5; }
+.settings-shell #pet-profile-loading { color: var(--muted); }
+.settings-shell #pet-profile-error { color: #9b3f24; }
+.settings-shell .pet-profile-actions { display: flex; flex: 0 0 auto; gap: 7px; }
 
 .settings-shell .empty,
 .settings-shell #status,
@@ -287,7 +697,16 @@ body.settings-shell {
 .settings-shell .job-card { padding: 10px; border: 1px solid #d1dedd; border-radius: 8px; background: #f6faf9; font-size: 13px; }
 .settings-shell .job-card.success { border-color: #73ae87; background: #edf8ef; }
 .settings-shell .job-card.failed { border-color: #d8a38e; background: #fff0eb; }
-.settings-shell .candidate-grid { display: grid; width: min(100%, 430px); gap: 12px; }
+.settings-shell .cutout-comparison { display: grid; gap: 12px; margin-top: 16px; }
+.settings-shell .cutout-proof-grid { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); gap: 12px; }
+.settings-shell .cutout-proof { min-width: 0; margin: 0; overflow: hidden; border: 1px solid #d1dedd; border-radius: 10px; background: #f6faf9; }
+.settings-shell .cutout-proof figcaption { padding: 8px 10px; border-bottom: 1px solid #d1dedd; color: var(--muted); font: 700 11px/1.3 "Cascadia Mono", Consolas, monospace; letter-spacing: .04em; }
+.settings-shell .cutout-proof img { display: block; width: 100%; aspect-ratio: 4 / 3; object-fit: contain; background: #fff; }
+.settings-shell .cutout-proof-transparent img { background: linear-gradient(45deg,#e6eded 25%,#fff 25%,#fff 50%,#e6eded 50%,#e6eded 75%,#fff 75%); background-size: 16px 16px; }
+.settings-shell .cutout-quality-note { padding: 11px 12px; border-left: 4px solid var(--pine); background: #edf8f6; font-size: 13px; line-height: 1.55; }
+.settings-shell .cutout-quality-note strong { display: block; margin-bottom: 3px; }
+.settings-shell .cutout-quality-note p { margin: 0; color: var(--muted); }
+.settings-shell .candidate-grid { display: grid; width: min(100%, 430px); gap: 12px; margin-top: 12px; }
 .settings-shell .candidate { padding: 8px; border: 2px solid #d1dedd; border-radius: 10px; background: var(--paper); cursor: pointer; }
 .settings-shell .candidate.selected { border-color: var(--pine); }
 .settings-shell .candidate-preview { width: 100%; min-height: 280px; overflow: hidden; border-radius: 6px; background: linear-gradient(45deg,#e6eded 25%,#fff 25%,#fff 50%,#e6eded 50%,#e6eded 75%,#fff 75%); background-size: 16px 16px; }
@@ -295,6 +714,8 @@ body.settings-shell {
 .settings-shell .candidate-id { margin: 7px 2px 1px; color: var(--muted); font: 700 10px/1.3 "Cascadia Mono", Consolas, monospace; }
 .settings-shell input[type="file"] { max-width: 100%; margin: 2px 0; }
 .settings-shell #photo-preview { display: block; max-width: min(100%, 280px); margin-top: 12px; border: 1px solid #d1dedd; border-radius: 8px; }
+.settings-shell .photo-avatar-live2d { position: relative; width: min(100%, 480px); min-height: 300px; border: 1px solid #d1dedd; border-radius: 8px; background: #f6faf9; overflow: hidden; }
+.settings-shell .photo-avatar-live2d canvas { display: block; width: 100%; height: 100%; }
 
 .settings-shell .composer-workbench {
   width: min(100%, 1080px);
@@ -494,14 +915,42 @@ body.settings-shell {
 
 @media (max-width: 520px) {
   body.settings-shell { padding: 18px 14px 30px; }
+  .settings-shell .window-mode-heading { padding: 15px 13px 12px; }
+  .settings-shell .window-mode-grid { grid-template-columns: 1fr; padding: 12px 13px; }
+  .settings-shell .window-mode-choice { min-height: 68px; }
+  .settings-shell .window-mode-feedback { align-items: stretch; flex-direction: column; padding: 10px 13px 13px; }
+  .settings-shell #window-mode-retry { width: 100%; min-height: 42px; }
+  .settings-shell .display-size-card { padding: 15px 13px; }
+  .settings-shell .display-size-heading { align-items: end; gap: 12px; }
+  .settings-shell #display-size-output { min-width: 112px; font-size: 28px; }
+  .settings-shell .display-size-presets { display: grid; grid-template-columns: 1fr; }
+  .settings-shell .display-size-presets > span { margin-bottom: 2px; }
+  .settings-shell .display-size-presets button { width: 100%; min-height: 42px; }
+  .settings-shell .calibration-heading { padding: 15px 13px 12px; }
+  .settings-shell .calibration-row {
+    grid-template-columns: 28px minmax(0, 1fr) 48px;
+    gap: 8px;
+    padding: 12px 13px;
+  }
+  .settings-shell .calibration-row input[type="range"] { grid-column: 2 / -1; }
+  .settings-shell .calibration-row output { grid-column: 3; grid-row: 1; }
+  .settings-shell .calibration-footer { align-items: stretch; flex-direction: column; padding: 12px 13px 14px; }
+  .settings-shell .calibration-actions { display: grid; grid-template-columns: repeat(2, minmax(0, 1fr)); width: 100%; }
+  .settings-shell .calibration-actions button { min-height: 42px; }
   .settings-shell .pet-item { align-items: flex-start; flex-direction: column; gap: 13px; }
   .settings-shell .actions { width: 100%; justify-content: stretch; }
   .settings-shell .actions button { flex: 1; }
+  .settings-shell .pet-profile-card { flex: 0 0 auto; padding: 13px 12px; }
+  .settings-shell .pet-profile-fields { grid-template-columns: minmax(0, 1fr); }
+  .settings-shell .pet-profile-footer { align-items: stretch; flex-direction: column; }
+  .settings-shell .pet-profile-actions { width: 100%; }
+  .settings-shell .pet-profile-actions button { flex: 1; }
   .settings-shell .wizard { padding: 18px 15px; }
   .settings-shell .key-row { grid-template-columns: 1fr; align-items: stretch; }
   .settings-shell .key-row #key-status { grid-column: 1; }
   .settings-shell .wizard-actions { align-items: stretch; flex-direction: column; }
   .settings-shell .wizard-actions button { width: 100%; }
+  .settings-shell .cutout-proof-grid { grid-template-columns: minmax(0, 1fr); }
   .settings-shell .candidate-preview,
   .settings-shell .candidate-preview canvas { min-height: 240px; }
   .settings-shell .composer-workbench { padding: 16px 13px; }

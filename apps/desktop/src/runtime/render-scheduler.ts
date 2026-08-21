@@ -8,20 +8,36 @@ export interface RenderDriver {
 }
 
 export class RenderScheduler {
+  private companionFps = 24;
+  private currentTier: RenderTier | null = null;
+  private appliedFps: number | null = null;
+
   constructor(private readonly driver: RenderDriver) {}
 
+  setCompanionFps(fps: 24 | 60): void {
+    this.companionFps = fps;
+    if (this.currentTier === "companion") this.applyFps(fps);
+  }
+
   setTier(tier: RenderTier): void {
+    this.currentTier = tier;
     if (tier === "active") {
-      this.driver.setMaxFps(60);
+      this.applyFps(60);
       this.driver.start();
       return;
     }
     if (tier === "companion") {
-      this.driver.setMaxFps(24);
+      this.applyFps(this.companionFps);
       this.driver.start();
       return;
     }
     this.driver.stop();
     if (tier === "still") this.driver.renderOnce();
+  }
+
+  private applyFps(fps: number): void {
+    if (this.appliedFps === fps) return;
+    this.appliedFps = fps;
+    this.driver.setMaxFps(fps);
   }
 }

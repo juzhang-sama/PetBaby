@@ -1,0 +1,67 @@
+{
+  "schemaVersion": 1,
+  "templateId": "standard-cat-seated-v1",
+  "version": 1,
+  "engineProfile": "life-v1",
+  "canvas": { "width": 256, "height": 256 },
+  "proportions": {
+    "headHeightFraction": 0.55,
+    "bodyHeightFraction": 0.45,
+    "headWidthFraction": 0.62,
+    "limbHeightFraction": 0.2
+  },
+  "parts": [
+    {
+      "id": "tail",
+      "layer": 0,
+      "bounds": { "left": 0.6, "top": 0.55, "right": 0.9, "bottom": 0.95 }
+    },
+    {
+      "id": "paws",
+      "layer": 1,
+      "bounds": { "left": 0.3, "top": 0.82, "right": 0.7, "bottom": 0.95 }
+    },
+    {
+      "id": "body",
+      "layer": 2,
+      "bounds": { "left": 0.3, "top": 0.42, "right": 0.7, "bottom": 0.9 }
+    },
+    {
+      "id": "head",
+      "layer": 3,
+      "bounds": { "left": 0.25, "top": 0.06, "right": 0.75, "bottom": 0.55 }
+    }
+  ],
+  "space": {
+    "alphaBounds": { "left": 0.19, "top": 0.06, "right": 0.85, "bottom": 0.94 },
+    "faceSafeZone": { "left": 0.33, "top": 0.15, "right": 0.67, "bottom": 0.45 },
+    "eyes": {
+      "left": {
+        "center": { "x": 0.42, "y": 0.3 },
+        "bounds": { "left": 0.37, "top": 0.26, "right": 0.47, "bottom": 0.34 }
+      },
+      "right": {
+        "center": { "x": 0.58, "y": 0.3 },
+        "bounds": { "left": 0.53, "top": 0.26, "right": 0.63, "bottom": 0.34 }
+      }
+    },
+    "earRoots": { "left": { "x": 0.38, "y": 0.1 }, "right": { "x": 0.62, "y": 0.1 } },
+    "breathZone": { "left": 0.19, "top": 0.41, "right": 0.85, "bottom": 0.94 },
+    "stretchAxis": {
+      "origin": { "x": 0.5, "y": 0.9 },
+      "direction": { "x": 0.0, "y": -1.0 }
+    },
+    "swayPivot": { "x": 0.52, "y": 0.9 },
+    "tailRoot": { "x": 0.66, "y": 0.88 },
+    "edgeTailBounds": { "left": 0.55, "top": 0.55, "right": 0.92, "bottom": 0.96 }
+  },
+  "amplitude": {
+    "breath": { "min": -0.03, "max": 0.03 },
+    "blink": { "min": 0.0, "max": 1.0 },
+    "ear": { "min": -0.25, "max": 0.25 },
+    "tailAngle": { "min": -0.5, "max": 0.5 },
+    "tailCurl": { "min": 0.0, "max": 1.0 },
+    "tailTip": { "min": -0.5, "max": 0.5 },
+    "bodyStretch": { "min": 0.0, "max": 0.1 }
+  }
+}

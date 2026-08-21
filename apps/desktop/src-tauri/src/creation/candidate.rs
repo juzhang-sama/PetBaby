@@ -1,4 +1,5 @@
 use crate::creation::domain::{new_entity_id, ComposerRecipe};
+use crate::generation::cutout::CandidateQualityReportV1;
 use crate::runtime_assets::motion_profile::{parse_motion_profile, MotionProfileV1};
 use base64::Engine as _;
 use image::ImageDecoder as _;
@@ -101,8 +102,9 @@ pub struct StandardCandidate {
     pub pet_id: String,
     pub job_id: Option<String>,
     pub body_path: String,
-    pub motion_profile_path: String,
+    pub motion_profile_path: Option<String>,
     pub quality: String,
+    pub quality_report: Option<CandidateQualityReportV1>,
     pub created_at: String,
 }
 
@@ -2331,12 +2333,12 @@ mod tests {
     use crate::pets::repository::PetRepository;
     use crate::pets::{ActivePetSession, SharedActivePetSession};
     use crate::storage::Storage;
+    use crate::test_support::TestStorageRoot;
     use image::ImageEncoder as _;
     use std::path::PathBuf;
-    use std::sync::atomic::{AtomicU32, Ordering};
+    use std::sync::atomic::Ordering;
     use std::sync::{Arc, Mutex};
 
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
     fn assert_no_phase_intents(session_dir: &Path) {
         for name in [
             RESERVED_COMPOSER_INTENT_FILE,
@@ -2375,22 +2377,24 @@ mod tests {
         service: CreationService,
         session_id: String,
         recipe: ComposerRecipe,
+        // Keep last so every SQLite-owning field is dropped before directory cleanup.
+        _storage_root: TestStorageRoot,
     }
 
-    impl Drop for ComposerCandidateHarness {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
+    #[test]
+    fn composer_candidate_harness_drop_removes_storage_root() {
+        let test = ComposerCandidateHarness::new();
+        let root = test.root.clone();
+
+        drop(test);
+
+        assert!(!root.exists(), "storage root remained: {}", root.display());
     }
 
     impl ComposerCandidateHarness {
         fn new() -> Self {
-            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let root = std::env::temp_dir().join(format!(
-                "desktop-pet-composer-candidate-{}-{n}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&root).unwrap();
+            let storage_root = TestStorageRoot::claim("composer-candidate").unwrap();
+            let root = storage_root.path().to_path_buf();
             let storage = Arc::new(Mutex::new(Storage::open(&root.join("pets")).unwrap()));
             let active_session: SharedActivePetSession =
                 Arc::new(Mutex::new(ActivePetSession::new()));
@@ -2450,6 +2454,7 @@ mod tests {
                 service,
                 session_id: session.session_id,
                 recipe,
+                _storage_root: storage_root,
             }
         }
 
@@ -4102,22 +4107,24 @@ mod tests {
         store: CreationStore,
         session_id: String,
         pet_id: String,
+        // Keep last so every SQLite-owning field is dropped before directory cleanup.
+        _storage_root: TestStorageRoot,
     }
 
-    impl Drop for CandidateHarness {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
-        }
+    #[test]
+    fn candidate_harness_drop_removes_storage_root() {
+        let test = CandidateHarness::upload();
+        let root = test.root.clone();
+
+        drop(test);
+
+        assert!(!root.exists(), "storage root remained: {}", root.display());
     }
 
     impl CandidateHarness {
         fn session(method: &str) -> Self {
-            let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-            let root = std::env::temp_dir().join(format!(
-                "desktop-pet-standard-candidate-{}-{n}",
-                std::process::id()
-            ));
-            std::fs::create_dir_all(&root).unwrap();
+            let storage_root = TestStorageRoot::claim("standard-candidate").unwrap();
+            let root = storage_root.path().to_path_buf();
             let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
             let (species, identity) = match method {
                 "composer" => (Species::Dog, IdentityMode::Guided),
@@ -4146,6 +4153,7 @@ mod tests {
                 storage,
                 session_id,
                 pet_id: pet.pet_id,
+                _storage_root: storage_root,
             }
         }
 
@@ -4212,10 +4220,63 @@ mod tests {
         assert_eq!(candidate.pet_id, test.pet_id);
         assert_eq!(candidate.job_id.as_deref(), Some("job-1"));
         assert_eq!(
-            PathBuf::from(candidate.motion_profile_path),
+            PathBuf::from(candidate.motion_profile_path.unwrap()),
             PathBuf::from(profile).canonicalize().unwrap()
         );
+        assert!(candidate.quality_report.is_none());
         assert!(candidate.candidate_id.starts_with("candidate-"));
+        assert_eq!(
+            test.session_state(),
+            (
+                "candidateReady".into(),
+                "candidateReady".into(),
+                "review".into(),
+                None
+            )
+        );
+    }
+
+    #[test]
+    fn needs_review_upload_quality_report_round_trips_without_profile() {
+        let test = CandidateHarness::upload();
+        test.store
+            .create_job_for_session("job-1", &test.session_id, "prompt", "sha", Some("task-1"))
+            .unwrap();
+        let (raw, cutout, _) = test.candidate_files("job-1");
+        let report = crate::generation::cutout::CandidateQualityReportV1 {
+            schema_version: 1,
+            status: crate::generation::cutout::CandidateQualityStatus::NeedsReview,
+            reasons: vec![crate::generation::cutout::QualityReason::InteriorHoles],
+            opaque_ratio: 0.5,
+            transparent_ratio: 0.5,
+            partial_alpha_ratio: 0.0,
+            visible_bounds: Some([8, 8, 48, 48]),
+        };
+
+        let candidate = test
+            .store
+            .record_upload_candidate_with_result_url(
+                "job-1",
+                &test.session_id,
+                &test.root.join("jobs"),
+                &raw,
+                &cutout,
+                None,
+                &report,
+                "https://example.invalid/out.png",
+            )
+            .unwrap();
+
+        assert_eq!(candidate.quality, "needs-review");
+        assert_eq!(candidate.motion_profile_path, None);
+        assert_eq!(candidate.quality_report.as_ref(), Some(&report));
+        assert_eq!(
+            test.store
+                .candidate_for_session(&test.session_id)
+                .unwrap()
+                .quality_report,
+            Some(report)
+        );
         assert_eq!(
             test.session_state(),
             (

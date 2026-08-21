@@ -15,6 +15,85 @@ export interface MotionFrame {
   swayXRatio: number;
 }
 
+export type FullImageAction =
+  | "idle"
+  | "look-left"
+  | "look-right"
+  | "react-happy"
+  | "react-curious"
+  | "sleep"
+  | "wake"
+  | "carried"
+  | "landed";
+
+export type FullImageActionFrame = {
+  readonly translateXRatio: number;
+  readonly translateYRatio: number;
+  readonly scaleX: number;
+  readonly scaleY: number;
+  readonly rotationRadians: number;
+  readonly completed: boolean;
+};
+
+const ACTION_DURATION_MS = {
+  "look-left": 900,
+  "look-right": 900,
+  "react-happy": 760,
+  "react-curious": 1100,
+  sleep: 1400,
+  wake: 720,
+  carried: 1200,
+  landed: 520,
+} as const;
+
+export function computeFullImageActionFrame(
+  action: FullImageAction,
+  elapsedMs: number,
+  loop: boolean,
+): FullImageActionFrame {
+  if (action === "idle") return actionFrame(0, 0, 1, 1, 0, false);
+  const duration = ACTION_DURATION_MS[action];
+  const progress = Math.min(1, Math.max(0, elapsedMs / duration));
+  const phase = loop ? elapsedMs % duration / duration : progress;
+  const pulse = Math.sin(Math.PI * phase);
+  const completed = !loop && progress >= 1;
+  switch (action) {
+    case "look-left":
+      return actionFrame(-0.018 * pulse, 0, 1, 1, -0.025 * pulse, completed);
+    case "look-right":
+      return actionFrame(0.018 * pulse, 0, 1, 1, 0.025 * pulse, completed);
+    case "react-happy":
+      return actionFrame(0, -0.055 * Math.abs(Math.sin(2 * Math.PI * phase)), 1.025, 0.975, 0, completed);
+    case "react-curious":
+      return actionFrame(0.012 * pulse, -0.008 * pulse, 1, 1, 0.07 * pulse, completed);
+    case "sleep":
+      return actionFrame(0, 0.018 * progress, 1.02, 0.96, -0.025 * progress, completed);
+    case "wake":
+      return actionFrame(0, -0.025 * pulse, 1 - 0.02 * pulse, 1 + 0.04 * pulse, 0, completed);
+    case "carried":
+      return actionFrame(0.018 * Math.sin(2 * Math.PI * phase), -0.02, 1, 1, 0.035 * Math.sin(2 * Math.PI * phase), completed);
+    case "landed":
+      return actionFrame(0, 0.025 * pulse, 1 + 0.055 * pulse, 1 - 0.08 * pulse, 0, completed);
+    default:
+      return assertNeverAction(action);
+  }
+}
+
+function actionFrame(
+  translateXRatio: number,
+  translateYRatio: number,
+  scaleX: number,
+  scaleY: number,
+  rotationRadians: number,
+  completed: boolean,
+): FullImageActionFrame {
+  return { translateXRatio, translateYRatio, scaleX, scaleY, rotationRadians, completed };
+}
+
+function assertNeverAction(value: never): never {
+  throw new Error(`unsupported full-image action: ${String(value)}`);
+}
+
 export interface HitEnvelopeTransform {
   swayXRatio: number;
   swayRadians: number;
@@ -127,6 +206,7 @@ export function planBreathSlices(
   imageHeight: number,
   breath: number,
   sliceCount: number,
+  breathAmplitudePercent = 2,
 ): BreathSlice[] {
   if (imageWidth <= 0 || imageHeight <= 0) {
     throw new RangeError("image dimensions must be positive");
@@ -183,9 +263,10 @@ export function planBreathSlices(
       const horizontalWeight = normalizedTop <= 0 || normalizedBottom >= 1
         ? 0
         : breathWeight(normalizedMiddle);
-      const topShift = imageHeight * LIFE_V1.breathShiftY * breath * breathWeight(normalizedTop);
-      const bottomShift = imageHeight * LIFE_V1.breathShiftY * breath * breathWeight(normalizedBottom);
-      const widthIncrease = sourceWidth * LIFE_V1.breathScaleX * breath * horizontalWeight;
+      const calibratedBreath = breath * breathAmplitudePercent / 2;
+      const topShift = imageHeight * LIFE_V1.breathShiftY * calibratedBreath * breathWeight(normalizedTop);
+      const bottomShift = imageHeight * LIFE_V1.breathShiftY * calibratedBreath * breathWeight(normalizedBottom);
+      const widthIncrease = sourceWidth * LIFE_V1.breathScaleX * calibratedBreath * horizontalWeight;
       slices.push({
         sourceX,
         sourceY,

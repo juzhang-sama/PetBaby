@@ -50,14 +50,26 @@ describe("buildPetListRows", () => {
     });
   });
 
+  it("offers edit only for user pets and never for the built-in pet", () => {
+    const rows = buildPetListRows([builtinEntry(), userEntry()]);
+
+    expect(rows.find((row) => row.petId === "user-pet-1")?.actions).toContainEqual({
+      kind: "edit",
+      label: "编辑",
+    });
+    expect(rows.find((row) => row.petId === "pet-live2d-v1")?.actions).not.toContainEqual(
+      expect.objectContaining({ kind: "edit" }),
+    );
+  });
+
   it.each([
-    ["ready", ["switch", "delete"]],
-    ["generating", ["delete"]],
-    ["generationFailed", ["delete"]],
-    ["awaitingConfirm", ["delete"]],
-    ["compileRetryable", ["delete"]],
-    ["awaitingActivation", ["delete"]],
-    ["corrupt", ["delete"]],
+    ["ready", ["edit", "switch", "delete"]],
+    ["generating", ["edit", "delete"]],
+    ["generationFailed", ["edit", "delete"]],
+    ["awaitingConfirm", ["edit", "delete"]],
+    ["compileRetryable", ["edit", "delete"]],
+    ["awaitingActivation", ["edit", "delete"]],
+    ["corrupt", ["edit", "delete"]],
   ] as const)("maps %s to allowed actions", (status: PetLifecycle, actions) => {
     expect(buildPetListRows([userEntry({ status })])[0]!.actions.map((item) => item.kind)).toEqual(actions);
   });

@@ -1,0 +1,64 @@
+{
+    "Version":  3,
+    "Meta":  {
+                 "Duration":  3.2,
+                 "Fps":  30,
+                 "Loop":  true,
+                 "AreBeziersRestricted":  true,
+                 "CurveCount":  3,
+                 "TotalSegmentCount":  8,
+                 "TotalPointCount":  11,
+                 "UserDataCount":  0,
+                 "TotalUserDataSize":  0
+             },
+    "Curves":  [
+                   {
+                       "Target":  "Parameter",
+                       "Id":  "ParamTailAngle",
+                       "Segments":  [
+                                        0,
+                                        -16,
+                                        0,
+                                        1.6,
+                                        16,
+                                        0,
+                                        3.2,
+                                        -16
+                                    ]
+                   },
+                   {
+                       "Target":  "Parameter",
+                       "Id":  "ParamTailCurl",
+                       "Segments":  [
+                                        0,
+                                        -0.25,
+                                        0,
+                                        1.6,
+                                        0.4,
+                                        0,
+                                        3.2,
+                                        -0.25
+                                    ]
+                   },
+                   {
+                       "Target":  "Parameter",
+                       "Id":  "ParamTailTip",
+                       "Segments":  [
+                                        0,
+                                        0.35,
+                                        0,
+                                        0.8,
+                                        -0.45,
+                                        0,
+                                        1.6,
+                                        0.25,
+                                        0,
+                                        2.4,
+                                        -0.35,
+                                        0,
+                                        3.2,
+                                        0.35
+                                    ]
+                   }
+               ]
+}

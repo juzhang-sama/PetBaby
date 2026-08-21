@@ -3,6 +3,7 @@ use crate::creation::domain::{
     new_entity_id, ComposerRecipe, CreationMethod, CreationSessionStatus, CreationSnapshot,
 };
 use crate::creation::name::normalize_display_name;
+use crate::creation::photo_avatar::store::{PhotoAvatarAbandonRequest, PhotoAvatarStore};
 use crate::creation::{candidate, composer, CreationStore};
 use crate::pets::deletion::SharedPetDeletionService;
 use crate::pets::mutation::{MutationKind, SharedPetMutationGate};
@@ -16,12 +17,38 @@ use std::sync::{Arc, Mutex};
 
 pub type SharedCreationService = Arc<CreationService>;
 
+pub trait PhotoAvatarAbandonPort: Send + Sync {
+    fn cancel_provider_job(&self, session_id: &str, provider_job_id: &str) -> Result<(), String>;
+    fn delete_provider_session(
+        &self,
+        session_id: &str,
+        provider_session_id: &str,
+    ) -> Result<(), String>;
+}
+
+struct UnconfiguredPhotoAvatarAbandonPort;
+
+impl PhotoAvatarAbandonPort for UnconfiguredPhotoAvatarAbandonPort {
+    fn cancel_provider_job(&self, _session_id: &str, _provider_job_id: &str) -> Result<(), String> {
+        Err("photo avatar remote lifecycle manager is not configured".into())
+    }
+
+    fn delete_provider_session(
+        &self,
+        _session_id: &str,
+        _provider_session_id: &str,
+    ) -> Result<(), String> {
+        Err("photo avatar remote lifecycle manager is not configured".into())
+    }
+}
+
 pub struct CreationService {
     storage: Arc<Mutex<Storage>>,
     app_data_dir: PathBuf,
     deletion: SharedPetDeletionService,
     content_root: ContentRoot,
     mutation_gate: SharedPetMutationGate,
+    photo_avatar_abandon_port: Arc<dyn PhotoAvatarAbandonPort>,
 }
 
 #[derive(Debug, Clone, serde::Serialize)]
@@ -46,13 +73,30 @@ impl CreationService {
         content_root: ContentRoot,
         mutation_gate: SharedPetMutationGate,
     ) -> Self {
-        Self {
+        let service = Self {
             storage,
             app_data_dir,
             deletion,
             content_root,
             mutation_gate,
+            photo_avatar_abandon_port: Arc::new(UnconfiguredPhotoAvatarAbandonPort),
+        };
+        if let Err(error) = service.cleanup_terminal_photo_avatar_sources() {
+            eprintln!("[desktop-pet] photo avatar source cleanup failed: {error}");
         }
+        service
+    }
+
+    pub fn with_photo_avatar_abandon_port(
+        mut self,
+        photo_avatar_abandon_port: Arc<dyn PhotoAvatarAbandonPort>,
+    ) -> Self {
+        self.photo_avatar_abandon_port = photo_avatar_abandon_port;
+        self
+    }
+
+    pub fn cleanup_terminal_photo_avatar_sources(&self) -> Result<Vec<String>, String> {
+        PhotoAvatarStore::new(self.storage.clone()).cleanup_terminal_photo_avatar_sources()
     }
 
     pub fn start(&self, method: CreationMethod) -> Result<CreationSnapshot, String> {
@@ -71,6 +115,14 @@ impl CreationService {
             .db
             .transaction()
             .map_err(|error| error.to_string())?;
+
+        reconcile_completed_long_sessions(&tx, &now)?;
+        if let Some(existing) = find_long_draft_id(&tx)? {
+            return Err(format!(
+                "a creation draft is already active; continue or abandon session {existing}"
+            ));
+        }
+        reject_inconsistent_long_session(&tx)?;
 
         let pet = PetRepository::reserve_in_transaction(&tx, method, None)?;
         validate_component(&pet.pet_id, "pet id")?;
@@ -121,8 +173,15 @@ impl CreationService {
     }
 
     pub fn draft(&self) -> Result<Option<CreationSnapshot>, String> {
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let session_id = find_long_draft_id(&storage.db)?;
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        reconcile_completed_long_sessions(&tx, &crate::creation::profiles::now_iso())?;
+        let session_id = find_long_draft_id(&tx)?;
+        reject_inconsistent_long_session(&tx)?;
+        tx.commit().map_err(|error| error.to_string())?;
         session_id
             .as_deref()
             .map(|id| snapshot_from_db(&storage.db, id))
@@ -518,8 +577,61 @@ impl CreationService {
 
     pub fn abandon(&self, session_id: &str) -> Result<(), String> {
         validate_component(session_id, "session id")?;
+        let store = PhotoAvatarStore::new(self.storage.clone());
+        if let Some(request) = store.abandon_request(session_id)? {
+            // 返回 false 表示远程删除失败、本地数据已清理且 step 已置 cleanupPending：
+            // 此时跳过 deletion.abandon_creation（它会删除 photo_avatar_runs 记录，
+            // 导致 cleanupPending 状态丢失），保留记录以便下次重试远程清理。
+            if !self.abandon_photo_avatar_remote(session_id, &request, &store)? {
+                return Ok(());
+            }
+        }
         let _resource_root = &self.app_data_dir;
         self.deletion.abandon_creation(session_id)
+    }
+
+    fn abandon_photo_avatar_remote(
+        &self,
+        session_id: &str,
+        request: &PhotoAvatarAbandonRequest,
+        store: &PhotoAvatarStore,
+    ) -> Result<bool, String> {
+        let cancel_error = request
+            .provider_job_id
+            .as_deref()
+            .map(|provider_job_id| {
+                self.photo_avatar_abandon_port
+                    .cancel_provider_job(session_id, provider_job_id)
+            })
+            .transpose()
+            .err();
+        let remote_session_deleted = request.provider_session_id.is_some();
+        let delete_result = request
+            .provider_session_id
+            .as_deref()
+            .map(|provider_session_id| {
+                self.photo_avatar_abandon_port
+                    .delete_provider_session(session_id, provider_session_id)
+            })
+            .transpose();
+        if let Err(error) = delete_result {
+            // 远程删除失败时本地数据已清理、step 已置 cleanupPending；返回 false
+            // 让 abandon 跳过本地 abandoned 标记（保留 cleanupPending 记录），
+            // 远程 provider 会话残留由 cleanupPending 状态在下次重试或启动恢复时兜底。
+            store.mark_cleanup_pending_and_delete_local_data(session_id)?;
+            eprintln!(
+                "[photo-avatar] provider delete failed for {session_id}: {error}; cleanup pending"
+            );
+            return Ok(false);
+        }
+        if remote_session_deleted || cancel_error.is_none() {
+            Ok(true)
+        } else {
+            Err(format!(
+                "photo avatar provider cancel failed: {}",
+                cancel_error.expect("checked above")
+            ))
+        }
     }
 }
 
@@ -540,15 +652,73 @@ struct SnapshotRow {
 
 fn find_long_draft_id(db: &Connection) -> Result<Option<String>, String> {
     db.query_row(
-        "SELECT session_id FROM creation_sessions
-         WHERE method IN ('upload','composer')
-           AND status NOT IN ('completed','abandoned')
-         ORDER BY updated_at DESC, rowid DESC LIMIT 1",
+        "SELECT cs.session_id
+         FROM creation_sessions cs
+         JOIN pets p ON p.pet_id=cs.pet_id
+         WHERE cs.method IN ('upload','composer')
+           AND cs.status NOT IN ('completed','abandoned')
+           AND p.lifecycle='draft'
+           AND p.completed_at IS NULL
+           AND COALESCE((SELECT value FROM state WHERE key='app:active_pet_id'), '') != p.pet_id
+         ORDER BY cs.updated_at DESC, cs.rowid DESC LIMIT 1",
         [],
         |row| row.get(0),
     )
     .optional()
     .map_err(|error| error.to_string())
+}
+
+fn reconcile_completed_long_sessions(db: &Connection, now: &str) -> Result<(), String> {
+    db.execute(
+        "UPDATE creation_sessions
+         SET status='completed',
+             last_stable_status='completed',
+             current_step='completed',
+             completed_at=COALESCE(
+               completed_at,
+               (SELECT completed_at FROM pets WHERE pets.pet_id=creation_sessions.pet_id)
+             ),
+             updated_at=?1,
+             error=NULL
+         WHERE method IN ('upload','composer')
+           AND status NOT IN ('completed','abandoned')
+           AND EXISTS (
+             SELECT 1 FROM pets
+             WHERE pets.pet_id=creation_sessions.pet_id
+               AND pets.lifecycle='ready'
+               AND pets.completed_at IS NOT NULL
+           )",
+        [now],
+    )
+    .map_err(|error| error.to_string())?;
+    Ok(())
+}
+
+fn reject_inconsistent_long_session(db: &Connection) -> Result<(), String> {
+    let inconsistent: Option<(String, String)> = db
+        .query_row(
+            "SELECT cs.session_id, p.lifecycle
+             FROM creation_sessions cs
+             JOIN pets p ON p.pet_id=cs.pet_id
+             WHERE cs.method IN ('upload','composer')
+               AND cs.status NOT IN ('completed','abandoned')
+               AND NOT (
+                 p.lifecycle='draft'
+                 AND p.completed_at IS NULL
+                 AND COALESCE((SELECT value FROM state WHERE key='app:active_pet_id'), '') != p.pet_id
+               )
+             ORDER BY cs.updated_at DESC, cs.rowid DESC LIMIT 1",
+            [],
+            |row| Ok((row.get(0)?, row.get(1)?)),
+        )
+        .optional()
+        .map_err(|error| error.to_string())?;
+    if let Some((session_id, lifecycle)) = inconsistent {
+        return Err(format!(
+            "creation session {session_id} has inconsistent resumable facts (pet lifecycle: {lifecycle})"
+        ));
+    }
+    Ok(())
 }
 
 fn snapshot_from_db(db: &Connection, session_id: &str) -> Result<CreationSnapshot, String> {
@@ -729,12 +899,16 @@ fn validate_composer_step(value: &str) -> Result<(), String> {
 mod tests {
     use super::*;
     use crate::creation::domain::{CreationMethod, CreationSessionStatus};
+    use crate::creation::photo_avatar::store::{
+        NormalizedPhoto, PhotoAvatarStore, RemoteJob, RemoteStep,
+    };
     use crate::pets::active::{ActivePetService, BUILTIN_PET_ID};
     use crate::pets::deletion::PetDeletionService;
     use crate::pets::mutation::PetMutationGate;
     use crate::pets::{ActivePetSession, SharedActivePetSession};
     use crate::storage::Storage;
     use rusqlite::OptionalExtension;
+    use sha2::{Digest, Sha256};
     use std::path::PathBuf;
     use std::sync::atomic::{AtomicU32, Ordering};
     use std::sync::{Arc, Mutex};
@@ -882,6 +1056,63 @@ mod tests {
         assert!(error.contains(&upload.session_id));
         assert_eq!(test.count("pets"), 1);
         assert_eq!(test.count("creation_sessions"), 1);
+    }
+
+    #[test]
+    fn reconciles_a_ready_completed_pet_before_reporting_or_starting_a_long_draft() {
+        let test = ServiceHarness::new();
+        let completed = test.service.start(CreationMethod::Upload).unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute_batch(&format!(
+                "UPDATE pets
+                 SET lifecycle='ready', completed_at='2026-08-12T00:00:00Z'
+                 WHERE pet_id='{}';
+                 INSERT INTO state (key, value) VALUES ('app:active_pet_id', '{}')
+                 ON CONFLICT(key) DO UPDATE SET value=excluded.value;",
+                completed.pet_id, completed.pet_id
+            ))
+            .unwrap();
+
+        assert!(test.service.draft().unwrap().is_none());
+        let next = test.service.start(CreationMethod::Composer).unwrap();
+        assert_eq!(next.method, CreationMethod::Composer);
+
+        let completed_status: String = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT status FROM creation_sessions WHERE session_id=?1",
+                [&completed.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(completed_status, "completed");
+        assert!(test.service.abandon(&completed.session_id).is_err());
+    }
+
+    #[test]
+    fn rejects_contradictory_ready_without_completion_as_a_resumable_draft() {
+        let test = ServiceHarness::new();
+        let corrupt = test.service.start(CreationMethod::Upload).unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE pets SET lifecycle='ready', completed_at=NULL WHERE pet_id=?1",
+                [&corrupt.pet_id],
+            )
+            .unwrap();
+
+        let draft_error = test.service.draft().unwrap_err();
+        assert!(draft_error.contains("inconsistent"), "{draft_error}");
+        let start_error = test.service.start(CreationMethod::Composer).unwrap_err();
+        assert!(start_error.contains("inconsistent"), "{start_error}");
     }
 
     #[test]
@@ -1174,5 +1405,320 @@ mod tests {
             .optional()
             .unwrap();
         assert_eq!(tombstone, None);
+    }
+
+    #[test]
+    fn photo_avatar_abandon_cancels_then_deletes_remote_before_local_isolation() {
+        let test = ServiceHarness::new();
+        let draft = test.service.start(CreationMethod::Upload).unwrap();
+        let store = PhotoAvatarStore::new(test.storage.clone());
+        let run = store.begin_revision(&draft.session_id, None, &[]).unwrap();
+        let attempt = store
+            .reserve_attempt(&draft.session_id, run.revision, RemoteStep::AnalyzeIdentity)
+            .unwrap();
+        store
+            .attach_job(
+                &run.generation_token,
+                RemoteStep::AnalyzeIdentity,
+                attempt,
+                &RemoteJob {
+                    provider_session_id: Some("provider-session".into()),
+                    provider_job_id: "provider-job".into(),
+                },
+            )
+            .unwrap();
+        store
+            .replace_sources(&draft.session_id, &[source_for_service()])
+            .unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = CreationService::new(
+            test.storage.clone(),
+            test.root.clone(),
+            test.service.deletion.clone(),
+            test.service.content_root.clone(),
+            test.service.mutation_gate.clone(),
+        )
+        .with_photo_avatar_abandon_port(Arc::new(RecordingPhotoAvatarPort(calls.clone())));
+
+        service.abandon(&draft.session_id).unwrap();
+
+        assert_eq!(
+            *calls.lock().unwrap(),
+            vec!["cancel:provider-job", "delete:provider-session"]
+        );
+        assert_eq!(test.count("creation_sessions"), 0);
+        assert_eq!(test.count("creation_session_tombstones"), 1);
+    }
+
+    #[test]
+    fn photo_avatar_provider_delete_failure_removes_sources_and_records_cleanup_pending() {
+        let test = ServiceHarness::new();
+        let draft = test.service.start(CreationMethod::Upload).unwrap();
+        let store = PhotoAvatarStore::new(test.storage.clone());
+        let run = store.begin_revision(&draft.session_id, None, &[]).unwrap();
+        let attempt = store
+            .reserve_attempt(&draft.session_id, run.revision, RemoteStep::AnalyzeIdentity)
+            .unwrap();
+        store
+            .attach_job(
+                &run.generation_token,
+                RemoteStep::AnalyzeIdentity,
+                attempt,
+                &RemoteJob {
+                    provider_session_id: Some("provider-session".into()),
+                    provider_job_id: "provider-job".into(),
+                },
+            )
+            .unwrap();
+        store
+            .replace_sources(&draft.session_id, &[source_for_service()])
+            .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "INSERT INTO photo_avatar_artifacts
+                 (session_id, revision, kind, relative_path, sha256, local_path, created_at)
+                 VALUES (?1, ?2, 'textureAtlas', 'staging/atlas.png', ?3, 'staging/atlas.png', '10')",
+                rusqlite::params![&draft.session_id, run.revision, "a".repeat(64)],
+            )
+            .unwrap();
+        let service = CreationService::new(
+            test.storage.clone(),
+            test.root.clone(),
+            test.service.deletion.clone(),
+            test.service.content_root.clone(),
+            test.service.mutation_gate.clone(),
+        )
+        .with_photo_avatar_abandon_port(Arc::new(FailingDeletePhotoAvatarPort));
+
+        // 远程 delete 失败时本地数据已清理、step 置 cleanupPending，abandon 仍应成功
+        // 完成本地 abandoned 标记（不再返回 Err），远程残留由 cleanupPending 兜底。
+        service.abandon(&draft.session_id).unwrap();
+
+        let storage = test.storage.lock().unwrap();
+        let source_count: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM photo_avatar_sources WHERE session_id=?1",
+                [&draft.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        let step: String = storage
+            .db
+            .query_row(
+                "SELECT step FROM photo_avatar_runs WHERE session_id=?1",
+                [&draft.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_count, 0);
+        let artifact_count: i64 = storage
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM photo_avatar_artifacts WHERE session_id=?1",
+                [&draft.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(artifact_count, 0);
+        assert_eq!(step, "cleanupPending");
+        let provider_session_id: String = storage
+            .db
+            .query_row(
+                "SELECT provider_session_id FROM photo_avatar_runs WHERE session_id=?1",
+                [&draft.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(provider_session_id, "provider-session");
+        assert_eq!(run.revision, 1);
+    }
+
+    #[test]
+    fn photo_avatar_cancel_failure_still_abandons_after_remote_delete_succeeds() {
+        let test = ServiceHarness::new();
+        let draft = test.service.start(CreationMethod::Upload).unwrap();
+        let store = PhotoAvatarStore::new(test.storage.clone());
+        let run = store.begin_revision(&draft.session_id, None, &[]).unwrap();
+        let attempt = store
+            .reserve_attempt(&draft.session_id, run.revision, RemoteStep::AnalyzeIdentity)
+            .unwrap();
+        store
+            .attach_job(
+                &run.generation_token,
+                RemoteStep::AnalyzeIdentity,
+                attempt,
+                &RemoteJob {
+                    provider_session_id: Some("provider-session".into()),
+                    provider_job_id: "provider-job".into(),
+                },
+            )
+            .unwrap();
+        store
+            .replace_sources(&draft.session_id, &[source_for_service()])
+            .unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = CreationService::new(
+            test.storage.clone(),
+            test.root.clone(),
+            test.service.deletion.clone(),
+            test.service.content_root.clone(),
+            test.service.mutation_gate.clone(),
+        )
+        .with_photo_avatar_abandon_port(Arc::new(CancelFailsDeleteSucceedsPort(calls.clone())));
+
+        service.abandon(&draft.session_id).unwrap();
+
+        assert_eq!(*calls.lock().unwrap(), vec!["cancel", "delete"]);
+        assert_eq!(test.count("creation_sessions"), 0);
+        assert_eq!(test.count("creation_session_tombstones"), 1);
+    }
+
+    #[test]
+    fn photo_avatar_cancel_failure_without_provider_session_preserves_local_data() {
+        let test = ServiceHarness::new();
+        let draft = test.service.start(CreationMethod::Upload).unwrap();
+        let store = PhotoAvatarStore::new(test.storage.clone());
+        let run = store.begin_revision(&draft.session_id, None, &[]).unwrap();
+        let attempt = store
+            .reserve_attempt(&draft.session_id, run.revision, RemoteStep::AnalyzeIdentity)
+            .unwrap();
+        store
+            .attach_job(
+                &run.generation_token,
+                RemoteStep::AnalyzeIdentity,
+                attempt,
+                &RemoteJob {
+                    provider_session_id: None,
+                    provider_job_id: "provider-job".into(),
+                },
+            )
+            .unwrap();
+        store
+            .replace_sources(&draft.session_id, &[source_for_service()])
+            .unwrap();
+        let calls = Arc::new(Mutex::new(Vec::new()));
+        let service = CreationService::new(
+            test.storage.clone(),
+            test.root.clone(),
+            test.service.deletion.clone(),
+            test.service.content_root.clone(),
+            test.service.mutation_gate.clone(),
+        )
+        .with_photo_avatar_abandon_port(Arc::new(CancelFailsDeleteSucceedsPort(calls.clone())));
+
+        assert!(service
+            .abandon(&draft.session_id)
+            .unwrap_err()
+            .contains("provider cancel"));
+
+        assert_eq!(*calls.lock().unwrap(), vec!["cancel"]);
+        let source_count: i64 = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT COUNT(*) FROM photo_avatar_sources WHERE session_id=?1",
+                [&draft.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(source_count, 1);
+        assert_eq!(test.count("creation_sessions"), 1);
+    }
+
+    fn source_for_service() -> NormalizedPhoto {
+        use image::{DynamicImage, ImageFormat, RgbaImage};
+        use std::io::Cursor;
+
+        let image =
+            DynamicImage::ImageRgba8(RgbaImage::from_pixel(256, 256, image::Rgba([1, 2, 3, 255])));
+        let mut normalized_png = Vec::new();
+        image
+            .write_to(&mut Cursor::new(&mut normalized_png), ImageFormat::Png)
+            .unwrap();
+        let sha256 = format!("{:x}", Sha256::digest(&normalized_png));
+        NormalizedPhoto {
+            source_id: format!("source-0-{}", &sha256[..12]),
+            ordinal: 0,
+            sha256,
+            normalized_png,
+            width: 256,
+            height: 256,
+        }
+    }
+
+    struct RecordingPhotoAvatarPort(Arc<Mutex<Vec<String>>>);
+
+    impl PhotoAvatarAbandonPort for RecordingPhotoAvatarPort {
+        fn cancel_provider_job(
+            &self,
+            _session_id: &str,
+            provider_job_id: &str,
+        ) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("cancel:{provider_job_id}"));
+            Ok(())
+        }
+
+        fn delete_provider_session(
+            &self,
+            _session_id: &str,
+            provider_session_id: &str,
+        ) -> Result<(), String> {
+            self.0
+                .lock()
+                .unwrap()
+                .push(format!("delete:{provider_session_id}"));
+            Ok(())
+        }
+    }
+
+    struct FailingDeletePhotoAvatarPort;
+
+    impl PhotoAvatarAbandonPort for FailingDeletePhotoAvatarPort {
+        fn cancel_provider_job(
+            &self,
+            _session_id: &str,
+            _provider_job_id: &str,
+        ) -> Result<(), String> {
+            Ok(())
+        }
+
+        fn delete_provider_session(
+            &self,
+            _session_id: &str,
+            _provider_session_id: &str,
+        ) -> Result<(), String> {
+            Err("provider delete failed".into())
+        }
+    }
+
+    struct CancelFailsDeleteSucceedsPort(Arc<Mutex<Vec<&'static str>>>);
+
+    impl PhotoAvatarAbandonPort for CancelFailsDeleteSucceedsPort {
+        fn cancel_provider_job(
+            &self,
+            _session_id: &str,
+            _provider_job_id: &str,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push("cancel");
+            Err("provider cancel failed".into())
+        }
+
+        fn delete_provider_session(
+            &self,
+            _session_id: &str,
+            _provider_session_id: &str,
+        ) -> Result<(), String> {
+            self.0.lock().unwrap().push("delete");
+            Ok(())
+        }
     }
 }

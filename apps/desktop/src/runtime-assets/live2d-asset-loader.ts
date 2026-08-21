@@ -1,6 +1,13 @@
 import { invoke } from "@tauri-apps/api/core";
 import type { PetRenderAsset } from "../runtime/pet-renderer";
 import { parseLive2DManifest, type RuntimeAssetManifestV2 } from "./live2d-manifest";
+import { parseCatCharacterManifest, type RuntimeAssetManifestV4 } from "./cat-character-manifest";
+import { parseCatSpatialManifest, type RuntimeAssetManifestV5 } from "./cat-spatial-manifest";
+import type { Live2DSemantics } from "../runtime/pet-renderer";
+import {
+  parseMotionSpatialProfileV1,
+  type MotionSpatialProfileV1,
+} from "./cat-motion-spatial-profile";
 
 export interface Live2DAssetTransport {
   readManifest(petId: string): Promise<unknown>;
@@ -100,14 +107,99 @@ function rewriteModelReferences(
   return new TextEncoder().encode(JSON.stringify(root));
 }
 
+/**
+ * The photo-avatar builder writes its v5 manifest with serde_json's field order
+ * and two-space pretty formatting. Rebuild that exact representation before
+ * acknowledging the backend's manifest-hash CAS.
+ */
+export async function photoAvatarManifestSha256(manifest: RuntimeAssetManifestV5): Promise<string> {
+  const canonical = {
+    schemaVersion: manifest.schemaVersion,
+    renderer: manifest.renderer,
+    petId: manifest.petId,
+    variantId: manifest.variantId,
+    skeletonVersion: manifest.skeletonVersion,
+    bodyModuleId: manifest.bodyModuleId,
+    modelEntry: manifest.modelEntry,
+    previewImage: manifest.previewImage,
+    motionSpatialProfile: manifest.motionSpatialProfile,
+    files: manifest.files.map((file) => ({
+      role: file.role,
+      relativePath: file.relativePath,
+      sha256: file.sha256,
+    })),
+    motions: orderedRecord(manifest.motions, (motion) => ({
+      group: motion.group,
+      ...(motion.index === undefined ? {} : { index: motion.index }),
+    })),
+    parameters: orderedRecord(manifest.parameters, (parameter) => parameter),
+    hitAreas: orderedRecord(manifest.hitAreas, (hitArea) => hitArea),
+    edgeTailStates: orderedRecord(manifest.edgeTailStates, (edge) => ({
+      group: edge.group,
+      ...(edge.index === undefined ? {} : { index: edge.index }),
+      tailArtMesh: edge.tailArtMesh,
+    })),
+    license: {
+      id: manifest.license.id,
+      author: manifest.license.author,
+      source: manifest.license.source,
+      commercialUse: manifest.license.commercialUse,
+      redistributable: manifest.license.redistributable,
+    },
+  };
+  return sha256(new TextEncoder().encode(JSON.stringify(canonical, null, 2)));
+}
+
+function orderedRecord<T, U>(
+  value: Record<string, T>,
+  map: (entry: T) => U,
+): Record<string, U> {
+  return Object.fromEntries(Object.keys(value).sort().map((key) => [key, map(value[key]!)]));
+}
+
+function parseVerifiedMotionSpatialProfile(
+  manifest: RuntimeAssetManifestV5,
+  bytesByPath: ReadonlyMap<string, Uint8Array>,
+): MotionSpatialProfileV1 {
+  const bytes = bytesByPath.get(manifest.motionSpatialProfile);
+  if (bytes === undefined) throw new Error("motionSpatialProfile was not loaded");
+  let input: unknown;
+  try {
+    input = JSON.parse(new TextDecoder("utf-8", { fatal: true }).decode(bytes));
+  } catch (error) {
+    throw new Error(`invalid motionSpatialProfile JSON: ${String(error)}`);
+  }
+  const profile = parseMotionSpatialProfileV1(input);
+  if (profile.bodyModuleId !== manifest.bodyModuleId) {
+    throw new Error("motionSpatialProfile bodyModuleId does not match manifest");
+  }
+  return deepFreeze(profile);
+}
+
+function deepFreeze<T>(value: T): T {
+  if (typeof value === "object" && value !== null && !Object.isFrozen(value)) {
+    Object.freeze(value);
+    for (const child of Object.values(value as Record<string, unknown>)) deepFreeze(child);
+  }
+  return value;
+}
+
 export async function loadLive2DAsset(
   petId: string,
-  expectedManifest: RuntimeAssetManifestV2,
+  expectedManifest: RuntimeAssetManifestV2 | RuntimeAssetManifestV4 | RuntimeAssetManifestV5,
   transport: Live2DAssetTransport = defaultTransport,
 ): Promise<Extract<PetRenderAsset, { kind: "live2d" }>> {
-  const expected = parseLive2DManifest(expectedManifest);
+  const parseManifest = (value: unknown): RuntimeAssetManifestV2 | RuntimeAssetManifestV4 | RuntimeAssetManifestV5 => {
+    if (typeof value === "object" && value !== null) {
+      const schemaVersion = (value as { schemaVersion?: unknown }).schemaVersion;
+      if (schemaVersion === 4) return parseCatCharacterManifest(value);
+      if (schemaVersion === 5) return parseCatSpatialManifest(value);
+    }
+    return parseLive2DManifest(value);
+  };
+  const expected = parseManifest(expectedManifest);
   if (expected.petId !== petId) throw new Error("manifest mismatch");
-  const parsed = parseLive2DManifest(await transport.readManifest(petId));
+  const parsed = parseManifest(await transport.readManifest(petId));
   if (parsed.petId !== petId || stableJson(parsed) !== stableJson(expected)) {
     throw new Error("manifest mismatch");
   }
@@ -118,6 +210,9 @@ export async function loadLive2DAsset(
     if (digest !== file.sha256) throw new Error(`sha256 mismatch: ${file.relativePath}`);
     bytesByPath.set(file.relativePath, bytes);
   }
+  const motionSpatialProfile = parsed.schemaVersion === 5
+    ? parseVerifiedMotionSpatialProfile(parsed, bytesByPath)
+    : undefined;
   const urls: string[] = [];
   try {
     const urlsByPath = new Map<string, string>();
@@ -138,12 +233,30 @@ export async function loadLive2DAsset(
     urlsByPath.set(parsed.modelEntry, modelUrl);
     const previewUrl = urlsByPath.get(parsed.previewImage);
     if (previewUrl === undefined) throw new Error("previewImage must be distinct from modelEntry");
+    const isCatManifest = parsed.schemaVersion === 4 || parsed.schemaVersion === 5;
+    const blinkOverlayPath = isCatManifest
+      ? parsed.files.find((file) => file.role === "blink-overlay")?.relativePath
+      : undefined;
+    const blinkOverlayUrl = blinkOverlayPath === undefined ? undefined : urlsByPath.get(blinkOverlayPath);
+    if (blinkOverlayPath !== undefined && blinkOverlayUrl === undefined) {
+      throw new Error("blink overlay file was not published");
+    }
     let disposed = false;
     return {
       kind: "live2d",
       modelUrl,
       previewUrl,
-      semantics: parsed.semantics,
+      ...(isCatManifest ? { catV4: true as const } : {}),
+      ...(motionSpatialProfile === undefined ? {} : { motionSpatialProfile }),
+      ...(blinkOverlayUrl === undefined ? {} : { blinkOverlayUrl }),
+      semantics: isCatManifest
+        ? {
+            motions: parsed.motions,
+            expressions: {},
+            hitAreas: parsed.hitAreas,
+            parameters: parsed.parameters,
+          } satisfies Live2DSemantics
+        : parsed.semantics,
       dispose: () => { if (disposed) return; disposed = true; for (const url of urls) URL.revokeObjectURL(url); },
     };
   } catch (error) {

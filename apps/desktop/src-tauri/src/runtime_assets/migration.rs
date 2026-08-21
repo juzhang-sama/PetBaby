@@ -45,9 +45,10 @@ pub fn migrate_v1_pet_assets(assets_dir: &Path) -> Result<MigrationOutcome, Stri
 
     let manifest = match parsed {
         manifest::RuntimeAssetManifest::V1(manifest) => manifest,
-        manifest::RuntimeAssetManifest::V2(_) | manifest::RuntimeAssetManifest::V3(_) => {
-            return Ok(MigrationOutcome::AlreadyCurrent)
-        }
+        manifest::RuntimeAssetManifest::V2(_)
+        | manifest::RuntimeAssetManifest::V3(_)
+        | manifest::RuntimeAssetManifest::V4(_)
+        | manifest::RuntimeAssetManifest::V5(_) => return Ok(MigrationOutcome::AlreadyCurrent),
     };
     let image = manifest
         .files

@@ -88,6 +88,25 @@ function decodeRgbaPng(data: Uint8Array): Raster {
   return { width, height, pixels };
 }
 
+const productionRasterCache = new Map<string, Promise<Raster>>();
+
+function productionAssetPath(relative: string): string {
+  const absolute = path.resolve(packRoot, relative);
+  const fromPack = path.relative(packRoot, absolute);
+  if (fromPack === ".." || fromPack.startsWith(`..${path.sep}`) || path.isAbsolute(fromPack)) {
+    throw new Error(`production asset path must stay inside the pack: ${relative}`);
+  }
+  return absolute;
+}
+
+function readCachedProductionRaster(relative: string): Promise<Raster> {
+  const cached = productionRasterCache.get(relative);
+  if (cached) return cached;
+  const raster = readFile(productionAssetPath(relative)).then(decodeRgbaPng);
+  productionRasterCache.set(relative, raster);
+  return raster;
+}
+
 async function readProductionPack(): Promise<ComposerPackManifest> {
   return parseComposerPack(JSON.parse(await readFile(path.join(packRoot, "manifest.json"), "utf8")));
 }
@@ -356,6 +375,16 @@ async function canConnectTo(port: number): Promise<boolean> {
 }
 
 describe("production cat composer content", () => {
+  it("reuses one decoded raster for repeated production asset reads", async () => {
+    const relative = "parts/bodies/body-round.png";
+    const [first, second] = await Promise.all([
+      readCachedProductionRaster(relative),
+      readCachedProductionRaster(relative),
+    ]);
+
+    expect(first).toBe(second);
+  });
+
   it("ships the complete fixed-ID cat-cute-v1 pack with legal defaults and motion semantics", async () => {
     const pack = await readProductionPack();
     expect(pack).toMatchObject({ schemaVersion: 1, packId: "cat-cute-v1", packVersion: 1, species: "cat", canvas: { width: 1024, height: 1024 }, layerContractVersion: 1 });
@@ -385,7 +414,7 @@ describe("production cat composer content", () => {
   it("fully decodes every image as transparent non-empty 1024 RGBA", async () => {
     const pack = await readProductionPack();
     for (const relative of declaredPaths(pack)) {
-      const raster = decodeRgbaPng(await readFile(path.join(packRoot, relative)));
+      const raster = await readCachedProductionRaster(relative);
       expect([raster.width, raster.height], relative).toEqual([1024, 1024]);
       const stats = alphaStats(raster);
       expect(stats.visible, relative).toBeGreaterThan(100);
@@ -402,12 +431,12 @@ describe("production cat composer content", () => {
         expect(raster.pixels[(y * 1024 + x) * 4 + 3], relative).toBe(0);
       }
     }
-  });
+  }, 15_000);
 
   it("has no saturated green chroma fringe on semi-transparent silhouette edges", async () => {
     const pack = await readProductionPack();
     for (const relative of declaredPaths(pack)) {
-      const raster = decodeRgbaPng(await readFile(path.join(packRoot, relative)));
+      const raster = await readCachedProductionRaster(relative);
       let fringePixels = 0;
       for (let y = 1; y < raster.height - 1; y += 1) {
         for (let x = 1; x < raster.width - 1; x += 1) {
@@ -432,12 +461,12 @@ describe("production cat composer content", () => {
       }
       expect.soft(fringePixels, `${relative} retains green/olive chroma fringe`).toBe(0);
     }
-  });
+  }, 15_000);
 
   it("keeps every tail away from canvas crops and free of long flat alpha cutoffs", async () => {
     const pack = await readProductionPack();
     for (const tail of pack.tails) {
-      const raster = decodeRgbaPng(await readFile(path.join(packRoot, tail.image)));
+      const raster = await readCachedProductionRaster(tail.image);
       const visible = (x: number, y: number) => raster.pixels[(y * raster.width + x) * 4 + 3]! > 8;
       let left = raster.width;
       let top = raster.height;
@@ -478,7 +507,7 @@ describe("production cat composer content", () => {
   it("keeps each ear root organically curved instead of a long diagonal cut", async () => {
     const pack = await readProductionPack();
     for (const ear of pack.ears) {
-      const raster = decodeRgbaPng(await readFile(path.join(packRoot, ear.image)));
+      const raster = await readCachedProductionRaster(ear.image);
       for (const side of ["left", "right"] as const) {
         const points: Array<[number, number]> = [];
         for (let y = 0; y < raster.height; y += 1) {
@@ -529,10 +558,10 @@ describe("production cat composer content", () => {
   it("keeps every non-empty mask strictly inside its authored part alpha", async () => {
     const pack = await readProductionPack();
     for (const item of [...pack.bodies, ...pack.ears, ...pack.tails]) {
-      const base = decodeRgbaPng(await readFile(path.join(packRoot, item.image)));
+      const base = await readCachedProductionRaster(item.image);
       for (const maskPath of [item.colorMask, item.patternMask]) {
         expect(maskPath).toBeDefined();
-        const mask = decodeRgbaPng(await readFile(path.join(packRoot, maskPath!)));
+        const mask = await readCachedProductionRaster(maskPath!);
         let visible = 0; let outside = 0;
         for (let index = 3; index < mask.pixels.length; index += 4) if (mask.pixels[index]! > 8) {
           visible += 1;
@@ -543,7 +572,7 @@ describe("production cat composer content", () => {
         expect(outside, maskPath).toBe(0);
       }
     }
-  });
+  }, 15_000);
 
   it("includes an explicit black+tuxedo visual stress recipe", () => {
     expect(representativeRecipes).toContainEqual(expect.objectContaining({ colorId: "color-black", patternId: "pattern-tuxedo" }));

@@ -1,9 +1,14 @@
 import { describe, expect, it, vi } from "vitest";
 import type { PetRendererHost } from "./pet-renderer-host";
 import type { PetRendererRuntime } from "./pet-renderer-bootstrap";
+import { DEFAULT_PET_CALIBRATION, type PetCalibrationV1 } from "./pet-calibration";
 import type { PetExpression, PetHitArea, PetMotion, PetMotionHandle, PetRenderAsset, PetRenderer } from "./pet-renderer";
 import { PetRuntimeSlot, type MountedPetRuntime } from "./pet-runtime-slot";
 import { assertVisiblePixels } from "./render-surface-probe";
+
+function calibration(overrides: Partial<PetCalibrationV1> = {}): PetCalibrationV1 {
+  return { ...DEFAULT_PET_CALIBRATION, ...overrides };
+}
 
 function fakeRoot(): HTMLElement {
   return { replaceChildren: vi.fn() } as unknown as HTMLElement;
@@ -19,6 +24,7 @@ function fakeRuntime(petId: string): MountedPetRuntime {
     setExpression: vi.fn((_expression: PetExpression, _weight?: number) => undefined),
     setLookTarget: vi.fn((_target: { x: number; y: number } | null) => undefined),
     setLipSync: vi.fn((_value: number) => undefined),
+    setCalibration: vi.fn((_value: PetCalibrationV1) => undefined),
     hitTest: vi.fn((_point: { x: number; y: number }): PetHitArea | null => null),
     setVisibility: vi.fn((_visible: boolean) => undefined),
     update: vi.fn((_deltaMs: number) => undefined),
@@ -588,6 +594,27 @@ describe("PetRuntimeSlot", () => {
 
     expect(oldRuntime.host.setLipSync).toHaveBeenCalledWith(0.25);
     expect(candidate.host.setLipSync).toHaveBeenCalledWith(0.75);
+  });
+
+  it("keeps calibration scoped to each runtime across rollback", () => {
+    const oldRuntime = fakeRuntime("old");
+    const candidate = fakeRuntime("candidate");
+    const slot = new PetRuntimeSlot(fakeRoot(), oldRuntime);
+    const oldValue = calibration({ breathAmplitudePercent: 1 });
+    const candidateValue = calibration({ breathAmplitudePercent: 5 });
+
+    slot.setCalibration(oldValue);
+    const swap = slot.prepare(candidate);
+
+    expect(candidate.host.setCalibration).not.toHaveBeenCalled();
+
+    swap.activate();
+    slot.setCalibration(candidateValue);
+    swap.rollback();
+
+    expect(oldRuntime.host.setCalibration).toHaveBeenCalledTimes(1);
+    expect(oldRuntime.host.setCalibration).toHaveBeenCalledWith(oldValue);
+    expect(candidate.host.setCalibration).toHaveBeenCalledWith(candidateValue);
   });
 
   it("keeps an activation failure pending until rollback restores a failed surface compensation", () => {

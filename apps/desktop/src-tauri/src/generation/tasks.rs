@@ -16,8 +16,9 @@ pub type SharedGenerationManager = Arc<GenerationManager>;
 pub struct CandidatePaths {
     pub image_path: PathBuf,
     pub cutout_path: PathBuf,
-    pub motion_profile_path: PathBuf,
+    pub motion_profile_path: Option<PathBuf>,
     pub quality: String,
+    pub quality_report: cutout::CandidateQualityReportV1,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -282,6 +283,117 @@ impl GenerationManager {
         )
     }
 
+    pub fn reprocess_green_screen_candidate(&self, job_id: &str) -> Result<bool, String> {
+        validate_component(job_id, "job id")?;
+        let (job, candidate) = {
+            let store = self.store.lock().map_err(|_| "store lock poisoned")?;
+            let job = store.job(job_id)?;
+            let session_id = job
+                .session_id
+                .as_deref()
+                .ok_or("green-screen reprocessing requires an upload session")?;
+            let candidate = store.candidate_for_session(session_id)?;
+            (job, candidate)
+        };
+        let session_id = job
+            .session_id
+            .as_deref()
+            .ok_or("green-screen reprocessing requires an upload session")?;
+        let old_report = candidate
+            .quality_report
+            .as_ref()
+            .ok_or("upload candidate has no quality report")?;
+        let eligible = job.status == "success"
+            && candidate.job_id.as_deref() == Some(job_id)
+            && candidate.quality == "needs-review"
+            && candidate.motion_profile_path.is_none()
+            && old_report.transparent_ratio == 0.0
+            && old_report
+                .reasons
+                .contains(&cutout::QualityReason::NonUniformBackground);
+        if !eligible {
+            return Ok(false);
+        }
+
+        let jobs_root = self.canonical_jobs_root()?;
+        let job_dir = jobs_root.join(job_id);
+        let job_metadata = std::fs::symlink_metadata(&job_dir)
+            .map_err(|error| format!("candidate job directory is unavailable: {error}"))?;
+        if crate::platform::is_link_or_reparse_point(&job_metadata) || !job_metadata.is_dir() {
+            return Err("candidate job directory cannot be a link or reparse point".into());
+        }
+        let canonical_job_dir = job_dir.canonicalize().map_err(|error| error.to_string())?;
+        if canonical_job_dir != job_dir {
+            return Err("candidate job directory escapes the configured jobs root".into());
+        }
+        let raw_path = job_dir.join("raw.png");
+        reject_symbolic_or_non_file(&raw_path)?;
+        let canonical_raw = raw_path.canonicalize().map_err(|error| error.to_string())?;
+        if canonical_raw.parent() != Some(canonical_job_dir.as_path()) {
+            return Err("candidate raw image escapes its job directory".into());
+        }
+        let bytes = std::fs::read(&canonical_raw).map_err(|error| error.to_string())?;
+        let mut staged = self.stage_result(job_id, &bytes)?;
+        let staged_report = staged
+            .quality_report
+            .as_ref()
+            .ok_or("reprocessed candidate has no quality report")?;
+        if staged_report.transparent_ratio <= 0.0
+            || staged_report
+                .reasons
+                .contains(&cutout::QualityReason::NonUniformBackground)
+        {
+            return Ok(false);
+        }
+
+        let request_id = new_entity_id("reprocess-cutout");
+        let _operation =
+            self.mutation_gate
+                .scoped(&request_id, MutationKind::Creation, &job.pet_id)?;
+        let current = self
+            .store
+            .lock()
+            .map_err(|_| "store lock poisoned")?
+            .candidate_for_session(session_id)?;
+        if current.candidate_id != candidate.candidate_id
+            || current.job_id.as_deref() != Some(job_id)
+        {
+            return Err("upload candidate changed during local reprocessing".into());
+        }
+        if current.quality != "needs-review" {
+            return Ok(false);
+        }
+
+        let persisted = self.promote_staged_candidate(&mut staged, &jobs_root, job_id)?;
+        let motion_profile_path = persisted
+            .motion_profile_path
+            .as_ref()
+            .map(|path| path.to_string_lossy());
+        let update = self
+            .store
+            .lock()
+            .map_err(|_| "store lock poisoned")?
+            .replace_upload_candidate_processing(
+                job_id,
+                session_id,
+                &candidate.candidate_id,
+                &jobs_root,
+                &persisted.image_path.to_string_lossy(),
+                &persisted.cutout_path.to_string_lossy(),
+                motion_profile_path.as_deref(),
+                &persisted.quality_report,
+            );
+        if let Err(error) = update {
+            let rollback = staged.rollback();
+            return Err(match rollback {
+                Ok(()) => error,
+                Err(rollback) => format!("{error}; output rollback failed: {rollback}"),
+            });
+        }
+        staged.commit(false);
+        Ok(true)
+    }
+
     fn start_normalized_for_session(
         &self,
         job_id: &str,
@@ -461,19 +573,24 @@ impl GenerationManager {
         reject_symbolic_or_non_file(&raw_path)?;
         std::fs::write(&raw_path, bytes).map_err(|error| error.to_string())?;
         let image = image::load_from_memory(bytes).map_err(|error| error.to_string())?;
-        let (rgba, report) = cutout::remove_background(&image);
+        let cutout = cutout::remove_background(&image);
+        let rgba = cutout.rgba;
+        let report = cutout.report;
         let cutout_path = staged.dir.join("cutout.png");
         reject_symbolic_or_non_file(&cutout_path)?;
         rgba.save(&cutout_path).map_err(|error| error.to_string())?;
-        let profile = motion_profile::generate_motion_profile(&rgba)?;
-        let motion_profile_path = staged.dir.join("motion-profile.json");
-        reject_symbolic_or_non_file(&motion_profile_path)?;
-        motion_profile::write_motion_profile_atomic(&motion_profile_path, &profile)?;
+        if report.is_acceptable() {
+            let profile = motion_profile::generate_motion_profile(&rgba)?;
+            let motion_profile_path = staged.dir.join("motion-profile.json");
+            reject_symbolic_or_non_file(&motion_profile_path)?;
+            motion_profile::write_motion_profile_atomic(&motion_profile_path, &profile)?;
+        }
         staged.quality = if report.is_acceptable() {
             "acceptable".into()
         } else {
             "needs-review".into()
         };
+        staged.quality_report = Some(report);
         Ok(staged)
     }
 
@@ -523,6 +640,10 @@ impl GenerationManager {
         let persisted_result = {
             let store = self.store.lock().map_err(|_| "store lock poisoned")?;
             if let Some(session_id) = job.session_id.as_deref() {
+                let motion_profile_path = persisted
+                    .motion_profile_path
+                    .as_ref()
+                    .map(|path| path.to_string_lossy());
                 store
                     .record_upload_candidate_with_result_url(
                         job_id,
@@ -530,8 +651,8 @@ impl GenerationManager {
                         &self.jobs_dir,
                         &persisted.image_path.to_string_lossy(),
                         &persisted.cutout_path.to_string_lossy(),
-                        &persisted.motion_profile_path.to_string_lossy(),
-                        &persisted.quality,
+                        motion_profile_path.as_deref(),
+                        &persisted.quality_report,
                         result_url,
                     )
                     .map(|_| ())
@@ -680,6 +801,7 @@ impl GenerationManager {
 struct StagedCandidate {
     dir: PathBuf,
     quality: String,
+    quality_report: Option<cutout::CandidateQualityReportV1>,
     target_dir: Option<PathBuf>,
     backup_dir: Option<PathBuf>,
     promoted: bool,
@@ -692,6 +814,7 @@ impl StagedCandidate {
         Self {
             dir,
             quality: String::new(),
+            quality_report: None,
             target_dir: None,
             backup_dir: None,
             promoted: false,
@@ -739,11 +862,19 @@ impl StagedCandidate {
         }
         self.dir = final_dir.clone();
         self.promoted = true;
+        let quality_report = self
+            .quality_report
+            .clone()
+            .ok_or("staged candidate has no quality report")?;
+        let motion_profile_path = quality_report
+            .is_acceptable()
+            .then(|| final_dir.join("motion-profile.json"));
         Ok(CandidatePaths {
             image_path: final_dir.join("raw.png"),
             cutout_path: final_dir.join("cutout.png"),
-            motion_profile_path: final_dir.join("motion-profile.json"),
+            motion_profile_path,
             quality: self.quality.clone(),
+            quality_report,
         })
     }
 
@@ -942,13 +1073,10 @@ mod tests {
     use base64::Engine;
     use image::{DynamicImage, ImageFormat, RgbaImage};
     use std::io::Cursor;
-    use std::sync::atomic::{AtomicU32, Ordering};
     use wiremock::{
         matchers::{method, path},
         Mock, MockServer, ResponseTemplate,
     };
-
-    static COUNTER: AtomicU32 = AtomicU32::new(0);
 
     struct ManagerHarness {
         root: std::path::PathBuf,
@@ -959,6 +1087,8 @@ mod tests {
         pet_id: String,
         png: Vec<u8>,
         gate: SharedPetMutationGate,
+        // Keep last so every SQLite-owning field is dropped before directory cleanup.
+        _cleanup: HarnessRootCleanup,
     }
 
     struct LegacyManagerHarness {
@@ -969,27 +1099,61 @@ mod tests {
         pet_id: String,
         png: Vec<u8>,
         gate: SharedPetMutationGate,
+        // Keep last so every SQLite-owning field is dropped before directory cleanup.
+        _cleanup: HarnessRootCleanup,
     }
 
-    impl Drop for ManagerHarness {
+    struct HarnessRootCleanup {
+        root: std::path::PathBuf,
+    }
+
+    impl Drop for HarnessRootCleanup {
         fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
+            if let Err(error) = std::fs::remove_dir_all(&self.root) {
+                if error.kind() != std::io::ErrorKind::NotFound {
+                    eprintln!(
+                        "failed to remove generation test root {}: {error}",
+                        self.root.display()
+                    );
+                }
+            }
         }
     }
 
-    impl Drop for LegacyManagerHarness {
-        fn drop(&mut self) {
-            let _ = std::fs::remove_dir_all(&self.root);
+    fn claim_harness_root(candidate: &Path) -> std::io::Result<()> {
+        std::fs::create_dir(candidate)
+    }
+
+    const HARNESS_ROOT_CLAIM_ATTEMPTS: usize = 32;
+
+    fn claim_unique_harness_root_with(
+        mut next_candidate: impl FnMut() -> std::path::PathBuf,
+    ) -> std::io::Result<std::path::PathBuf> {
+        for _ in 0..HARNESS_ROOT_CLAIM_ATTEMPTS {
+            let candidate = next_candidate();
+            match claim_harness_root(&candidate) {
+                Ok(()) => return Ok(candidate),
+                Err(error) if error.kind() == std::io::ErrorKind::AlreadyExists => continue,
+                Err(error) => return Err(error),
+            }
         }
+        Err(std::io::Error::new(
+            std::io::ErrorKind::AlreadyExists,
+            format!(
+                "failed to claim a unique generation test root after {HARNESS_ROOT_CLAIM_ATTEMPTS} attempts"
+            ),
+        ))
+    }
+
+    fn claim_unique_harness_root(prefix: &str) -> std::io::Result<std::path::PathBuf> {
+        claim_unique_harness_root_with(|| {
+            std::env::temp_dir().join(format!("desktop-pet-{}", new_entity_id(prefix)))
+        })
     }
 
     fn manager_harness_with_job(create_job: bool) -> ManagerHarness {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!(
-            "desktop-pet-motion-task-{}-{n}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = claim_unique_harness_root("motion-task").unwrap();
+        let cleanup = HarnessRootCleanup { root: root.clone() };
         let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
         let pet = PetRepository::new(storage.clone())
             .create(Species::Cat, IdentityMode::RealPet)
@@ -1033,6 +1197,7 @@ mod tests {
             pet_id: pet.pet_id,
             png: png_bytes(),
             gate,
+            _cleanup: cleanup,
         }
     }
 
@@ -1040,13 +1205,115 @@ mod tests {
         manager_harness_with_job(true)
     }
 
+    #[test]
+    fn manager_harness_drop_removes_storage_root() {
+        let test = manager_harness();
+        let root = test.root.clone();
+
+        drop(test);
+
+        assert!(
+            !root.exists(),
+            "storage root was not removed: {}",
+            root.display()
+        );
+    }
+
+    #[test]
+    fn harness_root_claim_rejects_an_existing_candidate() {
+        let candidate = std::env::temp_dir().join(new_entity_id("generation-claim-existing"));
+        std::fs::create_dir(&candidate).unwrap();
+
+        let error = claim_harness_root(&candidate).unwrap_err();
+
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        std::fs::remove_dir(&candidate).unwrap();
+    }
+
+    #[test]
+    fn harness_root_creation_retries_without_opening_an_existing_database() {
+        let existing = std::env::temp_dir().join(new_entity_id("generation-claim-collision"));
+        let fresh = std::env::temp_dir().join(new_entity_id("generation-claim-fresh"));
+        std::fs::create_dir(&existing).unwrap();
+        let old_database = existing.join("desktop-pet.db");
+        std::fs::write(&old_database, b"must remain untouched").unwrap();
+        let mut candidates = vec![existing.clone(), fresh.clone()].into_iter();
+
+        let claimed = claim_unique_harness_root_with(|| candidates.next().unwrap()).unwrap();
+
+        assert_eq!(claimed, fresh);
+        assert_eq!(
+            std::fs::read(&old_database).unwrap(),
+            b"must remain untouched"
+        );
+        std::fs::remove_dir_all(&existing).unwrap();
+        std::fs::remove_dir(&fresh).unwrap();
+    }
+
+    #[test]
+    fn harness_root_creation_stops_after_32_collisions() {
+        const EXPECTED_ATTEMPTS: usize = 32;
+        assert_eq!(HARNESS_ROOT_CLAIM_ATTEMPTS, EXPECTED_ATTEMPTS);
+        let existing = std::env::temp_dir().join(new_entity_id("generation-claim-exhausted"));
+        std::fs::create_dir(&existing).unwrap();
+        let _cleanup = HarnessRootCleanup {
+            root: existing.clone(),
+        };
+        let sentinel = existing.join("desktop-pet.db");
+        std::fs::write(&sentinel, b"must remain untouched").unwrap();
+        let mut attempts = 0;
+
+        let error = claim_unique_harness_root_with(|| {
+            attempts += 1;
+            assert!(
+                attempts <= EXPECTED_ATTEMPTS,
+                "claim helper requested more than {EXPECTED_ATTEMPTS} candidates"
+            );
+            existing.clone()
+        })
+        .unwrap_err();
+
+        assert_eq!(attempts, EXPECTED_ATTEMPTS);
+        assert_eq!(error.kind(), std::io::ErrorKind::AlreadyExists);
+        assert!(error.to_string().contains(&EXPECTED_ATTEMPTS.to_string()));
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"must remain untouched");
+    }
+
+    #[test]
+    fn harness_root_creation_allows_success_on_final_attempt() {
+        const EXPECTED_ATTEMPTS: usize = 32;
+        assert_eq!(HARNESS_ROOT_CLAIM_ATTEMPTS, EXPECTED_ATTEMPTS);
+        let existing = std::env::temp_dir().join(new_entity_id("generation-claim-last-existing"));
+        let fresh = std::env::temp_dir().join(new_entity_id("generation-claim-last-fresh"));
+        std::fs::create_dir(&existing).unwrap();
+        let _existing_cleanup = HarnessRootCleanup {
+            root: existing.clone(),
+        };
+        let sentinel = existing.join("desktop-pet.db");
+        std::fs::write(&sentinel, b"must remain untouched").unwrap();
+        let mut attempts = 0;
+
+        let claimed = claim_unique_harness_root_with(|| {
+            attempts += 1;
+            if attempts == EXPECTED_ATTEMPTS {
+                fresh.clone()
+            } else {
+                existing.clone()
+            }
+        })
+        .unwrap();
+
+        assert_eq!(attempts, EXPECTED_ATTEMPTS);
+        assert_eq!(claimed, fresh);
+        let _claimed_cleanup = HarnessRootCleanup {
+            root: claimed.clone(),
+        };
+        assert_eq!(std::fs::read(&sentinel).unwrap(), b"must remain untouched");
+    }
+
     fn legacy_manager_harness() -> LegacyManagerHarness {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!(
-            "desktop-pet-legacy-manager-{}-{n}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = claim_unique_harness_root("legacy-manager").unwrap();
+        let cleanup = HarnessRootCleanup { root: root.clone() };
         let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
         let pet = PetRepository::new(storage.clone())
             .create(Species::Cat, IdentityMode::RealPet)
@@ -1068,18 +1335,22 @@ mod tests {
             pet_id: pet.pet_id,
             png: png_bytes(),
             gate,
+            _cleanup: cleanup,
         }
     }
 
     fn png_bytes() -> Vec<u8> {
+        let image = RgbaImage::from_fn(64, 64, |x, y| {
+            if (16..48).contains(&x) && (12..52).contains(&y) {
+                image::Rgba([80, 90, 100, 255])
+            } else {
+                image::Rgba([255, 255, 255, 255])
+            }
+        });
         let mut bytes = Cursor::new(Vec::new());
-        DynamicImage::ImageRgba8(RgbaImage::from_pixel(
-            64,
-            64,
-            image::Rgba([80, 90, 100, 255]),
-        ))
-        .write_to(&mut bytes, ImageFormat::Png)
-        .unwrap();
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
         bytes.into_inner()
     }
 
@@ -1137,6 +1408,39 @@ mod tests {
         ))
         .write_to(&mut bytes, ImageFormat::Png)
         .unwrap();
+        bytes.into_inner()
+    }
+
+    fn varied_green_screen_png_bytes() -> Vec<u8> {
+        let image = RgbaImage::from_fn(200, 200, |x, y| {
+            if (40..160).contains(&x) && (40..160).contains(&y) {
+                image::Rgba([72, 64, 68, 255])
+            } else {
+                let variation = ((x + y) % 40) as u8;
+                image::Rgba([8 + variation, 250 - variation / 2, 6 + variation, 255])
+            }
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
+        bytes.into_inner()
+    }
+
+    fn interior_hole_png_bytes() -> Vec<u8> {
+        let image = RgbaImage::from_fn(64, 64, |x, y| {
+            let inside_subject = (8..56).contains(&x) && (8..56).contains(&y);
+            let inside_hole = (24..40).contains(&x) && (24..40).contains(&y);
+            if inside_subject && !inside_hole {
+                image::Rgba([80, 90, 100, 255])
+            } else {
+                image::Rgba([0, 0, 0, 0])
+            }
+        });
+        let mut bytes = Cursor::new(Vec::new());
+        DynamicImage::ImageRgba8(image)
+            .write_to(&mut bytes, ImageFormat::Png)
+            .unwrap();
         bytes.into_inner()
     }
 
@@ -1236,23 +1540,27 @@ mod tests {
     }
 
     #[test]
-    fn motion_profile_failure_does_not_record_candidate_or_success() {
+    fn empty_cutout_is_persisted_for_review_without_motion_profile() {
         let test = manager_harness();
 
-        assert!(test
-            .manager
+        test.manager
             .complete_download(
                 "job-1",
                 "https://example.invalid/out.png",
                 &uniform_white_png_bytes(),
             )
-            .is_err());
+            .unwrap();
 
         let store = test.manager.store.lock().unwrap();
         let job = store.upload_jobs(&test.session_id).unwrap().remove(0);
-        assert_eq!(job.status, "failed");
-        assert!(store.candidate_for_session(&test.session_id).is_err());
-        assert!(!test.root.join("jobs/job-1").exists());
+        assert_eq!(job.status, "success");
+        let candidate = store.candidate_for_session(&test.session_id).unwrap();
+        assert_eq!(candidate.quality, "needs-review");
+        assert!(candidate.motion_profile_path.is_none());
+        assert!(candidate.quality_report.is_some());
+        assert!(test.root.join("jobs/job-1/raw.png").exists());
+        assert!(test.root.join("jobs/job-1/cutout.png").exists());
+        assert!(!test.root.join("jobs/job-1/motion-profile.json").exists());
         let session: (String, String, String) = test
             .storage
             .lock()
@@ -1267,16 +1575,85 @@ mod tests {
             .unwrap();
         assert_eq!(
             session,
-            ("retryableFailure".into(), "draft".into(), "upload".into())
+            (
+                "candidateReady".into(),
+                "candidateReady".into(),
+                "review".into()
+            )
+        );
+    }
+
+    #[test]
+    fn persisted_opaque_green_candidate_is_reprocessed_locally_without_a_provider_retry() {
+        let test = manager_harness();
+        test.manager
+            .complete_download(
+                "job-1",
+                "https://example.invalid/out.png",
+                &uniform_white_png_bytes(),
+            )
+            .unwrap();
+        std::fs::write(
+            test.root.join("jobs/job-1/raw.png"),
+            varied_green_screen_png_bytes(),
+        )
+        .unwrap();
+        test.storage
+            .lock()
+            .unwrap()
+            .db
+            .execute(
+                "UPDATE appearance_variants
+                 SET quality='needs-review', motion_profile_path=NULL,
+                     quality_report_json=?2
+                 WHERE job_id=?1",
+                rusqlite::params![
+                    "job-1",
+                    r#"{"schemaVersion":1,"status":"needsReview","reasons":["nonUniformBackground"],"opaqueRatio":1.0,"transparentRatio":0.0,"partialAlphaRatio":0.0,"visibleBounds":[0,0,200,200]}"#
+                ],
+            )
+            .unwrap();
+
+        assert!(test
+            .manager
+            .reprocess_green_screen_candidate("job-1")
+            .unwrap());
+
+        let candidate = test
+            .store
+            .lock()
+            .unwrap()
+            .candidate_for_session(&test.session_id)
+            .unwrap();
+        assert_eq!(candidate.quality, "acceptable");
+        assert!(candidate
+            .quality_report
+            .as_ref()
+            .is_some_and(|report| report.is_acceptable()));
+        assert!(candidate
+            .motion_profile_path
+            .as_deref()
+            .is_some_and(|path| path.ends_with("motion-profile.json")));
+        let cutout = image::open(test.root.join("jobs/job-1/cutout.png"))
+            .unwrap()
+            .to_rgba8();
+        assert_eq!(cutout.get_pixel(5, 5)[3], 0);
+        assert_eq!(cutout.get_pixel(100, 100)[3], 255);
+        assert_eq!(
+            test.store
+                .lock()
+                .unwrap()
+                .upload_jobs(&test.session_id)
+                .unwrap()
+                .len(),
+            1
         );
     }
 
     #[test]
     fn candidate_persistence_conflict_marks_generation_job_failed() {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root =
-            std::env::temp_dir().join(format!("desktop-pet-task-{}-{n}", std::process::id()));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = claim_unique_harness_root("task").unwrap();
+        let _cleanup = HarnessRootCleanup { root: root.clone() };
         let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
         let repo = PetRepository::new(storage.clone());
         let pet = repo.create(Species::Cat, IdentityMode::RealPet).unwrap();
@@ -1331,7 +1708,6 @@ mod tests {
             .remove(0);
         assert_eq!(job.status, "failed");
         assert!(job.error.is_some());
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]
@@ -1353,7 +1729,12 @@ mod tests {
         assert!(candidate.body_path.ends_with("cutout.png"));
         assert!(candidate
             .motion_profile_path
-            .ends_with("motion-profile.json"));
+            .as_deref()
+            .is_some_and(|path| path.ends_with("motion-profile.json")));
+        assert!(candidate
+            .quality_report
+            .as_ref()
+            .is_some_and(|report| report.is_acceptable()));
         let jobs = test
             .store
             .lock()
@@ -1365,6 +1746,70 @@ mod tests {
             jobs[0].result_url.as_deref(),
             Some("https://example.invalid/out.png")
         );
+    }
+
+    #[test]
+    fn needs_review_candidate_is_persisted_without_motion_profile() {
+        let test = manager_harness();
+
+        test.manager
+            .complete_download(
+                "job-1",
+                "https://example.invalid/out.png",
+                &interior_hole_png_bytes(),
+            )
+            .unwrap();
+
+        let (image_path, cutout_path, motion_profile_path, quality, quality_report_json): (
+            String,
+            Option<String>,
+            Option<String>,
+            String,
+            Option<String>,
+        ) = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT image_path, cutout_path, motion_profile_path, quality, quality_report_json
+                 FROM appearance_variants WHERE session_id=?1",
+                [&test.session_id],
+                |row| {
+                    Ok((
+                        row.get(0)?,
+                        row.get(1)?,
+                        row.get(2)?,
+                        row.get(3)?,
+                        row.get(4)?,
+                    ))
+                },
+            )
+            .unwrap();
+        assert_eq!(quality, "needs-review");
+        let quality_report_json = quality_report_json.expect("quality report must be persisted");
+        assert!(quality_report_json.contains("interiorHoles"));
+        let report: crate::generation::cutout::CandidateQualityReportV1 =
+            serde_json::from_str(&quality_report_json).unwrap();
+        assert_eq!(
+            serde_json::to_value(&report).unwrap(),
+            serde_json::from_str::<serde_json::Value>(&quality_report_json).unwrap()
+        );
+        assert!(motion_profile_path.is_none());
+        assert!(std::path::Path::new(&image_path).exists());
+        assert!(std::path::Path::new(cutout_path.as_deref().unwrap()).exists());
+        let session_status: String = test
+            .storage
+            .lock()
+            .unwrap()
+            .db
+            .query_row(
+                "SELECT status FROM creation_sessions WHERE session_id=?1",
+                [&test.session_id],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(session_status, "candidateReady");
     }
 
     #[test]
@@ -2268,12 +2713,8 @@ mod tests {
 
     #[test]
     fn cancelling_a_legacy_job_keeps_the_legacy_status_update() {
-        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
-        let root = std::env::temp_dir().join(format!(
-            "desktop-pet-legacy-cancel-{}-{n}",
-            std::process::id()
-        ));
-        std::fs::create_dir_all(&root).unwrap();
+        let root = claim_unique_harness_root("legacy-cancel").unwrap();
+        let _cleanup = HarnessRootCleanup { root: root.clone() };
         let storage = Arc::new(Mutex::new(Storage::open(&root).unwrap()));
         let pet = PetRepository::new(storage.clone())
             .create(Species::Cat, IdentityMode::RealPet)
@@ -2298,7 +2739,6 @@ mod tests {
             store.lock().unwrap().job("job-legacy").unwrap().status,
             "cancelled"
         );
-        let _ = std::fs::remove_dir_all(root);
     }
 
     #[test]

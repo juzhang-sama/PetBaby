@@ -1,0 +1,754 @@
+{
+    "schemaVersion":  2,
+    "mode":  "dry-run",
+    "task8ReleaseCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+    "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+    "authorizationSha256":  "204b3629b2647560c150a035e987a3a923441b7ee05782e32d61d58d34279c76",
+    "authorization":  {
+                          "material":  "non-human-pet",
+                          "provider":  "lk888.ai",
+                          "model":  "gpt-image-2",
+                          "sampleCount":  20,
+                          "maximumAttemptsPerSample":  3
+                      },
+    "moduleBindings":  [
+                           {
+                               "bodyModuleId":  "body-slender-v1",
+                               "workCanvasSha256":  "4bdb94c46d7de2726a9d15453b79ff143a6e1bd860a5ab00778a8474f6778223",
+                               "regionMapSha256":  "96bebc3bc6543c41c89f21429b84116a93f1cd91ee9970f00a73d6e4c46d55a9",
+                               "moduleContractSha256":  "5c74530a17485a985d50e73ce27e207d2836c143dcbdcdfbd66bfe01da47c5d6"
+                           },
+                           {
+                               "bodyModuleId":  "body-balanced-v1",
+                               "workCanvasSha256":  "4bdb94c46d7de2726a9d15453b79ff143a6e1bd860a5ab00778a8474f6778223",
+                               "regionMapSha256":  "96bebc3bc6543c41c89f21429b84116a93f1cd91ee9970f00a73d6e4c46d55a9",
+                               "moduleContractSha256":  "887b29c5fbef5a4957dab9e2af9dd87f49db001043f3c6b2dafc25a1a072ab6e"
+                           },
+                           {
+                               "bodyModuleId":  "body-rounded-v1",
+                               "workCanvasSha256":  "4bdb94c46d7de2726a9d15453b79ff143a6e1bd860a5ab00778a8474f6778223",
+                               "regionMapSha256":  "96bebc3bc6543c41c89f21429b84116a93f1cd91ee9970f00a73d6e4c46d55a9",
+                               "moduleContractSha256":  "437a5f2a43471a140f6e3517879ff297190e79b552ab5fbae8fc8a677e44fad1"
+                           }
+                       ],
+    "photos":  [
+                   {
+                       "ordinal":  1,
+                       "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f",
+                       "bytes":  62665,
+                       "width":  810,
+                       "height":  1080
+                   },
+                   {
+                       "ordinal":  2,
+                       "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06",
+                       "bytes":  189409,
+                       "width":  1080,
+                       "height":  1920
+                   },
+                   {
+                       "ordinal":  3,
+                       "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752",
+                       "bytes":  64114,
+                       "width":  810,
+                       "height":  1080
+                   },
+                   {
+                       "ordinal":  4,
+                       "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75",
+                       "bytes":  465683,
+                       "width":  606,
+                       "height":  720
+                   },
+                   {
+                       "ordinal":  5,
+                       "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3",
+                       "bytes":  99493,
+                       "width":  1080,
+                       "height":  1440
+                   },
+                   {
+                       "ordinal":  6,
+                       "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d",
+                       "bytes":  81008,
+                       "width":  810,
+                       "height":  1080
+                   },
+                   {
+                       "ordinal":  7,
+                       "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223",
+                       "bytes":  71999,
+                       "width":  810,
+                       "height":  1080
+                   },
+                   {
+                       "ordinal":  8,
+                       "sha256":  "2c36362cf7e1e70e7cebe723f542f50e433eb80aa817fc57e81656a928e078d7",
+                       "bytes":  94172,
+                       "width":  896,
+                       "height":  1594
+                   }
+               ],
+    "samples":  [
+                    {
+                        "sampleId":  "sample-01-1p-01",
+                        "photoCount":  1,
+                        "rotationStartOrdinal":  1,
+                        "photos":  [
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-02-1p-02",
+                        "photoCount":  1,
+                        "rotationStartOrdinal":  2,
+                        "photos":  [
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-03-1p-03",
+                        "photoCount":  1,
+                        "rotationStartOrdinal":  3,
+                        "photos":  [
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-04-1p-04",
+                        "photoCount":  1,
+                        "rotationStartOrdinal":  4,
+                        "photos":  [
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-05-1p-05",
+                        "photoCount":  1,
+                        "rotationStartOrdinal":  5,
+                        "photos":  [
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-06-2p-01",
+                        "photoCount":  2,
+                        "rotationStartOrdinal":  1,
+                        "photos":  [
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       },
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-07-2p-02",
+                        "photoCount":  2,
+                        "rotationStartOrdinal":  2,
+                        "photos":  [
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       },
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-08-2p-03",
+                        "photoCount":  2,
+                        "rotationStartOrdinal":  3,
+                        "photos":  [
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-09-2p-04",
+                        "photoCount":  2,
+                        "rotationStartOrdinal":  4,
+                        "photos":  [
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-10-2p-05",
+                        "photoCount":  2,
+                        "rotationStartOrdinal":  5,
+                        "photos":  [
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-11-4p-01",
+                        "photoCount":  4,
+                        "rotationStartOrdinal":  1,
+                        "photos":  [
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       },
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       },
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-12-4p-02",
+                        "photoCount":  4,
+                        "rotationStartOrdinal":  2,
+                        "photos":  [
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       },
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-13-4p-03",
+                        "photoCount":  4,
+                        "rotationStartOrdinal":  3,
+                        "photos":  [
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-14-4p-04",
+                        "photoCount":  4,
+                        "rotationStartOrdinal":  4,
+                        "photos":  [
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       },
+                                       {
+                                           "ordinal":  7,
+                                           "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-15-4p-05",
+                        "photoCount":  4,
+                        "rotationStartOrdinal":  5,
+                        "photos":  [
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       },
+                                       {
+                                           "ordinal":  7,
+                                           "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223"
+                                       },
+                                       {
+                                           "ordinal":  8,
+                                           "sha256":  "2c36362cf7e1e70e7cebe723f542f50e433eb80aa817fc57e81656a928e078d7"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-16-8p-01",
+                        "photoCount":  8,
+                        "rotationStartOrdinal":  1,
+                        "photos":  [
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       },
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       },
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       },
+                                       {
+                                           "ordinal":  7,
+                                           "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223"
+                                       },
+                                       {
+                                           "ordinal":  8,
+                                           "sha256":  "2c36362cf7e1e70e7cebe723f542f50e433eb80aa817fc57e81656a928e078d7"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-17-8p-02",
+                        "photoCount":  8,
+                        "rotationStartOrdinal":  2,
+                        "photos":  [
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       },
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       },
+                                       {
+                                           "ordinal":  7,
+                                           "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223"
+                                       },
+                                       {
+                                           "ordinal":  8,
+                                           "sha256":  "2c36362cf7e1e70e7cebe723f542f50e433eb80aa817fc57e81656a928e078d7"
+                                       },
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-18-8p-03",
+                        "photoCount":  8,
+                        "rotationStartOrdinal":  3,
+                        "photos":  [
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       },
+                                       {
+                                           "ordinal":  7,
+                                           "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223"
+                                       },
+                                       {
+                                           "ordinal":  8,
+                                           "sha256":  "2c36362cf7e1e70e7cebe723f542f50e433eb80aa817fc57e81656a928e078d7"
+                                       },
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       },
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-19-8p-04",
+                        "photoCount":  8,
+                        "rotationStartOrdinal":  4,
+                        "photos":  [
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       },
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       },
+                                       {
+                                           "ordinal":  7,
+                                           "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223"
+                                       },
+                                       {
+                                           "ordinal":  8,
+                                           "sha256":  "2c36362cf7e1e70e7cebe723f542f50e433eb80aa817fc57e81656a928e078d7"
+                                       },
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       },
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       },
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    },
+                    {
+                        "sampleId":  "sample-20-8p-05",
+                        "photoCount":  8,
+                        "rotationStartOrdinal":  5,
+                        "photos":  [
+                                       {
+                                           "ordinal":  5,
+                                           "sha256":  "a3b59ca98dff2c87dc1847888733fa46abf539872cb7fa4dbe01d42faedffdc3"
+                                       },
+                                       {
+                                           "ordinal":  6,
+                                           "sha256":  "f20b676995732962b2655776d30ee7bc7bf781b533bbefa13271f6b69feeda2d"
+                                       },
+                                       {
+                                           "ordinal":  7,
+                                           "sha256":  "6bcc90d08f6d9349e94d358527e368e543f74c187047f8a7b78ce5d26cb99223"
+                                       },
+                                       {
+                                           "ordinal":  8,
+                                           "sha256":  "2c36362cf7e1e70e7cebe723f542f50e433eb80aa817fc57e81656a928e078d7"
+                                       },
+                                       {
+                                           "ordinal":  1,
+                                           "sha256":  "78b4130a1d261bc0c8af6f7e3ef532d32609a84e597f60bfd61e20d307815c2f"
+                                       },
+                                       {
+                                           "ordinal":  2,
+                                           "sha256":  "1c1947e8acc76b21e4a8a9f1b0d1a70db5ff37488929e7f72256867e28dcfa06"
+                                       },
+                                       {
+                                           "ordinal":  3,
+                                           "sha256":  "6e205178e8663d87cef63b71ab79ed02171510bb04fe768ca3c242440497c752"
+                                       },
+                                       {
+                                           "ordinal":  4,
+                                           "sha256":  "bf4b5c929ac044e0c8ac8becca70513a516550097adb20e7c736f5d49857ff75"
+                                       }
+                                   ],
+                        "codeCommit":  "4855e9d13ec0f027864112bf4bceeef59a4e1209",
+                        "provider":  "lk888.ai",
+                        "model":  "gpt-image-2",
+                        "apiContractVersion":  "lk888-media-generate-v1",
+                        "allowedBodyModuleIds":  [
+                                                     "body-slender-v1",
+                                                     "body-balanced-v1",
+                                                     "body-rounded-v1"
+                                                 ],
+                        "minimumChangeRatio":  0.95,
+                        "maximumAttempts":  3
+                    }
+                ]
+}
