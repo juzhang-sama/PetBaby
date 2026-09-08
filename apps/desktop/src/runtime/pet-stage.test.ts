@@ -375,6 +375,33 @@ describe("PetStage", () => {
     await vi.waitFor(() => expect(refreshHitRegion).toHaveBeenCalledTimes(2));
   });
 
+  it("re-applies the hit region when the pet silhouette changes, and not every frame", async () => {
+    const { frame, refreshHitRegion, renderer, root, stage } = harness();
+    let dirty = false;
+    Object.assign(renderer, {
+      consumeSilhouetteDirty: () => {
+        const value = dirty;
+        dirty = false;
+        return value;
+      },
+    });
+    await stage.mount(root);
+    refreshHitRegion.mockClear();
+
+    frame()?.(1_000);
+    await Promise.resolve();
+    expect(refreshHitRegion).not.toHaveBeenCalled();
+
+    dirty = true;
+    frame()?.(2_000);
+    await vi.waitFor(() => expect(refreshHitRegion).toHaveBeenCalledTimes(1));
+
+    frame()?.(3_000);
+    frame()?.(4_000);
+    await Promise.resolve();
+    expect(refreshHitRegion).toHaveBeenCalledTimes(1);
+  });
+
   it("exposes a viewport refresh that resizes the renderer from the current root", async () => {
     const { renderer, root, stage } = harness();
     await stage.mount(root);

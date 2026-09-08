@@ -93,6 +93,10 @@ export class PetRendererHost implements PetRenderer {
     this.current.update(deltaMs);
   }
 
+  consumeSilhouetteDirty(): boolean {
+    return this.current.consumeSilhouetteDirty?.() === true;
+  }
+
   async replace(renderer: PetRenderer, asset: PetRenderAsset): Promise<void> {
     this.assertAlive();
     const generation = ++this.replacementGeneration;

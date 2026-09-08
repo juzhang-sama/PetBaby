@@ -1,0 +1,434 @@
+{
+  "schemaVersion": 7,
+  "renderer": "frame-sequence-v1",
+  "petId": "02-round-tabby",
+  "variantId": "pixel-mid-simple-v1",
+  "displayName": "圆脸狸花猫",
+  "species": "cat",
+  "baseImage": "body.png",
+  "defaultAction": "breath",
+  "anchorPolicy": "fixed",
+  "actions": [
+    {
+      "actionId": "breath",
+      "loop": true,
+      "frameDurationMs": 85,
+      "frames": [
+        "actions/breath/f00.png",
+        "actions/breath/f01.png",
+        "actions/breath/f02.png",
+        "actions/breath/f03.png",
+        "actions/breath/f04.png",
+        "actions/breath/f05.png",
+        "actions/breath/f06.png",
+        "actions/breath/f07.png",
+        "actions/breath/f08.png",
+        "actions/breath/f09.png",
+        "actions/breath/f10.png",
+        "actions/breath/f11.png",
+        "actions/breath/f12.png",
+        "actions/breath/f13.png",
+        "actions/breath/f14.png",
+        "actions/breath/f15.png",
+        "actions/breath/f16.png",
+        "actions/breath/f17.png",
+        "actions/breath/f18.png",
+        "actions/breath/f19.png",
+        "actions/breath/f20.png",
+        "actions/breath/f21.png",
+        "actions/breath/f22.png",
+        "actions/breath/f23.png",
+        "actions/breath/f24.png",
+        "actions/breath/f25.png",
+        "actions/breath/f26.png",
+        "actions/breath/f27.png",
+        "actions/breath/f28.png",
+        "actions/breath/f29.png",
+        "actions/breath/f30.png",
+        "actions/breath/f31.png",
+        "actions/breath/f32.png",
+        "actions/breath/f33.png",
+        "actions/breath/f34.png",
+        "actions/breath/f35.png",
+        "actions/breath/f36.png",
+        "actions/breath/f37.png",
+        "actions/breath/f38.png",
+        "actions/breath/f39.png",
+        "actions/breath/f40.png",
+        "actions/breath/f41.png",
+        "actions/breath/f42.png",
+        "actions/breath/f43.png",
+        "actions/breath/f44.png",
+        "actions/breath/f45.png",
+        "actions/breath/f46.png",
+        "actions/breath/f47.png",
+        "actions/breath/f48.png"
+      ]
+    },
+    {
+      "actionId": "blink",
+      "loop": true,
+      "frameDurationMs": 150,
+      "frames": [
+        "actions/blink/f00.png",
+        "actions/blink/f01.png",
+        "actions/blink/f02.png",
+        "actions/blink/f03.png",
+        "actions/blink/f04.png"
+      ]
+    },
+    {
+      "actionId": "tail-wag",
+      "loop": true,
+      "frameDurationMs": 120,
+      "frames": [
+        "actions/tail-wag/f00.png",
+        "actions/tail-wag/f01.png",
+        "actions/tail-wag/f02.png",
+        "actions/tail-wag/f03.png",
+        "actions/tail-wag/f04.png",
+        "actions/tail-wag/f05.png",
+        "actions/tail-wag/f06.png",
+        "actions/tail-wag/f07.png",
+        "actions/tail-wag/f08.png"
+      ]
+    }
+  ],
+  "semantics": {
+    "idle": "breath",
+    "react-happy": "tail-wag",
+    "react-curious": "tail-wag"
+  },
+  "idleSchedule": {
+    "entries": [
+      {
+        "actionId": "blink",
+        "weight": 1,
+        "minIntervalMs": 2500,
+        "maxIntervalMs": 6000
+      }
+    ]
+  },
+  "files": [
+    {
+      "role": "base",
+      "relativePath": "body.png",
+      "sha256": "99d63fb51c669caf72bb4ab1a9a31675cdccd9b21a40c1098185093f254aeb9f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f00.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f01.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f02.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f03.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f04.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f05.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f06.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f07.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f08.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f09.png",
+      "sha256": "aca89e2a5baa4d55f5cfac6143ea2e73315de341a7c82fb650cc1504596aec1c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f10.png",
+      "sha256": "431e34f9d82bcb25d217b56a3f16473785ddbb2d3892ff93dc447e7583cd8879"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f11.png",
+      "sha256": "9881c76121c0ba504a7f8144ff4a7b099f5451e068696b112c30a7bb1b9b4e14"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f12.png",
+      "sha256": "9881c76121c0ba504a7f8144ff4a7b099f5451e068696b112c30a7bb1b9b4e14"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f13.png",
+      "sha256": "ee203cc3f82ecdd25161ac8e47ed7ad9e76d9883e56a7ef7777608a3943debbb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f14.png",
+      "sha256": "ee203cc3f82ecdd25161ac8e47ed7ad9e76d9883e56a7ef7777608a3943debbb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f15.png",
+      "sha256": "56b3d45560c2bb5a2ed996c7d0faf2a82829bd39fa47ded7b27b88035daf0b69"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f16.png",
+      "sha256": "0325144c1413425687a0955c61b08fde5bb401488a81436245c3c67ff1185985"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f17.png",
+      "sha256": "1065dc5d2ba1b8f02f1c789da47a2a5fab04334cdec55e7a383bbbb2d07812ca"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f18.png",
+      "sha256": "9bd288c9bc4735b0a1c69bd2b15419f3bc39a73101295812692aa5144ba3087c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f19.png",
+      "sha256": "5ffbded28c5ca5938fa280dd4c0fbb9acf39f2d34c1f779e5d21c884d66e8381"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f20.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f21.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f22.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f23.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f24.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f25.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f26.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f27.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f28.png",
+      "sha256": "1b807d544dac59f12d8e3895692a12e11943783bf09a2d4f92533583eb3655e4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f29.png",
+      "sha256": "5ffbded28c5ca5938fa280dd4c0fbb9acf39f2d34c1f779e5d21c884d66e8381"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f30.png",
+      "sha256": "9bd288c9bc4735b0a1c69bd2b15419f3bc39a73101295812692aa5144ba3087c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f31.png",
+      "sha256": "1065dc5d2ba1b8f02f1c789da47a2a5fab04334cdec55e7a383bbbb2d07812ca"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f32.png",
+      "sha256": "c44787109257437e9fb394698931e36771dc2beb7dd370c7101ed2f71505e7b5"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f33.png",
+      "sha256": "56b3d45560c2bb5a2ed996c7d0faf2a82829bd39fa47ded7b27b88035daf0b69"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f34.png",
+      "sha256": "ee203cc3f82ecdd25161ac8e47ed7ad9e76d9883e56a7ef7777608a3943debbb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f35.png",
+      "sha256": "ee203cc3f82ecdd25161ac8e47ed7ad9e76d9883e56a7ef7777608a3943debbb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f36.png",
+      "sha256": "9881c76121c0ba504a7f8144ff4a7b099f5451e068696b112c30a7bb1b9b4e14"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f37.png",
+      "sha256": "9881c76121c0ba504a7f8144ff4a7b099f5451e068696b112c30a7bb1b9b4e14"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f38.png",
+      "sha256": "431e34f9d82bcb25d217b56a3f16473785ddbb2d3892ff93dc447e7583cd8879"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f39.png",
+      "sha256": "aca89e2a5baa4d55f5cfac6143ea2e73315de341a7c82fb650cc1504596aec1c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f40.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f41.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f42.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f43.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f44.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f45.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f46.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f47.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/breath/f48.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/blink/f00.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/blink/f01.png",
+      "sha256": "3e777c305f443697f7464df9bb2b04cddb9ed5ced562c0bda32fe359e47948d9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/blink/f02.png",
+      "sha256": "b268a1da82dc309f341366d123308055a638cad4f1f834502d38240d9328215a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/blink/f03.png",
+      "sha256": "3e777c305f443697f7464df9bb2b04cddb9ed5ced562c0bda32fe359e47948d9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/blink/f04.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f00.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f01.png",
+      "sha256": "2b898b972283d62871ca90bbae7251d7f7f3a9bc390e9b6d66c8dca4b9a22bf7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f02.png",
+      "sha256": "9790f45642c1c5ea569a465f975413674543c644cc747cf029e913f785b34787"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f03.png",
+      "sha256": "2b898b972283d62871ca90bbae7251d7f7f3a9bc390e9b6d66c8dca4b9a22bf7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f04.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f05.png",
+      "sha256": "fa970f31ff16019339a97fa2d765ba5298c0bf4da4c8b01a75f54f2b5bcc71fb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f06.png",
+      "sha256": "5712e5316ffc231ad0033842569dfb21fdf431af05a1ccfd7188d535f4144049"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f07.png",
+      "sha256": "fa970f31ff16019339a97fa2d765ba5298c0bf4da4c8b01a75f54f2b5bcc71fb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "actions/tail-wag/f08.png",
+      "sha256": "d080c3ab0a9daaf2c8d9528d448906ecb20225b9240978d07c3e3b9f59e450f7"
+    }
+  ]
+}

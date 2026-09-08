@@ -12,6 +12,10 @@ import {
   parseCatSpatialManifest,
   type RuntimeAssetManifestV5,
 } from "../runtime-assets/cat-spatial-manifest";
+import {
+  parseFrameSequenceManifest,
+  type RuntimeAssetManifestV7,
+} from "./frame-sequence-manifest";
 
 export const MANIFEST_SCHEMA_VERSION = 1 as const;
 
@@ -110,7 +114,7 @@ export function parseManifestV1(json: unknown): RuntimeAssetManifestV1 {
 
 export function parseRuntimeAssetManifest(
   json: unknown,
-): RuntimeAssetManifestV1 | RuntimeAssetManifestV2 | RuntimeAssetManifestV3 | RuntimeAssetManifestV4 | RuntimeAssetManifestV5 {
+): RuntimeAssetManifestV1 | RuntimeAssetManifestV2 | RuntimeAssetManifestV3 | RuntimeAssetManifestV4 | RuntimeAssetManifestV5 | RuntimeAssetManifestV7 {
   if (typeof json !== "object" || json === null) throw new Error("manifest must be an object");
   switch ((json as Record<string, unknown>).schemaVersion) {
     case 1:
@@ -123,6 +127,9 @@ export function parseRuntimeAssetManifest(
       return parseCatCharacterManifest(json);
     case 5:
       return parseCatSpatialManifest(json);
+    case 6:
+    case 7:
+      return parseFrameSequenceManifest(json);
     default:
       throw new Error(`unsupported schemaVersion: ${String((json as Record<string, unknown>).schemaVersion)}`);
   }

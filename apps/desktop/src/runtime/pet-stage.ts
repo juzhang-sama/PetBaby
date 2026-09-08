@@ -84,6 +84,7 @@ export class PetStage {
   private windowModeTransitionPaused = false;
   private catMotionState: CatMotionSchedulerState = initialCatMotionSchedulerState();
   private catMotionEnabled = false;
+  private hitRegionRefreshing = false;
   private readonly random: () => number;
   private readonly localHour: () => number;
   private frameSampleDeltas: number[] = [];
@@ -252,6 +253,13 @@ export class PetStage {
     this.pointerDown = { x: pointer.screenX, y: pointer.screenY };
     this.dragging = false;
     this.scheduler.setTier("active");
+    // 捕获指针：拖拽时窗口跟着鼠标移动，快速甩动时鼠标会短暂移出窗口，
+    // 不捕获则 pointerup 丢失，松手后猫会"还拎着/还荡"直到某个兜底才释放。
+    try {
+      (event.target as Element | null)?.setPointerCapture?.(pointer.pointerId);
+    } catch {
+      // 某些 WebView 实现或指针类型不支持捕获，忽略即可
+    }
   };
 
   private readonly onPointerEnter = (): void => {
@@ -321,9 +329,11 @@ export class PetStage {
     this.pointerDown = null;
     this.dragging = false;
     if (wasDragging) {
-      await this.windowMotion.endDrag();
+      // 立即释放动作：窗口位置持久化（IPC 读位置 + 写磁盘）放后台，不能阻塞下落动画，
+      // 否则松手后猫会"拎着不动等一会儿"才下落。
       if (this.catMotionEnabled) this.dispatchCatEvent({ type: "drag-end" });
       else this.dispatchEvent({ type: "drag-end" });
+      void this.windowMotion.endDrag();
     } else if (pointer && this.root) {
       const bounds = this.root.getBoundingClientRect();
       const area = this.renderer.hitTest({ x: pointer.x - bounds.left, y: pointer.y - bounds.top });
@@ -387,12 +397,26 @@ export class PetStage {
     });
   }
 
+  /**
+   * 轮廓变了才刷新窗口区域（动作切换级别，不是逐帧）。刷新期间若又切了动作，
+   * 循环会再刷一次，保证下发区域始终对应当前动作。
+   */
   private async refreshHitRegion(): Promise<void> {
+    if (this.hitRegionRefreshing) return;
+    this.hitRegionRefreshing = true;
     try {
-      await this.options.refreshHitRegion?.();
+      do {
+        await this.options.refreshHitRegion?.();
+      } while (this.consumeSilhouetteDirty());
     } catch (error) {
       this.options.diagnose?.("hit-region", error);
+    } finally {
+      this.hitRegionRefreshing = false;
     }
+  }
+
+  private consumeSilhouetteDirty(): boolean {
+    return this.renderer.consumeSilhouetteDirty?.() === true;
   }
 
   private startFrames(): void {
@@ -433,6 +457,7 @@ export class PetStage {
     if (this.catMotionEnabled && deltaMs > 0) this.dispatchCatEvent({ type: "tick", elapsedMs: deltaMs });
     this.renderer.update(deltaMs);
     void this.windowMotion.update(deltaMs).catch((error) => this.options.diagnose?.("window-motion", error));
+    if (this.consumeSilhouetteDirty()) void this.refreshHitRegion();
     if (deltaMs <= 0 || !this.options.onFrameSample) return;
     this.frameSampleDeltas.push(deltaMs);
     this.frameSampleElapsedMs += deltaMs;

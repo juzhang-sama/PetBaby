@@ -8,6 +8,15 @@ use std::sync::{Arc, Mutex};
 
 pub const BUILTIN_PET_ID: &str = "cat-a-standard-v1";
 const LEGACY_BUILTIN_PET_ID: &str = "pet-live2d-v1";
+/// 内置像素宠物（固定帧动作资源协议 schemaVersion 6）。
+/// 与前端 `startup-pet.ts` 的 BUILTIN_PIXEL_PETS 保持同步。
+pub const BUILTIN_PIXEL_PET_IDS: &[&str] = &[
+    "01-longhair-black-white",
+    "02-round-tabby",
+    "03-sleek-black",
+    "04-warm-brown-tabby",
+    "05-silver-tabby",
+];
 const ACTIVE_KEY: &str = "app:active_pet_id";
 
 #[derive(Debug, Clone, serde::Serialize, PartialEq)]
@@ -105,6 +114,7 @@ impl ActivePetService {
         let persisted = self.read_persisted_active()?;
         let active_pet_id = match persisted.as_deref() {
             Some(BUILTIN_PET_ID) => BUILTIN_PET_ID.to_owned(),
+            Some(pet_id) if BUILTIN_PIXEL_PET_IDS.contains(&pet_id) => pet_id.to_owned(),
             Some(LEGACY_BUILTIN_PET_ID) => {
                 self.save_persisted_active(BUILTIN_PET_ID)?;
                 BUILTIN_PET_ID.to_owned()
@@ -200,7 +210,7 @@ impl ActivePetService {
     }
 
     fn describe(&self, pet_id: &str) -> Result<RuntimePetDescriptor, String> {
-        if pet_id == BUILTIN_PET_ID {
+        if pet_id == BUILTIN_PET_ID || BUILTIN_PIXEL_PET_IDS.contains(&pet_id) {
             return Ok(RuntimePetDescriptor {
                 pet_id: pet_id.into(),
                 source: RuntimePetSource::Builtin,
@@ -238,7 +248,7 @@ impl ActivePetService {
             .db
             .transaction()
             .map_err(|error| error.to_string())?;
-        if pet_id != BUILTIN_PET_ID {
+        if pet_id != BUILTIN_PET_ID && !BUILTIN_PIXEL_PET_IDS.contains(&pet_id) {
             let target_exists = tx
                 .query_row(
                     "SELECT 1 FROM pets WHERE pet_id = ?1",
@@ -1003,6 +1013,38 @@ mod tests {
             test.service.prepare(None, "pet-user").unwrap().source,
             RuntimePetSource::Installed
         );
+    }
+
+    #[test]
+    fn prepare_describes_builtin_pixel_pets_without_installation() {
+        let test = ActiveHarness::new();
+        for pet_id in BUILTIN_PIXEL_PET_IDS {
+            assert_eq!(
+                test.service.prepare(None, pet_id).unwrap(),
+                RuntimePetDescriptor {
+                    pet_id: (*pet_id).into(),
+                    source: RuntimePetSource::Builtin,
+                }
+            );
+        }
+    }
+
+    #[test]
+    fn restore_keeps_a_builtin_pixel_pet_active() {
+        let test = ActiveHarness::new();
+        let pet_id = BUILTIN_PIXEL_PET_IDS[0];
+        test.save_active(pet_id);
+        assert_eq!(test.service.restore().unwrap(), pet_id);
+        assert_eq!(test.session_active().as_deref(), Some(pet_id));
+    }
+
+    #[test]
+    fn commit_accepts_a_builtin_pixel_pet_without_installation() {
+        let test = ActiveHarness::new();
+        let pet_id = BUILTIN_PIXEL_PET_IDS[0];
+        test.service.commit(None, pet_id, None, None).unwrap();
+        assert_eq!(test.persisted_active().as_deref(), Some(pet_id));
+        assert_eq!(test.service.active().unwrap(), pet_id);
     }
 
     #[test]

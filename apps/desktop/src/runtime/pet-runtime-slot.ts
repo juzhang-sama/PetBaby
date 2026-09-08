@@ -204,6 +204,11 @@ export class PetRuntimeSlot implements PetRenderer {
     };
   }
 
+  consumeSilhouetteDirty(): boolean {
+    this.assertAlive();
+    return this.active.host.consumeSilhouetteDirty?.() === true;
+  }
+
   supportsCatMotionV1(): boolean {
     this.assertAlive();
     return this.active.host.supportsCatMotionV1();

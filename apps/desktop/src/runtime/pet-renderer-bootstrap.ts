@@ -5,13 +5,15 @@ import type { RuntimeAssetManifestV5 } from "../runtime-assets/cat-spatial-manif
 import { Live2DRenderer } from "../runtime-live2d/live2d-renderer";
 import { loadAnimatedImageAsset } from "./animated-image-asset-loader";
 import { AnimatedImageRenderer } from "./animated-image-renderer";
+import { loadFrameSequenceAsset } from "./frame-sequence-asset-loader";
+import { FrameSequenceRenderer } from "./frame-sequence-renderer";
 import { parseRuntimeAssetManifest, type RuntimeAssetManifestV1 } from "./manifest-schema";
 import { installedPetAssetUrl } from "./pet-asset-url";
 import type { PetRenderer } from "./pet-renderer";
 import { PetRendererHost } from "./pet-renderer-host";
 import { StaticPngRenderer } from "./static-png-renderer";
 
-export type RendererKind = "live2d" | "animated-image" | "static-png";
+export type RendererKind = "live2d" | "animated-image" | "frame-sequence" | "static-png";
 
 type AnimatedPetRenderer = Omit<PetRenderer, "getHitSurface"> & {
   getHitSurface(): HTMLCanvasElement;
@@ -54,8 +56,14 @@ export interface PetRendererBootstrapOptions {
     hitSurface: HTMLCanvasElement,
     composeSurface: HTMLCanvasElement,
   ) => AnimatedPetRenderer;
+  createFrameSequenceRenderer?: (
+    root: HTMLElement,
+    displaySurface: HTMLCanvasElement,
+    hitSurface: HTMLCanvasElement,
+  ) => AnimatedPetRenderer;
   loadLive2DAsset?: typeof loadLive2DAsset;
   loadAnimatedImageAsset?: typeof loadAnimatedImageAsset;
+  loadFrameSequenceAsset?: typeof loadFrameSequenceAsset;
   assetUrl?: (petId: string, relativePath: string) => string;
   diagnose?: (diagnostic: RendererDiagnostic) => void;
   onSurfaceChanged?: () => void | Promise<void>;
@@ -117,6 +125,14 @@ export async function createPetRendererRuntime(
         createCanvas: () => surfaces[surfaceIndex++]!,
       });
     });
+  const createFrameSequenceRenderer = options.createFrameSequenceRenderer
+    ?? ((root, displaySurface, hitSurface) => {
+      const surfaces = [displaySurface, hitSurface];
+      let surfaceIndex = 0;
+      return new FrameSequenceRenderer(root, {
+        createCanvas: () => surfaces[surfaceIndex++]!,
+      });
+    });
   const assetUrl = options.assetUrl ?? installedPetAssetUrl;
 
   const makeStatic = (relativePath: string): Promise<PetRendererRuntime> => createStaticPngRuntime(
@@ -154,6 +170,38 @@ export async function createPetRendererRuntime(
       getSurface: () => displaySurface,
       getHitSurface: () => animatedRenderer.getHitSurface(),
       kind: () => "animated-image",
+      recoverToPreview: async () => undefined,
+    };
+  }
+
+  // schemaVersion 6 由 parseFrameSequenceManifest 归一化成 7，这里只需判 7。
+  if (manifest.schemaVersion === 7) {
+    const displaySurface = createCanvas();
+    displaySurface.className = "pet-render-surface";
+    const hitSurface = createCanvas();
+    const frameRenderer = createFrameSequenceRenderer(
+      options.root,
+      displaySurface,
+      hitSurface,
+    );
+    const host = new PetRendererHost(frameRenderer);
+    try {
+      const asset = await (options.loadFrameSequenceAsset ?? loadFrameSequenceAsset)(
+        petId,
+        manifest,
+        assetUrl,
+      );
+      await host.load(asset);
+      options.root.replaceChildren(displaySurface);
+    } catch (error) {
+      host.destroy();
+      throw error;
+    }
+    return {
+      host,
+      getSurface: () => displaySurface,
+      getHitSurface: () => frameRenderer.getHitSurface(),
+      kind: () => "frame-sequence",
       recoverToPreview: async () => undefined,
     };
   }

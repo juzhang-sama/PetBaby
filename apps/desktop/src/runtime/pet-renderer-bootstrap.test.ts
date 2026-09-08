@@ -2,6 +2,7 @@ import { describe, expect, it, vi } from "vitest";
 import type { RuntimeAssetManifestV2 } from "../runtime-assets/live2d-manifest";
 import type { RuntimeAssetManifestV4 } from "../runtime-assets/cat-character-manifest";
 import { validAnimatedManifest, validMotionProfile } from "./animated-image-test-fixtures";
+import { validV6Manifest } from "./frame-sequence-test-fixtures";
 import type { PetRenderAsset, PetRenderer } from "./pet-renderer";
 import { createPetRendererRuntime, type RendererDiagnostic } from "./pet-renderer-bootstrap";
 
@@ -99,6 +100,23 @@ function harness(options: { liveLoadError?: Error } = {}) {
     motionProfile: validMotionProfile(),
   };
   const createAnimatedRenderer = vi.fn(() => animatedRenderer);
+  const frameSequenceRenderer = Object.assign(fakeRenderer(), {
+    getHitSurface: vi.fn(() => animatedHitSurface),
+  });
+  const frameSequenceAsset: Extract<PetRenderAsset, { kind: "frame-sequence" }> = {
+    kind: "frame-sequence",
+    baseImageUrl: "asset://01-longhair-black-white/body.png",
+    actions: [{
+      actionId: "breath",
+      loop: true,
+      frameDurationMs: 180,
+      frameUrls: ["asset://01-longhair-black-white/actions/breath/f00.png"],
+    }],
+    defaultAction: "breath",
+    semantics: { idle: "breath" },
+    idleSchedule: null,
+  };
+  const createFrameSequenceRenderer = vi.fn(() => frameSequenceRenderer);
   let reloadFailure: ((error: unknown) => void) | undefined;
   const liveAsset: Extract<PetRenderAsset, { kind: "live2d" }> = {
     kind: "live2d",
@@ -112,6 +130,8 @@ function harness(options: { liveLoadError?: Error } = {}) {
     diagnostics,
     animatedRenderer,
     createAnimatedRenderer,
+    frameSequenceRenderer,
+    createFrameSequenceRenderer,
     liveRenderer,
     reload: (error: unknown) => reloadFailure?.(error),
     root,
@@ -129,8 +149,10 @@ function harness(options: { liveLoadError?: Error } = {}) {
         return liveRenderer;
       }),
       createAnimatedRenderer,
+      createFrameSequenceRenderer,
       loadLive2DAsset: vi.fn(async () => liveAsset),
       loadAnimatedImageAsset: vi.fn(async () => animatedAsset),
+      loadFrameSequenceAsset: vi.fn(async () => frameSequenceAsset),
       assetUrl: (petId: string, path: string) => `asset://${petId}/${path}`,
       diagnose: (diagnostic: RendererDiagnostic) => diagnostics.push(diagnostic),
     },
@@ -188,6 +210,26 @@ describe("createPetRendererRuntime", () => {
     expect(test.animatedRenderer.load).toHaveBeenCalledWith(expect.objectContaining({
       kind: "animated-image",
       imageUrl: "asset://pet-user-1/body.png",
+    }));
+    expect(runtime.getSurface()).not.toBe(runtime.getHitSurface());
+    expect(test.options.loadLive2DAsset).not.toHaveBeenCalled();
+    expect(test.options.createLive2DRenderer).not.toHaveBeenCalled();
+  });
+
+  it("boots schema v6 through the frame sequence renderer", async () => {
+    const test = harness();
+
+    const runtime = await createPetRendererRuntime(
+      "01-longhair-black-white",
+      validV6Manifest(),
+      test.options,
+    );
+
+    expect(runtime.kind()).toBe("frame-sequence");
+    expect(test.createFrameSequenceRenderer).toHaveBeenCalledOnce();
+    expect(test.frameSequenceRenderer.load).toHaveBeenCalledWith(expect.objectContaining({
+      kind: "frame-sequence",
+      baseImageUrl: "asset://01-longhair-black-white/body.png",
     }));
     expect(runtime.getSurface()).not.toBe(runtime.getHitSurface());
     expect(test.options.loadLive2DAsset).not.toHaveBeenCalled();

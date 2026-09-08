@@ -1,6 +1,7 @@
 import { describe, expect, it, vi } from "vitest";
 import {
   BUILTIN_LIVE2D_PET,
+  BUILTIN_PIXEL_PETS,
   createBuiltinPetTransport,
   selectStartupPetSource,
 } from "./startup-pet";
@@ -39,6 +40,16 @@ describe("startup pet source", () => {
       manifestUrl: "/builtin-pets/pet-live2d-v1/manifest.json",
       previewUrl: "/builtin-pets/pet-live2d-v1/preview.png",
     });
+  });
+
+  it("treats the built-in pixel pets as built-in sources", () => {
+    expect(BUILTIN_PIXEL_PETS).toHaveLength(5);
+    for (const pet of BUILTIN_PIXEL_PETS) {
+      expect(selectStartupPetSource(pet.petId)).toEqual({
+        kind: "builtin",
+        ...pet,
+      });
+    }
   });
 });
 

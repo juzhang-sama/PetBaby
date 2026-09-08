@@ -1,6 +1,7 @@
 import { describe, expect, it } from "vitest";
 import { parseManifestV1, parseRuntimeAssetManifest, MANIFEST_SCHEMA_VERSION } from "./manifest-schema";
 import { validAnimatedManifest } from "./animated-image-test-fixtures";
+import { validV6Manifest } from "./frame-sequence-test-fixtures";
 import type { RuntimeAssetManifestV5 } from "../runtime-assets/cat-spatial-manifest";
 
 describe("parseManifestV1", () => {
@@ -87,6 +88,16 @@ describe("parseManifestV1", () => {
     });
   });
 
+  it("dispatches schema v6 frame sequence manifests as normalized v7", () => {
+    const parsed = parseRuntimeAssetManifest(validV6Manifest());
+    expect(parsed).toMatchObject({
+      schemaVersion: 7,
+      renderer: "frame-sequence-v1",
+      defaultAction: "breath",
+    });
+    expect("idleSchedule" in parsed).toBe(true);
+  });
+
   it("dispatches a complete schema v4 cat character manifest", () => {
     const motions = Object.fromEntries([
       "breathing", "blink", "ear-twitch", "tail-idle", "pointer-focus", "pet-happy",
@@ -166,6 +177,6 @@ describe("parseManifestV1", () => {
   });
 
   it("rejects unsupported schema versions instead of treating them as v1", () => {
-    expect(() => parseRuntimeAssetManifest({ schemaVersion: 6 })).toThrow(/schemaVersion/i);
+    expect(() => parseRuntimeAssetManifest({ schemaVersion: 99 })).toThrow(/schemaVersion/i);
   });
 });

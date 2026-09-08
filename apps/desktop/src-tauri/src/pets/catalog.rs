@@ -1,5 +1,5 @@
 use crate::creation::domain::CreationMethod;
-use crate::pets::active::{SharedActivePetService, BUILTIN_PET_ID};
+use crate::pets::active::{SharedActivePetService, BUILTIN_PET_ID, BUILTIN_PIXEL_PET_IDS};
 use crate::runtime_assets::{
     loader::inspect_pet_asset,
     manifest::{manifest_identity, parse_manifest},
@@ -106,7 +106,7 @@ impl PetCatalogService {
     pub fn list(&self) -> Result<Vec<PetCatalogEntry>, String> {
         let active_pet_id = self.active.active()?;
         let pets = self.pets()?;
-        let mut entries = Vec::with_capacity(pets.len() + 1);
+        let mut entries = Vec::with_capacity(pets.len() + 1 + BUILTIN_PIXEL_PET_IDS.len());
         entries.push(PetCatalogEntry {
             pet_id: BUILTIN_PET_ID.into(),
             display_name: "默认猫 · Live2D".into(),
@@ -121,6 +121,22 @@ impl PetCatalogService {
             status: PetLifecycle::Ready,
             issue: None,
         });
+        for pet_id in BUILTIN_PIXEL_PET_IDS {
+            entries.push(PetCatalogEntry {
+                pet_id: (*pet_id).into(),
+                display_name: pixel_pet_display_name(pet_id),
+                creation_method: CreationMethod::Upload,
+                source_template_id: None,
+                source: "builtin".into(),
+                species: "cat".into(),
+                identity_mode: "builtin".into(),
+                created_at: None,
+                is_current: active_pet_id == *pet_id,
+                deletable: false,
+                status: PetLifecycle::Ready,
+                issue: None,
+            });
+        }
         for pet in pets {
             let facts = self.facts_for_pet(&pet.pet_id)?;
             let status = if pet.lifecycle == "corrupt" || project(&facts) != PetLifecycle::Ready {
@@ -995,5 +1011,17 @@ mod tests {
 
         assert!(error.contains("unknown creation method"));
         test.cleanup();
+    }
+}
+
+/// 内置像素宠物的展示名。与前端 builtin 资源目录的 displayName 保持一致。
+fn pixel_pet_display_name(pet_id: &str) -> String {
+    match pet_id {
+        "01-longhair-black-white" => "长毛黑白猫".to_owned(),
+        "02-round-tabby" => "圆脸狸花猫".to_owned(),
+        "03-sleek-black" => "修长黑猫".to_owned(),
+        "04-warm-brown-tabby" => "毛砌墙（暖棕虎斑）".to_owned(),
+        "05-silver-tabby" => "建国（银渐层）".to_owned(),
+        _ => pet_id.to_owned(),
     }
 }
