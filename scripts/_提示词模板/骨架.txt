@@ -1,0 +1,88 @@
+=====================================================================
+动作单元 __SERIAL__：__ACTION_NAME__（__ACTION_TYPE__）
+宠物：__DISPLAY_NAME__   母版 taskId __MASTER_TASK_ID__
+首帧图：__FIRST_FRAME__
+        （无损 PNG；若平台只收 JPG 用同目录的 JPG 版本）
+
+架构定位：__ARCH_NOTE__
+取景框复用 idle-combo 的（见第三节，2026-09-03 定版规则）。
+
+★ 本文件由 scripts/poc_生成动作提示词.py 生成，不要手工编辑。
+  改动请改骨架（scripts/_提示词模板/骨架.txt）、动作配置（同目录 <action>.json）
+  或宠物档案（output/宠物档案/<petId>.json），再重新生成。
+=====================================================================
+
+----------------------------------------------------------------------
+【一、主提示词（直接复制粘贴）】
+----------------------------------------------------------------------
+以首帧图作为这只猫唯一的身份、造型、配色、花纹、视角与构图参考。整段视频只出现这一只猫，保持__IDENTITY__完全一致，不重新设计角色、不换姿势、不换风格。
+
+毛色必须与首帧图保持一致：__COAT__。__COAT_GUARD__。首帧图里的毛色是什么样，整段视频每一帧就是什么样。
+
+背景必须是影视级纯色绿幕：整段视频全程保持完全均匀、无纹理、无渐变、无暗角的高饱和纯绿色背景，颜色自始至终绝对不变。不得出现地面、投影、接触阴影、反光、环境光、家具、道具、粒子、光斑、文字、水印，也不得出现任何其他物体或第二只动物。
+
+固定镜头、固定景别、固定机位与固定视角，摄像机完全静止，不做推拉、摇移、旋转、变焦或抖动。猫始终完整位于画面中央，头、耳朵、四只脚掌、尾根与尾尖全程都在画面内，任何部位都不得出画。
+
+__ACTION_SECTION__
+__ACTION_DETAILS__
+__PET_EXTRA__【__TAIL_HEADER__】
+
+__TAIL_REQ__
+
+【严格要求】
+
+__ACTION_STRICT__
+----------------------------------------------------------------------
+
+【二、负向提示词 / 禁止项】
+----------------------------------------------------------------------
+__ACTION_NEGATIVE__, __COAT_NEGATIVE__, human hand, hand, arm, finger, person, human, glove, pliers, clamp, gripper, magnet, string, wire, rope, leash, harness, mechanical arm, robotic arm, sticker, second animal, deformation, melting, flicker, blur, motion blur, camera movement, zoom, pan, tilt, rotation, shake, floor, ground, shadow, cast shadow, contact shadow, gradient, vignette, background change, background object, furniture, room, props, text, watermark, logo, extra limbs, extra tail, extra animal, identity drift, color shift, low quality, compression artifacts
+----------------------------------------------------------------------
+
+【三、★ 取景框余量约束（2026-09-03 定版规则）】
+----------------------------------------------------------------------
+**本动作取景框必须复用 idle-combo 的 __CROP_DESC__**，不能各自 autocrop。
+两支视频同源（同首帧、同 __SOURCE_SIZE__ 画幅），同一 crop box 才能保证触发瞬间不跳变
+（反例：05 的 yawn 各自 autocrop，触发时猫错位 27px）。
+
+当前内容并集（idle-combo ∪ 已有动作）在 __SOURCE_SIZE__ 空间的 bbox =
+x[__UNION_X0__,__UNION_X1__] y[__UNION_Y0__,__UNION_Y1__]，
+剩余余量：上 __MARGIN_TOP__px / 下 __MARGIN_BOTTOM__px / 左 __MARGIN_LEFT__px / 右 __MARGIN_RIGHT__px。
+
+__ACTION_ENVELOPE_RISK__
+
+若生成结果超框：第一选择是改提示词加负向词重生成，
+不要放宽取景框——放宽 = idle-combo 和已有偶发动作一起重出。
+
+【下游管线（视频回来后照此跑）】
+1. poc_抠像.py --video <视频> --out <动作目录/01-抠像> \
+      --method chroma --fps 24 --frame-duration-ms 42 --size 0 --no-autocrop \
+      --color-match __ANCHOR_FRAME__
+2. poc_一次性动作对齐.py --src <动作目录/01-抠像/frames> --out <动作目录/02-帧序列> \
+      --ref-params __REF_PARAMS__ --size __OUTPUT_SIZE__ \
+      --anchor __ANCHOR_FRAME__ --action-id __ACTION_ID__
+3. poc_验收.py --frames <动作目录/02-帧序列/frames> --out <动作目录/03-验收>
+4. poc_一次性动作衔接图.py --frames <动作目录/02-帧序列/frames> \
+      --anchor __ANCHOR_FRAME__ --out <动作目录/04-证据>
+5. poc_一次性动作接入.py --pet-dir __PET_DIR__ --action-name __ACTION_ID__ \
+      --frames-dir <动作目录/02-帧序列/frames> --frame-duration-ms 42 \
+      __PIPELINE_TAIL__
+----------------------------------------------------------------------
+
+【四、生成参数】
+----------------------------------------------------------------------
+模式          ：__GEN_MODE__
+首帧图        ：__FIRST_FRAME__
+__LAST_FRAME_LINE__★★ 画幅比例  ：1:1（必须选！）
+时长          ：__DURATION__ 秒
+----------------------------------------------------------------------
+
+【五、生成后第一件事（关键）】
+----------------------------------------------------------------------
+- __ACTION_REVIEW_HEADLINE__
+__REVIEW_TONGUE_LINE__- __REVIEW_COAT_HINT__
+__REVIEW_EYE_LINE__
+
+如果动作幅度不对 → 调整提示词动作段重生成。
+如果毛色漂移 → 负向词已含对应项，仍漂移则重生成。
+__RUNTIME_WIRING__

@@ -1,0 +1,306 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>并排对比 v1 - 呼吸 + __LABEL__（多版本同步）</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 20px; background: #1b1d21; color: #e6e6e6;
+         font-family: "Microsoft YaHei", system-ui, sans-serif; }
+  h1 { font-size: 17px; margin: 0 0 4px; font-weight: 600; }
+  .sub { font-size: 12px; color: #8b929c; margin-bottom: 14px; line-height: 1.7; }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 10px; }
+  button { background: #2c313a; color: #e6e6e6; border: 1px solid #3d444f;
+            padding: 7px 15px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #363c47; }
+  button.on { background: #3b6fd4; border-color: #4b7fe4; }
+  button.big { background: #2f6b3a; border-color: #3d8a4b; font-weight: 600; }
+  button.big:hover { background: #388043; }
+  #stages { display: flex; gap: 12px; align-items: flex-start; flex-wrap: wrap; margin-top: 6px; }
+  /* 列宽自适应：屏幕窄了三列自动缩窄，不会挤成两行。
+     canvas 用 CSS 缩放，但取样始终按 canvas 的 width 属性（原始像素）算，
+     所以缩放不影响放大窗口对应的区域。 */
+  .col { display: flex; flex-direction: column;
+         flex: 1 1 __DISP__px; max-width: __DISP__px; min-width: 240px; }
+  .stage { border: 2px solid #3d444f; border-radius: 8px;
+           overflow: hidden; line-height: 0; background: #000; }
+  .stage.hot { border-color: #3b6fd4; }
+  .stage.eye { border-color: #4a5464; margin-top: 6px; }
+  canvas { display: block; width: 100%; height: auto; }
+  .cap { font-size: 12px; color: #9aa4b2; padding: 7px 9px; background: #22262c;
+         line-height: 1.6; border-top: 1px solid #3d444f; }
+  .cap b { color: #e6e6e6; }
+  .cap .dur { color: #6fb98a; font-weight: 600; }
+  .meta { font-size: 12px; color: #8b929c; margin-top: 16px; line-height: 1.9; }
+  .meta b { color: #c9d1d9; font-weight: 600; }
+  input[type=range] { width: 150px; vertical-align: middle; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+         background: #2c313a; color: #9aa4b2; min-width: 104px; text-align: center; }
+  .tag.hot { background: #3b6fd4; color: #fff; }
+  .err { color: #ff6b6b; font-size: 13px; margin: 10px 0; padding: 10px;
+         border: 1px solid #6b2b2b; border-radius: 6px; background: #2a1f1f; display: none; }
+  .hint { font-size: 11.5px; color: #6f7783; line-height: 1.8; margin-top: 6px; }
+  .ok { color: #6fb98a; }
+</style>
+</head>
+<body>
+<h1>并排对比：呼吸循环 + 偶发「__LABEL__」· __NV__ 个版本同时播放</h1>
+<div class="sub">
+  所有版本<b>同时触发、同时推进帧号</b>，帧数少的先播完、先回呼吸 —— 快慢差异一眼可见。<br>
+  放大窗口取各版变化区域的<b>并集</b>，保证看的是同一块裁剪；放大已关闭插值，像素硬边不被糊掉。
+</div>
+
+<div id="err" class="err"></div>
+
+<div class="bar">
+  <button id="btnPlay" class="on">暂停</button>
+  <button id="btnNow" class="big">立刻__LABEL__（同时）</button>
+  <button id="btnLoop">连续__LABEL__：关</button>
+  <button id="btnPrev">◀ 上一帧</button>
+  <button id="btnNext">下一帧 ▶</button>
+  <span style="margin-left:8px">状态：</span>
+  <span id="tag" class="tag">呼吸 f0000</span>
+</div>
+
+<div class="bar">
+  <span>连续间隔：</span>
+  <input type="range" id="gapSlider" min="400" max="3000" step="100" value="1200">
+  <span id="gapLabel">1200ms</span>
+  <span style="margin-left:14px">慢放：</span>
+  <input type="range" id="slowSlider" min="1" max="12" value="1">
+  <span id="slowLabel">1× （__FRAMEMS__ms/帧）</span>
+  <span style="margin-left:14px">背景：</span>
+  <button class="bg" data-bg="checker">棋盘格</button>
+  <button class="bg on" data-bg="black">黑</button>
+  <button class="bg" data-bg="white">白</button>
+</div>
+
+<div id="stages"></div>
+
+<div class="meta">
+  <div>呼吸 <b>__BN__</b> 帧 · 周期 <b>__CYC__s</b> ｜ 源尺寸 <b>__W__×__H__</b> ｜
+       放大 <b>__ZOOM__×</b> ｜ 变化区域占画布 <b>__EYEPCT__%</b></div>
+  <div class="hint">
+    怎么比速度：<b>①</b> 开「连续__LABEL__」，盯三列放大窗 —— 帧数少的会明显更"啪"一下；
+    <b>②</b> 拉「慢放」到 6×，用「下一帧」逐步对照每一帧的形态过渡；
+    <b>③</b> 注意看<b>末帧回到呼吸</b>那一下有没有跳变：末帧强度越低，回锚点越平滑。<br>
+    机械自检已确认三版：变化像素 100% 落在目标矩形内、轮廓面积波动 0.000%（身体零跳动）。
+    「<b>身体不动</b>」机械可证，「<b>速度舒不舒服</b>」只能人眼定。
+  </div>
+</div>
+
+<script>
+const CFG = __CONFIG__;
+const EYE = __EYE__;
+const ZOOM = __ZOOM__;
+const DISP = __DISP__;
+const EYEW = __EYEW__, EYEH = __EYEH__;
+
+const errBox = document.getElementById('err');
+const tagEl = document.getElementById('tag');
+const MAXN = Math.max.apply(null, CFG.versions.map(v => v.n));
+
+let bgMode = 'black', playing = true;
+let bIdx = 0, insStep = -1, cycles = 0, slowFactor = 1, loopBlink = false, gapMs = 1200;
+let timer = null, tempTimer = null, tempStep = 0;
+let loaded = 0, need = CFG.versions.length + 1;
+
+function fail(msg) { errBox.style.display = 'block'; errBox.textContent = msg; }
+function harden(c) { c.imageSmoothingEnabled = false; }
+
+function drawChecker(c, w, h, cell) {
+  for (let y = 0; y < h; y += cell)
+    for (let x = 0; x < w; x += cell) {
+      c.fillStyle = (((x / cell | 0) + (y / cell | 0)) % 2 === 0) ? '#eeeeee' : '#c6c6c6';
+      c.fillRect(x, y, cell, cell);
+    }
+}
+function paintBg(c, w, h) {
+  if (bgMode === 'checker') drawChecker(c, w, h, Math.max(8, w / 32 | 0));
+  else { c.fillStyle = bgMode === 'white' ? '#ffffff' : '#000000'; c.fillRect(0, 0, w, h); }
+}
+
+const stagesEl = document.getElementById('stages');
+const stages = CFG.versions.map(v => {
+  const col = document.createElement('div');
+  col.className = 'col';
+  col.innerHTML =
+    '<div class="stage"><canvas width="' + DISP + '" height="' + DISP + '"></canvas></div>' +
+    '<div class="stage eye" style="margin-top:6px">' +
+      '<canvas class="ev" width="' + EYEW + '" height="' + EYEH + '"></canvas></div>' +
+    '<div class="cap"><b>' + v.tag + '</b><br>' +
+      '<span class="dur">' + v.n + ' 帧 / ' + (v.n * CFG.frameMs) + 'ms</span>' +
+      '　<span class="st"></span></div>';
+  stagesEl.appendChild(col);
+  const cs = col.querySelectorAll('canvas');
+  return { v, main: cs[0], eye: cs[1], st: col.querySelector('.st'),
+           mbox: col.children[0], img: null, ok: false };
+});
+
+const baseImg = new Image();
+baseImg.onload = () => { baseImg.ok = true; bump(); };
+baseImg.onerror = () => fail('呼吸精灵图加载失败：' + CFG.baseSheet);
+baseImg.src = CFG.baseSheet;
+
+stages.forEach(s => {
+  s.img = new Image();
+  s.img.onload = () => { s.ok = true; bump(); };
+  s.img.onerror = () => fail('精灵图加载失败：' + s.v.sheet);
+  s.img.src = s.v.sheet;
+});
+
+function bump() { if (++loaded >= need) { render(); if (playing) startTimer(); } }
+
+function drawOne(cv, img, i, cols, ok) {
+  const c = cv.getContext('2d');
+  harden(c);
+  paintBg(c, cv.width, cv.height);
+  if (ok && i >= 0) {
+    const sx = (i % cols) * CFG.cell, sy = ((i / cols) | 0) * CFG.cell;
+    c.drawImage(img, sx, sy, CFG.cell, CFG.cell, 0, 0, cv.width, cv.height);
+  }
+}
+function drawEyeFrom(src, dst) {
+  const c = dst.getContext('2d');
+  harden(c);
+  paintBg(c, dst.width, dst.height);
+  c.drawImage(src, EYE.x * src.width, EYE.y * src.height,
+              EYE.w * src.width, EYE.h * src.height, 0, 0, dst.width, dst.height);
+  c.strokeStyle = 'rgba(90,150,255,0.55)';
+  c.lineWidth = 2;
+  c.strokeRect(1, 1, dst.width - 2, dst.height - 2);
+}
+
+function render() {
+  stages.forEach(s => {
+    const i = (insStep >= 0 && insStep < s.v.n) ? insStep : -1;
+    if (i >= 0) drawOne(s.main, s.img, i, s.v.cols, s.ok);
+    else        drawOne(s.main, baseImg, bIdx, CFG.baseCols, !!baseImg.ok);
+    drawEyeFrom(s.main, s.eye);
+    s.st.textContent = i >= 0 ? ('动作第 ' + (i + 1) + '/' + s.v.n + ' 帧') : '呼吸中';
+    s.mbox.classList.toggle('hot', i >= 0);
+  });
+  const anyIns = insStep >= 0;
+  tagEl.textContent = anyIns ? ('__LABEL__ 第 ' + (insStep + 1) + '/' + MAXN + ' 步')
+                             : ('呼吸 f' + String(bIdx).padStart(4, '0'));
+  tagEl.classList.toggle('hot', anyIns);
+}
+
+// ?auto=N 打开后自动把动作定格在第 N 步（用于截图验收 / 视频录制；不带则正常播放）。
+// 同时暂停呼吸时钟，否则几秒后定时器会把定格擦掉。
+if (/[?&]auto=(\d+)/.test(location.search)) {
+  const step = +RegExp.$1;
+  document.addEventListener('DOMContentLoaded', () => {
+    playing = false;
+    insStep = step;
+    document.getElementById('btnPlay').textContent = '播放';
+    document.getElementById('btnPlay').classList.remove('on');
+    stopTimer(); stopLoop();
+    render();
+  });
+}
+
+function insFrameMs() { return CFG.frameMs * slowFactor; }
+
+function step() {
+  if (insStep >= 0) {
+    insStep++;
+    if (insStep >= MAXN) insStep = -1;
+    render(); return;
+  }
+  bIdx++;
+  if (bIdx >= CFG.baseN) { bIdx = 0; cycles++; }
+  if (!loopBlink && cycles >= __DEFIV__) { cycles = 0; insStep = 0; }
+  render();
+}
+function tick() {
+  step();
+  timer = setTimeout(tick, (insStep >= 0) ? insFrameMs() : CFG.frameMs);
+}
+function startTimer() { stopTimer(); timer = setTimeout(tick, CFG.frameMs); }
+function stopTimer() { if (timer) { clearTimeout(timer); timer = null; } }
+
+// 连续模式：按真实时间重触发（与慢放无关），保证"每 X 毫秒眨一次"的体感稳定
+function loopTick() {
+  if (insStep < 0) insStep = 0;
+  render();
+}
+function startLoop() { stopLoop(); loopTimer = setInterval(loopTick, gapMs); }
+function stopLoop() { if (loopTimer) { clearInterval(loopTimer); loopTimer = null; } }
+let loopTimer = null;
+
+function playOnce() {
+  stopTemp();
+  insStep = 0; render();
+  tempStep = 0;
+  tempTimer = setInterval(() => {
+    tempStep++;
+    if (tempStep >= MAXN) { stopTemp(); insStep = -1; render(); return; }
+    insStep = tempStep; render();
+  }, insFrameMs());
+}
+function stopTemp() { if (tempTimer) { clearInterval(tempTimer); tempTimer = null; } }
+
+function pauseForStepping() {
+  stopTimer(); stopTemp(); playing = false;
+  const b = document.getElementById('btnPlay');
+  b.textContent = '播放'; b.classList.remove('on');
+}
+
+document.getElementById('btnPlay').onclick = (e) => {
+  playing = !playing;
+  e.target.textContent = playing ? '暂停' : '播放';
+  e.target.classList.toggle('on', playing);
+  stopTemp();
+  playing ? startTimer() : stopTimer();
+};
+document.getElementById('btnNow').onclick = () => {
+  if (playing) { stopTimer(); insStep = 0; render(); startTimer(); }
+  else playOnce();
+};
+document.getElementById('btnLoop').onclick = (e) => {
+  loopBlink = !loopBlink;
+  e.target.textContent = '连续__LABEL__：' + (loopBlink ? '开' : '关');
+  e.target.classList.toggle('on', loopBlink);
+  cycles = 0;
+  loopBlink ? startLoop() : stopLoop();
+};
+document.getElementById('btnPrev').onclick = () => {
+  pauseForStepping();
+  if (insStep >= 0) insStep = (insStep - 1 + MAXN) % MAXN;
+  else bIdx = (bIdx - 1 + CFG.baseN) % CFG.baseN;
+  render();
+};
+document.getElementById('btnNext').onclick = () => {
+  pauseForStepping();
+  if (insStep >= 0) { insStep++; if (insStep >= MAXN) insStep = -1; }
+  else insStep = 0;
+  render();
+};
+
+document.querySelectorAll('.bg').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.bg').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); bgMode = b.dataset.bg; render();
+});
+document.getElementById('gapSlider').oninput = (e) => {
+  gapMs = +e.target.value;
+  document.getElementById('gapLabel').textContent = gapMs + 'ms';
+  if (loopBlink) startLoop();
+};
+document.getElementById('slowSlider').oninput = (e) => {
+  slowFactor = +e.target.value;
+  document.getElementById('slowLabel').textContent =
+    slowFactor + '× （' + (CFG.frameMs * slowFactor) + 'ms/帧）';
+};
+
+setTimeout(() => {
+  const bad = stages.filter(s => !s.ok).map(s => s.v.tag);
+  if (!baseImg.ok || bad.length) {
+    fail('图片 2 秒仍未加载完成。失败项：' +
+         ((baseImg.ok ? [] : ['呼吸']).concat(bad)).join('、') +
+         '　请确认 PNG 与本 HTML 在同一目录。');
+  }
+}, 2000);
+</script>
+</body>
+</html>

@@ -14,6 +14,7 @@
 
 from __future__ import annotations
 
+import math
 from collections import deque
 from dataclasses import dataclass
 from typing import Final
@@ -25,7 +26,9 @@ type Point = tuple[int, int]
 
 LOGICAL_GRID_SIZE: Final = 160
 ROOT_SEAM_LENGTH: Final = 7
-TAIL_WAG_ANGLES: Final = (0, 2, 4, 2, 0, -2, -4, -2, 0)
+TAIL_WAVE_FRAME_COUNT: Final = 25
+TAIL_WAVE_PEAK_PIXELS: Final = 7
+TAIL_WAVE_K: Final = 1.5 * math.pi
 
 
 @dataclass(frozen=True, slots=True)
@@ -43,9 +46,14 @@ class TailLayers:
 def make_tail_wag_frames(
     source: np.ndarray, mask_points: tuple[Point, ...], root: Point
 ) -> tuple[np.ndarray, ...]:
-    """Build loop-closing tail-wag frames from separately composited layers."""
+    """Build loop-closing tail-wave frames (traveling wave along the tail)."""
     layers = _build_tail_layers(source, mask_points, root)
-    return tuple(_compose_tail_frame(layers, angle) for angle in TAIL_WAG_ANGLES)
+    tail_alpha = layers.tail_pixels[:, :, 3] > 0
+    distance = _geodesic_distance(tail_alpha, root)
+    return tuple(
+        _compose_wave_frame(layers, distance, 2 * math.pi * i / (TAIL_WAVE_FRAME_COUNT - 1))
+        for i in range(TAIL_WAVE_FRAME_COUNT)
+    )
 
 
 def _build_tail_layers(
@@ -95,24 +103,64 @@ def _neighbors(y: int, x: int) -> tuple[Point, ...]:
     )
 
 
-def _compose_tail_frame(layers: TailLayers, angle: int) -> np.ndarray:
+def _geodesic_distance(tail_alpha: np.ndarray, root: Point) -> np.ndarray:
+    """BFS 测地距离：每个尾巴像素到 root 的沿尾巴最短步数（≈弧长）。"""
+    distance = np.full((LOGICAL_GRID_SIZE, LOGICAL_GRID_SIZE), -1, dtype=np.int32)
+    root_y, root_x = root[1], root[0]
+    if not tail_alpha[root_y, root_x]:
+        ys, xs = np.where(tail_alpha)
+        if len(ys) == 0:
+            return distance
+        squared = (xs - root[0]) ** 2 + (ys - root[1]) ** 2
+        closest = int(np.argmin(squared))
+        root_y, root_x = int(ys[closest]), int(xs[closest])
+    distance[root_y, root_x] = 0
+    queue = deque([(root_y, root_x)])
+    while queue:
+        y, x = queue.popleft()
+        for next_y, next_x in ((y - 1, x), (y, x - 1), (y, x + 1), (y + 1, x)):
+            if (
+                0 <= next_y < LOGICAL_GRID_SIZE
+                and 0 <= next_x < LOGICAL_GRID_SIZE
+                and tail_alpha[next_y, next_x]
+                and distance[next_y, next_x] < 0
+            ):
+                distance[next_y, next_x] = distance[y, x] + 1
+                queue.append((next_y, next_x))
+    return distance
+
+
+def _wave_tail(layers: TailLayers, distance: np.ndarray, phase: float) -> np.ndarray:
+    """逐列上下整数位移（列内不撕裂）+ 根部 seam 锚死。"""
+    tail_alpha = layers.tail_pixels[:, :, 3] > 0
+    max_distance = int(distance.max())
+    if max_distance <= 0:
+        return layers.tail_pixels.copy()
+    moved = np.zeros_like(layers.tail_pixels)
+    for x in range(LOGICAL_GRID_SIZE):
+        column = tail_alpha[:, x]
+        if not column.any():
+            continue
+        s = float(distance[column, x].mean()) / max_distance
+        amplitude = TAIL_WAVE_PEAK_PIXELS * (
+            np.clip(s, 0, 1) ** 2 * (3 - 2 * np.clip(s, 0, 1))
+        )
+        dy = int(round(amplitude * math.sin(phase - TAIL_WAVE_K * s)))
+        ys = np.where(column)[0]
+        new_ys = ys + dy
+        valid = (new_ys >= 0) & (new_ys < LOGICAL_GRID_SIZE)
+        moved[new_ys[valid], x] = layers.tail_pixels[ys[valid], x]
+    moved[layers.seam] = layers.tail_pixels[layers.seam]
+    return moved
+
+
+def _compose_wave_frame(layers: TailLayers, distance: np.ndarray, phase: float) -> np.ndarray:
     frame = layers.baseplate.copy()
-    moved = _rotate_tail_layer(layers, angle)
+    moved = _wave_tail(layers, distance, phase)
     moved_visible = moved[:, :, 3] > 0
     frame[moved_visible] = moved[moved_visible]
     frame[layers.seam] = layers.source[layers.seam]
     return frame
 
 
-def _rotate_tail_layer(layers: TailLayers, angle: int) -> np.ndarray:
-    layer = Image.fromarray(layers.tail_pixels, "RGBA")
-    rotated = layer.rotate(
-        angle,
-        resample=Image.Resampling.NEAREST,
-        center=layers.root,
-        fillcolor=(0, 0, 0, 0),
-    )
-    return np.asarray(rotated, dtype=np.uint8)
-
-
-__all__ = ["TAIL_WAG_ANGLES", "make_tail_wag_frames"]
+__all__ = ["TAIL_WAVE_FRAME_COUNT", "TAIL_WAVE_PEAK_PIXELS", "make_tail_wag_frames"]

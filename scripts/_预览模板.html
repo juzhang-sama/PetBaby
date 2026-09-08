@@ -1,0 +1,284 @@
+<!DOCTYPE html>
+<html lang="zh-CN">
+<head>
+<meta charset="utf-8">
+<title>组合预览 v2 - 呼吸 + __LABEL__</title>
+<style>
+  * { box-sizing: border-box; }
+  body { margin: 0; padding: 24px; background: #1b1d21; color: #e6e6e6;
+         font-family: "Microsoft YaHei", system-ui, sans-serif; }
+  h1 { font-size: 17px; margin: 0 0 4px; font-weight: 600; }
+  .sub { font-size: 12px; color: #8b929c; margin-bottom: 16px; }
+  .bar { display: flex; gap: 10px; align-items: center; flex-wrap: wrap; margin-bottom: 12px; }
+  button { background: #2c313a; color: #e6e6e6; border: 1px solid #3d444f;
+            padding: 7px 15px; border-radius: 6px; cursor: pointer; font-size: 13px; }
+  button:hover { background: #363c47; }
+  button.on { background: #3b6fd4; border-color: #4b7fe4; }
+  button.big { background: #2f6b3a; border-color: #3d8a4b; font-weight: 600; }
+  button.big:hover { background: #388043; }
+  .stages { display: flex; gap: 16px; align-items: flex-start; flex-wrap: wrap; }
+  .stage { display: inline-block; border: 1px solid #3d444f; border-radius: 8px;
+            overflow: hidden; line-height: 0; background: #000; }
+  canvas { display: block; }
+  .cap { font-size: 11px; color: #8b929c; padding: 6px 8px; background: #22262c;
+         line-height: 1.5; border-top: 1px solid #3d444f; }
+  .meta { font-size: 12px; color: #8b929c; margin-top: 14px; line-height: 1.8; }
+  .meta b { color: #c9d1d9; font-weight: 600; }
+  input[type=range] { width: 160px; vertical-align: middle; }
+  .tag { display: inline-block; padding: 2px 8px; border-radius: 4px; font-size: 12px;
+          background: #2c313a; color: #9aa4b2; min-width: 92px; text-align: center; }
+  .tag.hot { background: #3b6fd4; color: #fff; }
+  .err { color: #ff6b6b; font-size: 13px; margin: 10px 0; padding: 10px;
+         border: 1px solid #6b2b2b; border-radius: 6px; background: #2a1f1f; display: none; }
+  .hint { font-size: 11.5px; color: #6f7783; line-height: 1.7; margin-top: 6px; }
+</style>
+</head>
+<body>
+<h1>组合预览 v2：呼吸循环 + 偶发「__LABEL__」</h1>
+<div class="sub">
+  v2 相对 v1 的修复：默认间隔过长导致几乎看不到动作 · 增加局部放大窗口 ·
+  放大时关闭插值（保像素硬边）· 暂停时「立刻动作」可完整播放 · 图片加载失败有明确提示
+</div>
+
+<div id="err" class="err"></div>
+
+<div class="bar">
+  <button id="btnPlay" class="on">暂停</button>
+  <button id="btnNow" class="big">立刻__LABEL__</button>
+  <button id="btnLoop">连续__LABEL__：关</button>
+  <button id="btnPrev">◀ 上一帧</button>
+  <button id="btnNext">下一帧 ▶</button>
+  <span style="margin-left:8px">状态：</span>
+  <span id="tag" class="tag">呼吸 f0000</span>
+</div>
+
+<div class="bar">
+  <span>动作间隔：</span>
+  <input type="range" id="ivSlider" min="1" max="8" value="__DEFIV__">
+  <span id="ivLabel">__DEFIV__ 个呼吸周期（约 __DEFIVSEC__ 秒）</span>
+  <span style="margin-left:14px">慢放：</span>
+  <input type="range" id="slowSlider" min="1" max="12" value="1">
+  <span id="slowLabel">1× （__FRAMEMS__ms/帧）</span>
+</div>
+
+<div class="bar">
+  <span>背景：</span>
+  <button class="bg" data-bg="checker">棋盘格</button>
+  <button class="bg on" data-bg="black">黑</button>
+  <button class="bg" data-bg="white">白</button>
+</div>
+
+<div class="stages">
+  <div>
+    <div class="stage"><canvas id="cv" width="__DISP__" height="__DISP__"></canvas></div>
+    <div class="cap">整体 __DISP__×__DISP__　<span id="capMain"></span></div>
+  </div>
+  <div>
+    <div class="stage"><canvas id="ev" width="__EYEW__" height="__EYEH__"></canvas></div>
+    <div class="cap">眼部放大 __ZOOM__×（关闭插值，保像素硬边）　<span id="capEye"></span></div>
+  </div>
+</div>
+
+<div class="meta">
+  <div>呼吸 <b>__BN__</b> 帧 · 周期 <b>__CYC__s</b> ｜ __LABEL__ <b>__INN__</b> 帧 ·
+       时长 <b>__INDUR__ms</b> ｜ 源尺寸 <b>__W__×__H__</b> ｜ 变化区域占画布 <b>__EYEPCT__%</b></div>
+  <div class="hint">
+    怎么验收：<b>①</b> 先点「连续__LABEL__」，盯放大窗口看动作是否自然；
+    <b>②</b> 拉「慢放」到 6× 以上，逐帧看形态过渡；
+    <b>③</b> 暂停后用「下一帧」精确核对每一帧；
+    <b>④</b> 换白/棋盘格背景，看接缝有没有色差光晕。<br>
+    机械自检已确认：变化像素 100% 落在目标矩形内、轮廓面积波动 0.000%（身体零跳动）。
+    机械判据只能证明"身体不动"，"<b>动作看起来自不自然</b>"仍需人眼确认。
+  </div>
+</div>
+
+<script>
+// 变化区域（归一化）：由动作帧与呼吸锚点帧的差异 bbox 自动反推，无需手工标注
+const EYE = __EYE__;
+const ZOOM = __ZOOM__;
+
+const CFG = __CONFIG__;
+
+const cv = document.getElementById('cv');
+const ctx = cv.getContext('2d');
+const ev = document.getElementById('ev');
+const ectx = ev.getContext('2d');
+const tag = document.getElementById('tag');
+const errBox = document.getElementById('err');
+
+let bgMode = 'black', playing = true;
+let bIdx = 0, iIdx = -1, cycles = 0, interval = __DEFIV__, slowFactor = 1;
+let loopBlink = false;
+let timer = null, tempTimer = null, tempStep = 0;
+let baseOK = false, insOK = false;
+
+function fail(msg) {
+  errBox.style.display = 'block';
+  errBox.textContent = msg;
+}
+
+// 像素画放大必须关插值，否则硬边被插值糊掉，验收"边缘是否硬"就失真了
+function harden(c) { c.imageSmoothingEnabled = false; }
+
+function drawChecker(c, size, cell) {
+  for (let y = 0; y < size; y += cell)
+    for (let x = 0; x < size; x += cell) {
+      c.fillStyle = (((x / cell | 0) + (y / cell | 0)) % 2 === 0) ? '#eeeeee' : '#c6c6c6';
+      c.fillRect(x, y, cell, cell);
+    }
+}
+function paintBackground(c, size) {
+  if (bgMode === 'checker') drawChecker(c, size, Math.max(8, size / 32 | 0));
+  else { c.fillStyle = bgMode === 'white' ? '#ffffff' : '#000000'; c.fillRect(0, 0, size, size); }
+}
+function blit(sheet, i, cols, ok) {
+  paintBackground(ctx, cv.width);
+  if (ok) {
+    const c = CFG.cell;
+    const sx = (i % cols) * c, sy = ((i / cols) | 0) * c;
+    ctx.drawImage(sheet, sx, sy, c, c, 0, 0, cv.width, cv.height);
+  }
+  drawEye();
+}
+function drawEye() {
+  const ex = EYE.x * cv.width, ey = EYE.y * cv.height;
+  const ew = EYE.w * cv.width, eh = EYE.h * cv.height;
+  paintBackground(ectx, ev.width);
+  ectx.drawImage(cv, ex, ey, ew, eh, 0, 0, ev.width, ev.height);
+  ectx.strokeStyle = 'rgba(90,150,255,0.55)';
+  ectx.lineWidth = 2;
+  ectx.strokeRect(1, 1, ev.width - 2, ev.height - 2);
+  document.getElementById('capEye').textContent =
+    `取样 ${Math.round(ew)}×${Math.round(eh)}px → ${ev.width}×${ev.height}px`;
+}
+function render() {
+  harden(ctx); harden(ectx);
+  if (iIdx >= 0) {
+    blit(insSheet, iIdx, CFG.insCols, insOK);
+    tag.textContent = '__LABEL__ f' + String(iIdx).padStart(4, '0');
+    tag.classList.add('hot');
+  } else {
+    blit(baseSheet, bIdx, CFG.baseCols, baseOK);
+    tag.textContent = '呼吸 f' + String(bIdx).padStart(4, '0');
+    tag.classList.remove('hot');
+  }
+  document.getElementById('capMain').textContent =
+    (iIdx >= 0 ? '__LABEL__第 ' + (iIdx + 1) + '/' + CFG.insN + ' 帧'
+               : '呼吸第 ' + (bIdx + 1) + '/' + CFG.baseN + ' 帧');
+}
+
+function insFrameMs() { return CFG.frameMs * slowFactor; }
+
+function step() {
+  if (iIdx >= 0) {
+    iIdx++;
+    if (iIdx >= CFG.insN) iIdx = -1;
+    render(); return;
+  }
+  bIdx++;
+  if (bIdx >= CFG.baseN) { bIdx = 0; cycles++; }
+  if (loopBlink) {
+    // 连续模式：约每 1.2 秒触发一次（按呼吸帧数折算，与慢放无关）
+    if (bIdx % Math.max(1, Math.round(1200 / CFG.frameMs)) === 0) iIdx = 0;
+  } else if (cycles >= interval) {
+    cycles = 0; iIdx = 0;
+  }
+  render();
+}
+
+function tick() {
+  step();
+  // 动作播放中按慢放倍率走，呼吸保持原速
+  timer = setTimeout(tick, (iIdx >= 0) ? insFrameMs() : CFG.frameMs);
+}
+function startTimer() { stopTimer(); timer = setTimeout(tick, CFG.frameMs); }
+function stopTimer() { if (timer) { clearTimeout(timer); timer = null; } }
+
+// 暂停状态下也能完整播完一次动作（v1 的 bug：只渲染第一帧就停住）
+function playOnce() {
+  stopTemp();
+  iIdx = 0; render();
+  tempStep = 0;
+  tempTimer = setInterval(() => {
+    tempStep++;
+    if (tempStep >= CFG.insN) { stopTemp(); iIdx = -1; render(); return; }
+    iIdx = tempStep; render();
+  }, insFrameMs());
+}
+function stopTemp() { if (tempTimer) { clearInterval(tempTimer); tempTimer = null; } }
+
+document.getElementById('btnPlay').onclick = (e) => {
+  playing = !playing;
+  e.target.textContent = playing ? '暂停' : '播放';
+  e.target.classList.toggle('on', playing);
+  stopTemp();
+  playing ? startTimer() : stopTimer();
+};
+document.getElementById('btnNow').onclick = () => {
+  if (playing) { stopTimer(); iIdx = 0; render(); startTimer(); }
+  else playOnce();
+};
+document.getElementById('btnLoop').onclick = (e) => {
+  loopBlink = !loopBlink;
+  e.target.textContent = '连续__LABEL__：' + (loopBlink ? '开' : '关');
+  e.target.classList.toggle('on', loopBlink);
+  cycles = 0;
+};
+document.getElementById('btnPrev').onclick = () => {
+  stopTimer(); stopTemp(); playing = false;
+  document.getElementById('btnPlay').textContent = '播放';
+  document.getElementById('btnPlay').classList.remove('on');
+  if (iIdx >= 0) iIdx = (iIdx - 1 + CFG.insN) % CFG.insN;
+  else bIdx = (bIdx - 1 + CFG.baseN) % CFG.baseN;
+  render();
+};
+document.getElementById('btnNext').onclick = () => {
+  stopTimer(); stopTemp(); playing = false;
+  document.getElementById('btnPlay').textContent = '播放';
+  document.getElementById('btnPlay').classList.remove('on');
+  if (iIdx >= 0) { iIdx++; if (iIdx >= CFG.insN) iIdx = -1; }
+  else iIdx = 0;
+  render();
+};
+
+document.querySelectorAll('.bg').forEach(b => b.onclick = () => {
+  document.querySelectorAll('.bg').forEach(x => x.classList.remove('on'));
+  b.classList.add('on'); bgMode = b.dataset.bg; render();
+});
+document.getElementById('ivSlider').oninput = (e) => {
+  interval = +e.target.value; cycles = 0;
+  document.getElementById('ivLabel').textContent =
+    interval + ' 个呼吸周期（约 ' + (interval * CFG.cycleSec).toFixed(1) + ' 秒）';
+};
+document.getElementById('slowSlider').oninput = (e) => {
+  slowFactor = +e.target.value;
+  document.getElementById('slowLabel').textContent =
+    slowFactor + '× （' + (CFG.frameMs * slowFactor) + 'ms/帧）';
+};
+
+// v1 的 bug：`if (baseSheet && insSheet)` —— new Image() 对象永远 truthy，
+// 图片 404 也会启动动画且无任何提示。改用自然宽度判真实加载成功。
+function onLoad(which) {
+  if (which === 'base') baseOK = true; else insOK = true;
+  if (baseOK && insOK) { render(); startTimer(); }
+}
+const baseSheet = new Image();
+baseSheet.onload = () => onLoad('base');
+baseSheet.onerror = () => fail('呼吸精灵图加载失败：' + CFG.baseSheet +
+  '　（本页依赖同目录下的两张 PNG，请确认它们与 HTML 在一起）');
+const insSheet = new Image();
+insSheet.onload = () => onLoad('ins');
+insSheet.onerror = () => fail('__LABEL__精灵图加载失败：' + CFG.insSheet +
+  '　（本页依赖同目录下的两张 PNG，请确认它们与 HTML 在一起）');
+baseSheet.src = CFG.baseSheet;
+insSheet.src = CFG.insSheet;
+// 兜底：2 秒后仍未就绪就提示，避免"页面看着正常但图没出来"
+setTimeout(() => {
+  if (!baseOK || !insOK) {
+    fail('图片 2 秒仍未加载完成。当前状态：呼吸=' + (baseOK ? 'OK' : '失败') +
+         '，__LABEL__=' + (insOK ? 'OK' : '失败') + '　请检查两张 PNG 是否与 HTML 在同一目录。');
+  }
+}, 2000);
+</script>
+</body>
+</html>

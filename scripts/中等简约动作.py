@@ -1,9 +1,11 @@
 from __future__ import annotations
 
+import math
 from dataclasses import dataclass
 from typing import Literal, Self
 
 import numpy as np
+from PIL import Image, ImageDraw
 from pydantic import BaseModel, ConfigDict, Field, model_validator
 from pydantic_core import PydanticCustomError
 
@@ -14,6 +16,11 @@ type Rect = tuple[int, int, int, int]
 
 LOGICAL_GRID_SIZE = 160
 VISIBLE_COLOR_LIMIT = 24
+BREATH_FRAME_COUNT = 49
+BREATH_PEAK_PIXELS = 2
+BREATH_HEAD_SPAN = 0.30     # 头脸段（breathZone 上 30%）不动
+BREATH_HEAD_RISE = 0.10     # 头脸→胸腹 过渡带宽度（占 breathZone 高度比例）
+BREATH_FOOT_FALL = 0.15     # 腿脚 过渡带宽度
 
 
 @dataclass(frozen=True, slots=True)
@@ -122,8 +129,8 @@ class ActionAuditSpec:
 def make_breath(source: np.ndarray, annotation: MotionAnnotation) -> tuple[np.ndarray, ...]:
     _check_source(source)
     return tuple(
-        _shift_breath_zone(source, annotation.breath_zone, rise)
-        for rise in (0, 1, 1, 2, 2, 1, 1, 0)
+        _inflate_breath_zone(source, annotation, level)
+        for level in _cos_breath_levels(BREATH_FRAME_COUNT, BREATH_PEAK_PIXELS)
     )
 
 
@@ -180,14 +187,95 @@ def audit_action(
     )
 
 
-def _shift_breath_zone(source: np.ndarray, rect: Rect, rise: int) -> np.ndarray:
-    if rise == 0:
+def _cos_breath_levels(n_frames: int, peak: int) -> tuple[float, ...]:
+    """余弦缓动的连续膨胀量（浮点不取整），首尾波谷 0、中间峰值 peak。"""
+    return tuple(
+        peak * (1 - math.cos(2 * math.pi * i / (n_frames - 1))) / 2
+        for i in range(n_frames)
+    )
+
+
+def _smoothstep(t: float) -> float:
+    """0..1 的平滑缓动（smoothstep），两端斜率 0。"""
+    t = min(1.0, max(0.0, t))
+    return t * t * (3 - 2 * t)
+
+
+def _breath_weight(normalized_y: float) -> float:
+    """平台形权重：头脸 0 → 过渡带平滑升到 1 → 胸腹主体 flat=1 → 腿脚过渡带平滑降到 0。
+
+    主体均匀膨胀（消除"中间尖峰向上下衰减"的波浪感），只在两端边界柔和收口。
+    """
+    if normalized_y < BREATH_HEAD_SPAN:
+        return 0.0
+    if normalized_y < BREATH_HEAD_SPAN + BREATH_HEAD_RISE:
+        return _smoothstep((normalized_y - BREATH_HEAD_SPAN) / BREATH_HEAD_RISE)
+    foot_start = 1.0 - BREATH_FOOT_FALL
+    if normalized_y < foot_start:
+        return 1.0
+    if normalized_y < 1.0:
+        return 1.0 - _smoothstep((normalized_y - foot_start) / BREATH_FOOT_FALL)
+    return 0.0
+
+
+def _tail_mask(annotation: MotionAnnotation, size: int = LOGICAL_GRID_SIZE) -> np.ndarray:
+    """尾巴多边形掩码（膨胀时排除，避免拉宽尾巴根）。"""
+    img = Image.new("L", (size, size), 0)
+    ImageDraw.Draw(img).polygon(annotation.tail.mask, fill=1)
+    return np.asarray(img) > 0
+
+
+def _contiguous_segments(mask: np.ndarray) -> list[tuple[int, int]]:
+    """一维布尔掩码的连续 True 段 [(start, end), ...]（闭区间）。"""
+    segs: list[tuple[int, int]] = []
+    idxs = np.nonzero(mask)[0]
+    if len(idxs) == 0:
+        return segs
+    start = int(idxs[0])
+    prev = int(idxs[0])
+    for i in idxs[1:]:
+        if int(i) != prev + 1:
+            segs.append((start, prev))
+            start = int(i)
+        prev = int(i)
+    segs.append((start, prev))
+    return segs
+
+
+def _inflate_breath_zone(source: np.ndarray, annotation: MotionAnnotation, k: float) -> np.ndarray:
+    """横向重采样拉伸：每行身体段拉宽，内部花纹跟着扩散（膨胀感的来源）。
+
+    左右对称（每侧扩 half 像素）、头脸不动、尾巴排除、腿脚不动。
+    k 为浮点膨胀量（余弦曲线），每行 half 按 1px 粒度取整，得到多档过渡。
+    """
+    if k == 0:
         return source.copy()
-    x0, y0, x1, y1 = rect
+    x0, y0, x1, y1 = annotation.breath_zone
+    tail = _tail_mask(annotation)
     frame = source.copy()
-    region = source[y0 : y1 + 1, x0 : x1 + 1]
-    frame[y0 : y1 + 1 - rise, x0 : x1 + 1] = region[rise:]
-    frame[y1 + 1 - rise : y1 + 1, x0 : x1 + 1] = region[-1:]
+    span = max(1, y1 - y0)
+    for y in range(y0, y1 + 1):
+        weight = _breath_weight((y - y0) / span)
+        half = int(round(k * weight))  # 每侧扩 half，左右对称
+        if half <= 0:
+            continue
+        # 身体段 = breathZone x 范围内可见，且排除尾巴 mask
+        alpha = frame[y, x0 : x1 + 1, 3] > 0
+        alpha &= ~tail[y, x0 : x1 + 1]
+        for sl, sr in _contiguous_segments(alpha):
+            seg_n = sr - sl + 1
+            if seg_n < 3:
+                continue
+            nl = max(0, sl - half)
+            nr = min(x1 - x0, sr + half)
+            new_len = nr - nl + 1
+            if new_len <= seg_n:
+                continue
+            # 最近邻重采样：内部花纹像素跟着重新分布（膨胀感关键）
+            idx = np.round(
+                np.arange(new_len) * (seg_n - 1) / max(1, new_len - 1)
+            ).astype(int)
+            frame[y, x0 + nl : x0 + nr + 1] = frame[y, x0 + sl : x0 + sr + 1][idx]
     return frame
 
 

@@ -54,7 +54,7 @@ def build_actions(
 ) -> tuple[ActionDefinition, ...]:
     actions = [
         ActionDefinition(
-            "breath", 180, make_breath(source, annotation), annotation.breath_zone
+            "breath", 85, make_breath(source, annotation), annotation.breath_zone
         ),
         ActionDefinition(
             "blink", 150, make_blink(source, annotation), annotation.eye_bounds
