@@ -2,8 +2,8 @@ use super::domain::{
     parse_appearance_profile_v1, parse_pixel_appearance_profile_v1, AppearanceProfileV1,
     IdentityTraitKey, PhotoAvatarAttemptStep, PhotoAvatarErrorCode, PhotoAvatarSnapshot,
     PhotoAvatarStep, PixelAppearanceProfileV1, PixelIdentityTraitKey, PixelPhotoAvatarSnapshot,
-    PixelPhotoAvatarStep, PixelRemoteStep, PixelStyleProfileId, PHOTO_AVATAR_CONSENT_VERSION,
-    PHOTO_AVATAR_DISCLOSURE_SHA256,
+    PixelPhotoAvatarStep, PixelRemoteStep, PixelStyleProfileId, DEFAULT_PIXEL_STYLE_ID,
+    PHOTO_AVATAR_CONSENT_VERSION, PHOTO_AVATAR_DISCLOSURE_SHA256,
 };
 use super::provider::{CleanupState, UpstreamCleanupState};
 use crate::runtime_assets::manifest::{
@@ -335,6 +335,17 @@ impl PhotoAvatarStore {
         modification: Option<&str>,
         locked: &[PixelIdentityTraitKey],
     ) -> Result<PixelPhotoAvatarRun, String> {
+        // 风格锁（唯一生成闸口）：所有生成路径——begin / regenerate / revise——
+        // 都从这里出发，所以停用风格只在这里拦一次就够，不需要在调用方各写一遍。
+        // 历史会话的 run 行里可能还留着已淘汰风格，regenerate/revise 会把旧值读回来，
+        // 这里必须挡住，否则「淘汰风格借旧会话复活」。
+        if !style_profile_id.is_active_for_generation() {
+            return Err(format!(
+                "style profile {} is retired and cannot be used for generation; use {}",
+                style_profile_id.as_str(),
+                DEFAULT_PIXEL_STYLE_ID.as_str()
+            ));
+        }
         let modification = modification
             .map(str::trim)
             .filter(|value| !value.is_empty());
@@ -2463,7 +2474,7 @@ mod tests {
     fn cancelled_pixel_run_rejects_late_failure() {
         let (store, root) = test_store();
         let run = store
-            .begin_pixel_revision("session-a", PixelStyleProfileId::V1, None, &[])
+            .begin_pixel_revision("session-a", PixelStyleProfileId::V2AnimationReady, None, &[])
             .unwrap();
         store
             .set_pixel_step("session-a", run.revision, PixelPhotoAvatarStep::Cancelled)
@@ -2500,13 +2511,38 @@ mod tests {
     }
 
     #[test]
+    fn pixel_revision_rejects_retired_style() {
+        // 回归锁：已淘汰风格必须开不了新修订，否则它会借历史会话（regenerate/revise
+        // 会把旧 run 行的风格读回来）或第三方直调复活。
+        let (store, root) = test_store();
+        let error = store
+            .begin_pixel_revision("session-a", PixelStyleProfileId::V1Retired, None, &[])
+            .expect_err("retired pixel style must not be able to start a revision");
+
+        assert!(
+            error.contains("pixel-style-v1"),
+            "error must name the retired style: {error}"
+        );
+        assert!(
+            error.contains("retired"),
+            "error must say it is retired: {error}"
+        );
+        assert_eq!(
+            store.pixel_snapshot("session-a").unwrap_err(),
+            "pixel avatar run does not exist",
+            "被拒绝的修订不应留下任何 run"
+        );
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
     fn superseded_pixel_revision_rejects_late_failure() {
         let (store, root) = test_store();
         let old = store
-            .begin_pixel_revision("session-a", PixelStyleProfileId::V1, None, &[])
+            .begin_pixel_revision("session-a", PixelStyleProfileId::V2AnimationReady, None, &[])
             .unwrap();
         let current = store
-            .begin_pixel_revision("session-a", PixelStyleProfileId::V1, None, &[])
+            .begin_pixel_revision("session-a", PixelStyleProfileId::V2AnimationReady, None, &[])
             .unwrap();
 
         assert!(!store
@@ -2522,7 +2558,7 @@ mod tests {
     fn active_pixel_failure_records_safe_error_details() {
         let (store, root) = test_store();
         let run = store
-            .begin_pixel_revision("session-a", PixelStyleProfileId::V1, None, &[])
+            .begin_pixel_revision("session-a", PixelStyleProfileId::V2AnimationReady, None, &[])
             .unwrap();
 
         assert!(store

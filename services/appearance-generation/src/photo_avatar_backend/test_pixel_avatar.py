@@ -16,7 +16,7 @@ from .lk888_client import Lk888Error, MediaState
 from .pixel_avatar import analyze_pixel_identity, audit_pixel_png, generate_pixel_avatar
 from .pixel_png import normalize_pixel_png, pixelate_pixel_png
 from .pixel_prompt import ANALYSIS_UNSUPPORTED_SPECIES
-from .pixel_style import load_pixel_style_pack
+from .pixel_style import DEFAULT_PIXEL_STYLE_ID, load_pixel_style_pack
 
 
 TRAIT_KEYS = (
@@ -59,7 +59,7 @@ def _profile_wire(
     *,
     observed_keys: tuple[str, ...],
     species: str = "cat",
-    style_profile_id: str = "pixel-style-v1",
+    style_profile_id: str = DEFAULT_PIXEL_STYLE_ID,
 ) -> dict[str, object]:
     observed = set(observed_keys)
     return {
@@ -83,7 +83,7 @@ def _request(
     *,
     step: str,
     profile: PixelAppearanceProfile | None,
-    style_profile_id: str = "pixel-style-v1",
+    style_profile_id: str = DEFAULT_PIXEL_STYLE_ID,
 ) -> PixelStepRequest:
     photo = _png()
     return PixelStepRequest(
@@ -124,7 +124,7 @@ class IdentityClient:
             return {
                 "schemaVersion": 1,
                 "species": self.species,
-                "styleProfileId": "pixel-style-v1",
+                "styleProfileId": DEFAULT_PIXEL_STYLE_ID,
                 "traits": [
                     {
                         "key": "faceShape",
@@ -138,7 +138,7 @@ class IdentityClient:
         return {
             "schemaVersion": 1,
             "species": self.species,
-            "styleProfileId": "pixel-style-v1",
+            "styleProfileId": DEFAULT_PIXEL_STYLE_ID,
             "traits": [
                 trait
                 for trait in _profile_wire(observed_keys=(), species=self.species)["traits"]
@@ -271,7 +271,7 @@ def test_identity_analysis_calls_gpt4o_twice_and_merges_all_fifteen_traits() -> 
 
 
 def test_generation_emits_bound_audit_without_style_reference() -> None:
-    style = load_pixel_style_pack("pixel-style-v1")
+    style = load_pixel_style_pack(DEFAULT_PIXEL_STYLE_ID)
     client = ImageClient(_png())
     profile = PixelAppearanceProfile.parse(_profile_wire(observed_keys=("faceShape",)))
     request = _request(step="generatePixelAvatar", profile=profile)
@@ -289,8 +289,9 @@ def test_generation_emits_bound_audit_without_style_reference() -> None:
     assert len(client.images) == 1
     assert client.images[0] == request.source_images[0].png
     assert task_ids == ["108652999"]
+    assert artifact.audit.schema_version == 2
     assert artifact.audit.provider_model == "gpt-image-2"
-    assert artifact.audit.style_profile_id == "pixel-style-v1"
+    assert artifact.audit.style_profile_id == DEFAULT_PIXEL_STYLE_ID
     assert artifact.audit.reference_sha256 == style.reference_sha256
     assert artifact.audit.provider_task_id == "108652999"
     assert artifact.audit.normalized_sha256 == hashlib.sha256(artifact.png).hexdigest()
@@ -325,8 +326,8 @@ def test_v2_generation_emits_animation_ready_audit() -> None:
     assert artifact.audit.to_wire()["paletteColorLimit"] == 24
 
 
-def test_generation_prompt_requires_transparent_edge_margin() -> None:
-    style = load_pixel_style_pack("pixel-style-v1")
+def test_generation_prompt_carries_the_active_style_contract() -> None:
+    style = load_pixel_style_pack(DEFAULT_PIXEL_STYLE_ID)
     client = ImageClient(_png())
     profile = PixelAppearanceProfile.parse(_profile_wire(observed_keys=("faceShape",)))
 
@@ -337,11 +338,13 @@ def test_generation_prompt_requires_transparent_edge_margin() -> None:
         max_wait_seconds=0,
     )
 
-    assert any("at least 4% transparent margin" in prompt for prompt in client.prompts)
+    assert any(style.prompt_contract in prompt for prompt in client.prompts)
+    # 淘汰风格不再泄漏进提示词（pixel-style-v1 合同的独有措辞）
+    assert all("at least 4% transparent margin" not in prompt for prompt in client.prompts)
 
 
 def test_generation_recovers_poll_network_error_without_resubmitting_task() -> None:
-    style = load_pixel_style_pack("pixel-style-v1")
+    style = load_pixel_style_pack(DEFAULT_PIXEL_STYLE_ID)
     client = ImageClient(_png(), poll_failures=1)
     profile = PixelAppearanceProfile.parse(_profile_wire(observed_keys=("faceShape",)))
     task_ids: list[str] = []
@@ -361,7 +364,7 @@ def test_generation_recovers_poll_network_error_without_resubmitting_task() -> N
 
 
 def test_generation_retries_retryable_state_error_without_resubmitting_task() -> None:
-    style = load_pixel_style_pack("pixel-style-v1")
+    style = load_pixel_style_pack(DEFAULT_PIXEL_STYLE_ID)
     client = RetryableStateImageClient(_png())
     profile = PixelAppearanceProfile.parse(_profile_wire(observed_keys=("faceShape",)))
 
@@ -379,7 +382,7 @@ def test_generation_retries_retryable_state_error_without_resubmitting_task() ->
 
 
 def test_generation_retries_unstable_final_state_without_resubmitting_task() -> None:
-    style = load_pixel_style_pack("pixel-style-v1")
+    style = load_pixel_style_pack(DEFAULT_PIXEL_STYLE_ID)
     client = UnstableFinalStateImageClient(_png())
     profile = PixelAppearanceProfile.parse(_profile_wire(observed_keys=("faceShape",)))
 

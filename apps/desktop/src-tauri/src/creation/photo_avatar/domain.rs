@@ -200,8 +200,11 @@ pub struct PixelIdentityTraitV1 {
 
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Hash, Serialize, Deserialize)]
 pub enum PixelStyleProfileId {
+    /// 已停用（2026-09-11）。平滑抗锯齿的伪像素风，观感与现役风格差异极大，
+    /// 极易被误当成「当前画风」。**禁止用于生成**：唯一用途是解析历史 run / 历史审计，
+    /// 保证旧数据仍可读、可展示。任何生成入口都必须走 [`DEFAULT_PIXEL_STYLE_ID`]。
     #[serde(rename = "pixel-style-v1")]
-    V1,
+    V1Retired,
     #[serde(rename = "pixel-style-v2-animation-ready")]
     V2AnimationReady,
 }
@@ -209,14 +212,23 @@ pub enum PixelStyleProfileId {
 impl PixelStyleProfileId {
     pub const fn as_str(self) -> &'static str {
         match self {
-            Self::V1 => "pixel-style-v1",
+            Self::V1Retired => "pixel-style-v1",
             Self::V2AnimationReady => "pixel-style-v2-animation-ready",
         }
     }
 
+    /// 生成入口唯一允许的风格。`false` = 已淘汰，只可用于读取历史数据。
+    ///
+    /// 刻意写成白名单（只有 V2 为真）而不是黑名单：将来新增风格若忘了更新这里，
+    /// 会**拒绝**而不是静默放行。
+    pub const fn is_active_for_generation(self) -> bool {
+        matches!(self, Self::V2AnimationReady)
+    }
+
+    /// 读取历史数据（数据库行、历史审计、历史档案）用。**不是**生成入口。
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
-            "pixel-style-v1" => Ok(Self::V1),
+            "pixel-style-v1" => Ok(Self::V1Retired),
             "pixel-style-v2-animation-ready" => Ok(Self::V2AnimationReady),
             _ => Err("styleProfileId is not supported".into()),
         }
@@ -648,9 +660,9 @@ mod tests {
     }
 
     #[test]
-    fn pixel_profile_parser_accepts_both_supported_style_ids() {
+    fn pixel_profile_parser_accepts_historical_and_active_style_ids() {
         for (style, expected) in [
-            ("pixel-style-v1", PixelStyleProfileId::V1),
+            ("pixel-style-v1", PixelStyleProfileId::V1Retired),
             (
                 "pixel-style-v2-animation-ready",
                 PixelStyleProfileId::V2AnimationReady,
@@ -670,6 +682,20 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn only_v2_is_active_for_generation() {
+        assert!(PixelStyleProfileId::V2AnimationReady.is_active_for_generation());
+        assert!(
+            !PixelStyleProfileId::V1Retired.is_active_for_generation(),
+            "pixel-style-v1 已停用，必须永远无法用于生成"
+        );
+        assert_eq!(
+            PixelStyleProfileId::V1Retired.as_str(),
+            "pixel-style-v1",
+            "停用风格的 wire id 不可改动，否则历史审计/档案会读不出来"
+        );
     }
 
     #[test]

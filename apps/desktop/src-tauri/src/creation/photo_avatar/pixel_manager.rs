@@ -127,6 +127,14 @@ impl PixelPhotoAvatarManager {
         locked_traits: Vec<PixelIdentityTraitKey>,
         sources: Vec<NormalizedPhoto>,
     ) -> Result<PixelPhotoAvatarSnapshot, String> {
+        // 历史会话可能记录着已淘汰风格（regenerate/revise 会把旧值读回来）。
+        // 这里单向前移到现役风格：既保证生成端永远出不了淘汰风格，又不必让用户
+        // 因为一条历史记录就报错。真正的硬闸口在 store.begin_pixel_revision。
+        let style_profile_id = if style_profile_id.is_active_for_generation() {
+            style_profile_id
+        } else {
+            DEFAULT_PIXEL_STYLE_ID
+        };
         let run = self.store.begin_pixel_revision(
             session_id,
             style_profile_id,
@@ -362,7 +370,7 @@ mod tests {
         }
         let store = PhotoAvatarStore::new(storage);
         let revision = store
-            .begin_pixel_revision("session-a", PixelStyleProfileId::V1, None, &[])
+            .begin_pixel_revision("session-a", PixelStyleProfileId::V2AnimationReady, None, &[])
             .unwrap()
             .revision;
 

@@ -29,7 +29,7 @@ fn profile() -> PixelAppearanceProfileV1 {
     PixelAppearanceProfileV1 {
         schema_version: 1,
         species: "cat".into(),
-        style_profile_id: PixelStyleProfileId::V1,
+        style_profile_id: PixelStyleProfileId::V1Retired,
         traits: keys
             .into_iter()
             .map(|key| PixelIdentityTraitV1 {

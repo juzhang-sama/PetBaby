@@ -208,7 +208,7 @@ mod tests {
         }
         let store = PhotoAvatarStore::new(storage);
         let revision = store
-            .begin_pixel_revision("session-a", PixelStyleProfileId::V1, None, &[])
+            .begin_pixel_revision("session-a", PixelStyleProfileId::V2AnimationReady, None, &[])
             .unwrap()
             .revision;
         (store, root, revision)
@@ -217,7 +217,7 @@ mod tests {
     fn request(revision: u32, attempt: u8) -> PixelProviderStepRequest {
         PixelProviderStepRequest {
             route: "pixel-v1".into(),
-            style_profile_id: PixelStyleProfileId::V1,
+            style_profile_id: PixelStyleProfileId::V2AnimationReady,
             session_id: "session-a".into(),
             revision,
             provider_session_id: None,

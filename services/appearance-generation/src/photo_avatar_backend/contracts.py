@@ -9,7 +9,11 @@ from typing import Any, Mapping
 
 from PIL import Image
 
-from .pixel_style import PIXEL_STYLE_V1_ID, SUPPORTED_PIXEL_STYLE_IDS
+from .pixel_style import (
+    DEFAULT_PIXEL_STYLE_ID,
+    KNOWN_PIXEL_STYLE_IDS,
+    SUPPORTED_PIXEL_STYLE_IDS,
+)
 
 
 class ContractError(ValueError):
@@ -176,7 +180,7 @@ class PixelAppearanceProfile:
             raise ContractError("pixel profile schemaVersion must be 1")
         if payload["species"] not in ("cat", "dog"):
             raise ContractError("pixel profile species must be cat or dog")
-        style_profile_id = _require_supported_pixel_style(payload["styleProfileId"])
+        style_profile_id = _require_known_pixel_style(payload["styleProfileId"])
         raw_traits = payload["traits"]
         raw_summary = payload["completionSummary"]
         if not isinstance(raw_traits, list) or not isinstance(raw_summary, list):
@@ -230,12 +234,14 @@ class PixelStepRequest:
         fields = legacy_fields | {"styleProfileId"}
         payload_fields = frozenset(payload)
         if payload_fields == legacy_fields:
-            style_profile_id = PIXEL_STYLE_V1_ID
-        elif payload_fields == fields:
-            style_profile_id = _require_supported_pixel_style(payload["styleProfileId"])
-        else:
-            _require_exact_fields(payload, fields)
-            raise AssertionError("unreachable")
+            # 旧格式（不带 styleProfileId）以前会静默落到 pixel-style-v1。
+            # 该风格已停用，这里显式拒绝，避免淘汰风格借旧格式复活。
+            raise ContractError(
+                "styleProfileId is required; pixel-style-v1 is retired, "
+                f"send {DEFAULT_PIXEL_STYLE_ID}"
+            )
+        _require_exact_fields(payload, fields)
+        style_profile_id = _require_supported_pixel_style(payload["styleProfileId"])
         if payload["route"] != "pixel-v1":
             raise ContractError("pixel request route must be pixel-v1")
         step = _require_string(payload, "step")
@@ -313,7 +319,20 @@ def _require_exact_fields(payload: Mapping[str, Any], expected: frozenset[str]) 
 
 
 def _require_supported_pixel_style(value: Any) -> str:
+    """**生成闸口**：只放行现役风格，停用风格在这里被拒。"""
     if not isinstance(value, str) or value not in SUPPORTED_PIXEL_STYLE_IDS:
+        raise ContractError("pixel styleProfileId is not supported")
+    return value
+
+
+def _require_known_pixel_style(value: Any) -> str:
+    """**数据格式**校验（档案/审计用）：停用风格是合法取值，历史数据要读得出来。
+
+    这里不做生成决策——生成决策在 `PixelStepRequest.parse` 的顶层 `styleProfileId`
+    （`_require_supported_pixel_style`）加上「profile 必须与请求同风格」的交叉校验，
+    所以一份 v1 档案既进不了 v2 请求，也开不了新修订。
+    """
+    if not isinstance(value, str) or value not in KNOWN_PIXEL_STYLE_IDS:
         raise ContractError("pixel styleProfileId is not supported")
     return value
 

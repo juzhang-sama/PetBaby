@@ -23,7 +23,7 @@ from photo_avatar_backend.pipelines import TextureArtifact  # noqa: E402
 from photo_avatar_backend.pixel_avatar import PixelAvatarArtifact  # noqa: E402
 from photo_avatar_backend.pixel_audit import (  # noqa: E402
     PixelAlphaReportV1,
-    PixelAvatarAuditV1,
+    PixelAvatarAuditV2,
 )
 
 
@@ -238,18 +238,18 @@ class PixelRunner:
             sha256=sha256,
             width=1024,
             height=1024,
-            audit=PixelAvatarAuditV1(
-                schema_version=1,
+            audit=PixelAvatarAuditV2(
+                schema_version=2,
                 session_id="desktop-session-1",
                 revision=0,
                 attempt=1,
                 provider="lk888",
                 provider_model="gpt-image-2",
                 provider_task_id="108652999",
-                style_profile_id="pixel-style-v1",
-                style_profile_sha256="342d61eaf88eecba41bbb7a21c76c000aa16d6b86dce03ef570431f746e34830",
-                reference_sha256="5ebbaece6553ffa450731660aa0d3fbb208d8f2761e48eabfe696bc20a39447a",
-                prompt_template_version="pixel-style-v1-prompt-v1",
+                style_profile_id="pixel-style-v2-animation-ready",
+                style_profile_sha256="2a48f382d0d0a579010ffae2ce90a7693d364a0cf64e5463e0ce7bf0291ee4ab",
+                reference_sha256="75171817d27aee72439f373317ad0a3f43bdb2f8a76b0f8c55e24c306ac46c85",
+                prompt_template_version="pixel-style-v2-animation-ready-prompt-v2",
                 identity_profile_sha256="3" * 64,
                 provider_raw_sha256=sha256,
                 normalized_sha256=sha256,
@@ -277,6 +277,15 @@ class PixelRunner:
                 error_code=None,
                 created_at="2026-08-18T00:00:00+00:00",
                 completed_at="2026-08-18T00:00:01+00:00",
+                logical_grid_size=160,
+                palette_color_limit=24,
+                visible_color_count=1,
+                quantize_method="maxcoverage",
+                dither="none",
+                protected_accent_slots=4,
+                protected_accent_count=0,
+                downsample="box",
+                upsample="nearest",
             ),
         )
 
@@ -438,12 +447,13 @@ def test_pixel_job_returns_pixel_avatar_result_without_live2d_audit_fields(tmp_p
     payload = _request()
     payload.update(
         route="pixel-v1",
+        styleProfileId="pixel-style-v2-animation-ready",
         providerSessionId="provider-pixel-1",
         step="generatePixelAvatar",
         profile={
             "schemaVersion": 1,
             "species": "cat",
-            "styleProfileId": "pixel-style-v1",
+            "styleProfileId": "pixel-style-v2-animation-ready",
             "traits": [
                 {
                     "key": "faceShape",
@@ -469,7 +479,7 @@ def test_pixel_job_returns_pixel_avatar_result_without_live2d_audit_fields(tmp_p
         ).json()["result"]
 
     assert result["resultType"] == "pixelAvatar"
-    assert result["audit"]["styleProfileId"] == "pixel-style-v1"
+    assert result["audit"]["styleProfileId"] == "pixel-style-v2-animation-ready"
     assert "bodyModuleId" not in result["audit"]
 
 

@@ -112,7 +112,7 @@ fn shared_pixel_contract_fixture_preserves_v1_and_v2() {
     let legacy_audit = parse_pixel_avatar_audit(fixture["legacyAudit"].clone()).unwrap();
     let current_audit = parse_pixel_avatar_audit(fixture["currentAudit"].clone()).unwrap();
 
-    assert_eq!(legacy_profile.style_profile_id, PixelStyleProfileId::V1);
+    assert_eq!(legacy_profile.style_profile_id, PixelStyleProfileId::V1Retired);
     assert_eq!(
         current_profile.style_profile_id,
         PixelStyleProfileId::V2AnimationReady

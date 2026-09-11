@@ -11,7 +11,6 @@ from .lk888_client import Lk888Error, MediaState
 from .pixel_audit import (
     JsonValue,
     PixelAvatarAudit,
-    PixelAvatarAuditV1,
     PixelAvatarAuditV2,
     parse_pixel_avatar_audit,
 )
@@ -190,35 +189,13 @@ def generate_pixel_avatar(
     )
     identity_profile_sha256 = hashlib.sha256(identity_json.encode("utf-8")).hexdigest()
     completed_at = _timestamp()
-    if processed.palette_report is None:
-        audit: PixelAvatarAudit = PixelAvatarAuditV1(
-            schema_version=1,
-            session_id=request.session_id,
-            revision=request.revision,
-            attempt=request.attempt,
-            provider="lk888",
-            provider_model="gpt-image-2",
-            provider_task_id=task_id,
-            style_profile_id=style.style_profile_id,
-            style_profile_sha256=style.profile_sha256,
-            reference_sha256=style.reference_sha256,
-            prompt_template_version=style.prompt_template_version,
-            identity_profile_sha256=identity_profile_sha256,
-            provider_raw_sha256=checked.provider_raw_sha256,
-            normalized_sha256=checked.normalized_sha256,
-            width=checked.width,
-            height=checked.height,
-            alpha_report=checked.alpha_report,
-            privacy_policy_version="unverified",
-            retention_policy="unverified",
-            upstream_delete_api="unsupported",
-            status="succeeded",
-            error_code=None,
-            created_at=created_at,
-            completed_at=completed_at,
-        )
-    else:
-        audit = PixelAvatarAuditV2(
+    palette_report = processed.palette_report
+    if palette_report is None:
+        # 只有已淘汰的 pixel-style-v1（mediancut 后处理）不产出调色板报告。
+        # 该风格已被风格加载器硬拒，生成端走不到这里；宁可硬失败，
+        # 也不要悄悄回落到 V1 审计——那正是「淘汰风格复活」的入口。
+        raise ContractError("pixel generation must produce a palette report")
+    audit: PixelAvatarAudit = PixelAvatarAuditV2(
             schema_version=2,
             session_id=request.session_id,
             revision=request.revision,
@@ -245,11 +222,11 @@ def generate_pixel_avatar(
             completed_at=completed_at,
             logical_grid_size=style.postprocess.logical_grid_size,
             palette_color_limit=style.postprocess.palette_color_limit,
-            visible_color_count=processed.palette_report.visible_color_count,
+            visible_color_count=palette_report.visible_color_count,
             quantize_method=style.postprocess.quantize_method,
             dither=style.postprocess.dither,
             protected_accent_slots=style.postprocess.protected_accent_slots,
-            protected_accent_count=processed.palette_report.protected_accent_count,
+            protected_accent_count=palette_report.protected_accent_count,
             downsample=style.postprocess.downsample,
             upsample=style.postprocess.upsample,
         )

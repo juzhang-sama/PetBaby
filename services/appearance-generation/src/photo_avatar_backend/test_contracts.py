@@ -127,15 +127,16 @@ def test_pixel_profile_rejects_species_outside_cat_and_dog() -> None:
         )
 
 
-def test_legacy_pixel_request_without_style_is_v1_only() -> None:
+def test_legacy_pixel_request_without_style_is_rejected() -> None:
+    # 旧格式以前静默落到 pixel-style-v1；该风格已淘汰，现在必须显式拒绝。
     payload = pixel_request_wire(include_style=False)
 
-    request = PixelStepRequest.parse(payload)
+    with pytest.raises(ContractError, match="styleProfileId is required"):
+        PixelStepRequest.parse(payload)
 
-    assert request.style_profile_id == "pixel-style-v1"
 
-
-def test_pixel_request_rejects_profile_style_mismatch() -> None:
+def test_retired_profile_style_cannot_reach_generation() -> None:
+    # 历史 v1 档案依然可解析（数据格式），但绝不能配到生成请求上。
     payload = pixel_request_wire()
     payload.update(
         {

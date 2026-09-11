@@ -8,7 +8,16 @@ from typing import Any, Final, Literal, assert_never
 PIXEL_STYLE_V1_ID: Final = "pixel-style-v1"
 PIXEL_STYLE_V2_ID: Final = "pixel-style-v2-animation-ready"
 DEFAULT_PIXEL_STYLE_ID: Final = PIXEL_STYLE_V2_ID
-SUPPORTED_PIXEL_STYLE_IDS: Final = frozenset({PIXEL_STYLE_V1_ID, PIXEL_STYLE_V2_ID})
+# pixel-style-v1 已停用（2026-09-11 老王拍板）。
+# 它是平滑抗锯齿的伪像素风：2048×2048、31 色、无调色板上限校验、边缘发虚，
+# 观感与现役 V2 差异极大，且极易被误当成「当前画风」（第一次 L1 验收就跑错了它）。
+# 该常量与 assets/pixel-style-v1/ 仅保留用于**读取历史 run 与历史审计**；
+# 任何生成路径都必须走 DEFAULT_PIXEL_STYLE_ID。
+RETIRED_PIXEL_STYLE_IDS: Final = frozenset({PIXEL_STYLE_V1_ID})
+SUPPORTED_PIXEL_STYLE_IDS: Final = frozenset({PIXEL_STYLE_V2_ID})
+# 「已知」= 现役 + 停用。**只用于解析数据格式**（档案、审计这类历史数据里 v1 是合法取值），
+# 绝不可用来放行生成。生成侧一律用 SUPPORTED_PIXEL_STYLE_IDS。
+KNOWN_PIXEL_STYLE_IDS: Final = SUPPORTED_PIXEL_STYLE_IDS | RETIRED_PIXEL_STYLE_IDS
 
 
 class PixelStyleError(ValueError):
@@ -48,16 +57,6 @@ class PixelStylePack:
     def prompt_template_version(self) -> str:
         return f"{self.style_profile_id}-prompt-v{self.profile['version']}"
 
-    def prompt_fragment(self) -> str:
-        return (
-            "PetBaby pixel-style-v1: 16-bit pixel art game sprite, chunky visible pixels, "
-            "hard edges with no anti-aliasing, limited color palette with flat shading. "
-            "balanced chibi head at 38%-42% of total height, compact seated three-quarter front view, "
-            "transparent background. Preserve the subject's face shape, eye color, ear shape, face markings, "
-            "chest fur, paw socks, body patches, and tail. One complete pet PNG only; no patches, layers, "
-            "parts, rigging, gradients, mosaic filter, or generic cat replacement."
-        )
-
 
 def load_pixel_style_pack(
     style_profile_id: str | Path = DEFAULT_PIXEL_STYLE_ID,
@@ -72,6 +71,11 @@ def load_pixel_style_pack(
         case unreachable:
             assert_never(unreachable)
 
+    if selected_style_id in RETIRED_PIXEL_STYLE_IDS:
+        raise PixelStyleError(
+            f"{selected_style_id} is retired and must not be used for generation; "
+            f"use DEFAULT_PIXEL_STYLE_ID ({DEFAULT_PIXEL_STYLE_ID})"
+        )
     if selected_style_id not in SUPPORTED_PIXEL_STYLE_IDS:
         raise PixelStyleError(f"unsupported pixel style: {selected_style_id}")
 
@@ -86,6 +90,8 @@ def load_pixel_style_pack(
         raise PixelStyleError(f"{selected_style_id} profile is invalid JSON") from exc
     if not isinstance(profile, dict):
         raise PixelStyleError(f"{selected_style_id} profile must be an object")
+    # 注意：下面的 pixel-style-v1 分支**按设计不可达**（上面已对 RETIRED 抛错）。
+    # 保留它只为记录历史风格档的参数，别因为「看起来还能用」而把它接回生成路径。
     _validate_profile(profile, selected_style_id)
     reference_bytes = reference_path.read_bytes()
     if not reference_bytes.startswith(b"\x89PNG\r\n\x1a\n"):
@@ -202,8 +208,10 @@ def _validate_v2_profile(profile: dict[str, Any]) -> None:
 
 __all__ = [
     "DEFAULT_PIXEL_STYLE_ID",
+    "KNOWN_PIXEL_STYLE_IDS",
     "PIXEL_STYLE_V1_ID",
     "PIXEL_STYLE_V2_ID",
+    "RETIRED_PIXEL_STYLE_IDS",
     "PixelPostprocessProfile",
     "PixelStyleError",
     "PixelStylePack",

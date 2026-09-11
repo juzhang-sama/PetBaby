@@ -1,3 +1,11 @@
+"""schema-1 审计（历史格式，**只读**）。
+
+pixel-style-v1 已于 2026-09-11 停用：生成端不再可能产出 schema-1 审计
+（`load_pixel_style_pack` 硬拒该风格，`pixel_avatar.generate_pixel_avatar`
+的 V1 回落分支已删除）。这个模块保留的唯一目的是让**历史 run / 历史审计仍可解析**，
+不要在任何生成路径上构造它。
+"""
+
 from dataclasses import dataclass
 
 from .pixel_audit_types import (
