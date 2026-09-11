@@ -25,8 +25,10 @@ from __future__ import annotations
 
 import argparse
 import json
+import re
 import sys
 import time
+from dataclasses import replace
 from pathlib import Path
 
 import httpx
@@ -54,12 +56,28 @@ def load_env(path: Path) -> dict[str, str]:
     return env
 
 
+_SECTION_NUM = re.compile(r"^[一二三四五六七八九十]+、")
+_TOP_SECTION_PREFIXES = ("主提示词", "负向提示词", "背景", "为什么")
+
+
+def _is_section_header(line: str) -> bool:
+    """顶层分节标题：以【 + 中文数字编号 + 、 开头，或以主提示词/负向提示词/背景/为什么开头。
+
+    正文里的子标题（【动作安排…】【眼睛…】【首尾一致性…】【严格要求】等）不带编号、
+    也不是这些前缀，返回 False，不会被误判为分节边界。
+    """
+    stripped = line.strip()
+    if not (stripped.startswith("【") and stripped.endswith("】")):
+        return False
+    inner = stripped[1:-1]
+    return bool(_SECTION_NUM.match(inner)) or inner.startswith(_TOP_SECTION_PREFIXES)
+
+
 def section(lines: list[str], header_keyword: str) -> str:
-    """取 【xxx】 标题下、到下一个分隔行或下一个 【标题】 为止的正文。"""
+    """取 【xxx】 分节标题下、到下一个顶层分节标题或分隔行为止的正文（含内部子标题）。"""
     start = None
     for index, line in enumerate(lines):
-        stripped = line.strip()
-        if header_keyword in stripped and stripped.startswith("【"):
+        if header_keyword in line and _is_section_header(line):
             start = index + 1
             break
     if start is None:
@@ -72,7 +90,7 @@ def section(lines: list[str], header_keyword: str) -> str:
             if body:
                 break
             continue
-        if stripped.startswith("【") and stripped.endswith("】"):
+        if _is_section_header(line):
             break
         body.append(line)
     return "\n".join(body).strip()
@@ -109,6 +127,9 @@ def main() -> int:
     parser.add_argument("--mode", default="shouweizhen",
                         choices=["shouweizhen", "cankaosheng"],
                         help="shouweizhen=首尾帧（1 张=首帧），cankaosheng=参考生")
+    parser.add_argument("--model", default=None,
+                        help="覆盖视频模型名（默认用 config.video_model）；"
+                             "按秒版用 seedance-2.0-guanfang-anmiao 可预估总价")
     parser.add_argument("--no-negative", dest="include_negative",
                         action="store_false", default=True,
                         help="不把【负向提示词】追加到主提示词后面")
@@ -139,6 +160,8 @@ def main() -> int:
         config = BackendConfig.from_env(env)
     except ConfigError as exc:
         raise SystemExit(f"[缺配置] {exc}") from exc
+    if args.model:
+        config = replace(config, video_model=args.model)
 
     prompt, negative_used = build_prompt(prompt_file, args.include_negative)
     out_dir = Path(args.outdir).resolve()
