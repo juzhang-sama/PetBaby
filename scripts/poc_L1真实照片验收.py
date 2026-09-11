@@ -42,7 +42,7 @@ from photo_avatar_backend.pixel_avatar import (  # noqa: E402
     generate_pixel_avatar,
 )
 from photo_avatar_backend.pixel_style import (  # noqa: E402
-    PIXEL_STYLE_V1_ID,
+    DEFAULT_PIXEL_STYLE_ID,
     load_pixel_style_pack,
 )
 
@@ -85,7 +85,7 @@ def step_payload(
 ) -> dict[str, object]:
     return {
         "route": "pixel-v1",
-        "styleProfileId": PIXEL_STYLE_V1_ID,
+        "styleProfileId": DEFAULT_PIXEL_STYLE_ID,
         "sessionId": session_id,
         "revision": 0,
         "providerSessionId": provider_session_id,
@@ -185,7 +185,8 @@ def main() -> None:
 
     config = load_config()
     client = Lk888Client(config, httpx.Client())
-    style = load_pixel_style_pack(PIXEL_STYLE_V1_ID)
+    style = load_pixel_style_pack(DEFAULT_PIXEL_STYLE_ID)
+    print(f"[配置] styleProfileId={DEFAULT_PIXEL_STYLE_ID}（与桌面端 DEFAULT_PIXEL_STYLE_ID 一致）")
     out_dir = Path(args.out_dir)
 
     record = run_one(
