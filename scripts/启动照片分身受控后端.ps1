@@ -41,19 +41,31 @@ New-Item -ItemType Directory -Force -Path $stateDir | Out-Null
 $stdout = Join-Path $stateDir "photo-avatar-backend.stdout.log"
 $stderr = Join-Path $stateDir "photo-avatar-backend.stderr.log"
 
-# 探测 Python 解释器：优先 managed python（后端依赖装在其下），回退到系统 PATH
-$managedPython = Join-Path $env:USERPROFILE ".workbuddy\binaries\python\versions\3.13.12\python.exe"
+# 探测 Python 解释器：按「能否 import 后端依赖」选，不写死版本目录。
+# 原因：managed python 的版本目录会被运行时升级整体替换（旧目录留下 .old.<n> 后缀），
+# 依赖不会跟着迁移。写死 versions\<ver>\python.exe 会在升级后选到没有依赖的空解释器，
+# 表现为后端进程秒退、healthz 永远不就绪。
 $pythonExe = $null
-if (Test-Path -LiteralPath $managedPython -PathType Leaf) {
-    $pythonExe = $managedPython
-} else {
-    $resolved = Get-Command python -ErrorAction SilentlyContinue
-    if ($resolved) { $pythonExe = $resolved.Source }
+$managedRoot = Join-Path $env:USERPROFILE ".workbuddy\binaries\python\versions"
+$candidates = @()
+if (Test-Path -LiteralPath $managedRoot -PathType Container) {
+    $candidates += Get-ChildItem -LiteralPath $managedRoot -Directory |
+        Where-Object { $_.Name -match '^\d+\.' } |
+        Sort-Object Name -Descending |
+        ForEach-Object { Join-Path $_.FullName "python.exe" }
+}
+$resolved = Get-Command python -ErrorAction SilentlyContinue
+if ($resolved) { $candidates += $resolved.Source }
+foreach ($candidate in $candidates) {
+    if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
+    & $candidate -c "import fastapi, uvicorn, httpx, PIL, numpy" 2>$null
+    if ($LASTEXITCODE -eq 0) { $pythonExe = $candidate; break }
 }
 if (-not $pythonExe) {
-    Write-Error "未找到 Python 解释器（后端依赖需已安装）。" -ErrorAction Continue
+    Write-Error "未找到已安装后端依赖的 Python 解释器（需要 fastapi/uvicorn/httpx/pillow/numpy，见 services/appearance-generation/requirements.txt）。" -ErrorAction Continue
     exit 15
 }
+Write-Output "使用 Python 解释器：$pythonExe"
 
 $process = Start-Process -FilePath $pythonExe -ArgumentList @("-m", "photo_avatar_backend.app") -WorkingDirectory $serviceRoot -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
 
