@@ -30,7 +30,7 @@ function frameAsset(overrides: Partial<FrameSequenceAsset> = {}): FrameSequenceA
       },
     ],
     defaultAction: "breath",
-    semantics: { idle: "breath", "react-happy": "tail-wag" },
+    semantics: { idle: "breath", blink: "blink", "react-happy": "tail-wag" },
     idleSchedule: {
       entries: [{ actionId: "blink", weight: 1, minIntervalMs: 2500, maxIntervalMs: 2500 }],
     },
@@ -39,7 +39,10 @@ function frameAsset(overrides: Partial<FrameSequenceAsset> = {}): FrameSequenceA
   };
 }
 
-function rendererHarness(overrides: Partial<FrameSequenceAsset> = {}) {
+function rendererHarness(
+  overrides: Partial<FrameSequenceAsset> = {},
+  options: { maxCachedActions?: number } = {},
+) {
   const contexts = Array.from({ length: 2 }, () => ({
     clearRect: vi.fn(),
     drawImage: vi.fn(),
@@ -96,6 +99,9 @@ function rendererHarness(overrides: Partial<FrameSequenceAsset> = {}) {
     createMaskCanvas,
     loadImage,
     random,
+    // 缓存淘汰是独立关注点，由专项测试用 maxCachedActions: 2 覆盖；
+    // 行为测试给足缓存，避免淘汰策略把断言要用的动作提前清掉。
+    maxCachedActions: options.maxCachedActions ?? 10,
   });
   renderer.setVisibility(true);
   const asset = frameAsset(overrides);
@@ -105,10 +111,21 @@ function rendererHarness(overrides: Partial<FrameSequenceAsset> = {}) {
     loadImage,
     random,
     asset,
-    // 懒加载后 load() 只阻塞默认动作；测试需要"全部动作就绪"时用它。
+    // 默认只加载 base + 默认动作（按需加载语义）。
     load: async () => {
       await renderer.load(asset);
-      await renderer.whenReady();
+    },
+    // 需要非默认动作已解码时，显式触发每个语义动作的按需加载。
+    loadAll: async () => {
+      await renderer.load(asset);
+      for (const action of asset.actions) {
+        if (action.actionId === asset.defaultAction) continue;
+        const motion = Object.entries(asset.semantics).find(([, actionId]) => actionId === action.actionId)?.[0];
+        if (!motion) continue;
+        renderer.playMotion(motion as "idle");
+        await renderer.whenReady();
+      }
+      renderer.playMotion("idle", { loop: true });
     },
     context: contexts[0]!,
     hitContext: contexts[1]!,
@@ -123,21 +140,133 @@ function rendererHarness(overrides: Partial<FrameSequenceAsset> = {}) {
 describe("FrameSequenceRenderer", () => {
   it("loads the base image and every action frame", async () => {
     const test = rendererHarness();
-    await test.load();
+    await test.loadAll();
     expect(test.loadImage).toHaveBeenCalledTimes(1 + 3 + 2 + 2);
     expect(test.root.replaceChildren).toHaveBeenCalledWith(test.displayCanvas, test.hitCanvas);
   });
 
-  it("loads only the default action eagerly and defers the rest to background", async () => {
+  it("loads only the default action until another action is requested", async () => {
     const test = rendererHarness();
     // 只 await load()：默认动作 breath（3 帧）+ baseImage 已加载，可立即渲染首帧。
     await test.renderer.load(test.asset);
     expect(test.loadImage).toHaveBeenCalledWith(test.asset.baseImageUrl);
-    expect(test.loadImage).toHaveBeenCalledWith("breath/f00.png");
+    for (const url of ["breath/f00.png", "breath/f01.png", "breath/f02.png"]) {
+      expect(test.loadImage).toHaveBeenCalledWith(url);
+    }
     expect(test.root.replaceChildren).toHaveBeenCalledWith(test.displayCanvas, test.hitCanvas);
-    // 后台加载通过 whenReady 收敛到全量（含 blink + tail-wag）。
+
+    // tail-wag 是交互动作（不在 idleSchedule 里），后台预热后可立即播放，不占用户时间。
     await test.renderer.whenReady();
+    expect(test.loadImage).toHaveBeenCalledWith("tail/f00.png");
+    // 偶发动作在没人触发前绝不解码。
+    expect(test.loadImage).not.toHaveBeenCalledWith("blink/f00.png");
+
+    test.renderer.playMotion("blink" as "idle");
+    await test.renderer.whenReady();
+    expect(test.loadImage).toHaveBeenCalledWith("blink/f00.png");
     expect(test.loadImage).toHaveBeenCalledTimes(1 + 3 + 2 + 2);
+  });
+
+  it("preloads interactive actions so the first drag has no decode delay", async () => {
+    const test = rendererHarness();
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.renderer.load(test.asset);
+    await test.renderer.whenReady();
+
+    // 交互动作已预热 → 请求时同步切换，不用等解码。
+    test.renderer.playMotion("react-happy");
+    test.renderer.update(1);
+    expect(test.context.drawImage.mock.calls.at(-1)![0])
+      .toBe(test.imageByUrl.get("tail/f00.png"));
+  });
+
+  it("keeps the default and current actions resident and reloads an evicted action on demand", async () => {
+    // breath 是默认动作；blink / yawn 都登记在 idleSchedule 里（偶发），
+    // 所以常驻只有 breath，maxCachedActions: 2 会在这两个偶发动作之间淘汰。
+    const test = rendererHarness(
+      {
+        actions: [
+          {
+            actionId: "breath",
+            loop: true,
+            frameDurationMs: 180,
+            frameUrls: ["breath/f00.png", "breath/f01.png", "breath/f02.png"],
+          },
+          { actionId: "blink", loop: true, frameDurationMs: 150, frameUrls: ["blink/f00.png", "blink/f01.png"] },
+          { actionId: "yawn", loop: false, frameDurationMs: 150, frameUrls: ["yawn/f00.png", "yawn/f01.png"] },
+        ],
+        semantics: { idle: "breath", blink: "blink", "react-curious": "yawn" },
+        idleSchedule: {
+          entries: [
+            { actionId: "blink", weight: 1, minIntervalMs: 2500, maxIntervalMs: 2500 },
+            { actionId: "yawn", weight: 1, minIntervalMs: 2500, maxIntervalMs: 2500 },
+          ],
+        },
+      },
+      { maxCachedActions: 2 },
+    );
+    await test.renderer.load(test.asset);
+
+    test.renderer.playMotion("blink" as "idle");
+    await test.renderer.whenReady();
+    test.renderer.playMotion("react-curious"); // semantics -> yawn
+    await test.renderer.whenReady();
+    test.renderer.playMotion("blink" as "idle");
+    await test.renderer.whenReady();
+
+    // 默认动作 + 当前动作是缓存上限；blink 被 yawn 淘汰后再次请求会重新解码。
+    expect(test.loadImage).toHaveBeenCalledTimes(1 + 3 + 2 + 2 + 2);
+  });
+
+  it("never evicts interactive actions, so dragging stays instant", async () => {
+    // tail-wag 是交互动作；缓存上限 2 时，反复触发偶发动作也不能把它挤掉。
+    const test = rendererHarness({}, { maxCachedActions: 2 });
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.renderer.load(test.asset);
+    await test.renderer.whenReady();
+    const before = test.loadImage.mock.calls.length;
+
+    for (let i = 0; i < 3; i += 1) {
+      test.renderer.playMotion("blink" as "idle");
+      await test.renderer.whenReady();
+    }
+    test.renderer.playMotion("react-happy");
+    test.renderer.update(1);
+    // 没有重新解码 tail-wag 帧（loadImage 调用数不变），且立刻切到了 tail 首帧。
+    expect(test.loadImage.mock.calls.length).toBe(before + 2); // 只多了 blink 一次解码
+    expect(test.context.drawImage.mock.calls.at(-1)![0])
+      .toBe(test.imageByUrl.get("tail/f00.png"));
+  });
+
+  it("keeps playing the current action until the requested action finishes decoding", async () => {
+    const test = rendererHarness();
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.renderer.load(test.asset);
+    const breathFrame = test.context.drawImage.mock.calls.at(-1)![0];
+
+    // 请求一个还没解码的动作：显示不能立刻切过去（会先画空帧再跳变）。
+    test.renderer.playMotion("react-happy");
+    test.renderer.update(1);
+    expect(test.context.drawImage.mock.calls.at(-1)![0]).toBe(breathFrame);
+
+    // 解码完成后且请求仍然有效，才从第 0 帧接上。
+    await test.renderer.whenReady();
+    expect(test.context.drawImage.mock.calls.at(-1)![0])
+      .toBe(test.imageByUrl.get("tail/f00.png"));
+  });
+
+  it("drops a pending load result when the motion is cancelled mid-decode", async () => {
+    const test = rendererHarness();
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.renderer.load(test.asset);
+
+    const handle = test.renderer.playMotion("react-happy");
+    handle.cancel();
+    await test.renderer.whenReady();
+    test.renderer.update(1);
+    // 取消后回到默认动作，迟到的解码结果不得把显示切到 tail-wag。
+    expect(test.context.drawImage.mock.calls.at(-1)![0])
+      .toBe(test.imageByUrl.get("breath/f00.png"));
   });
 
   it("starts breathing from the first frame after load", async () => {
@@ -174,7 +303,7 @@ describe("FrameSequenceRenderer", () => {
   it("maps a react motion to tail-wag and returns to the default action after one cycle", async () => {
     const test = rendererHarness();
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
     const handle = test.renderer.playMotion("react-happy");
     test.context.drawImage.mockClear();
     test.renderer.update(120);
@@ -203,7 +332,7 @@ describe("FrameSequenceRenderer", () => {
   it("triggers a blink after the configured interval and resumes breathing", async () => {
     const test = rendererHarness();
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
     test.context.drawImage.mockClear();
     test.renderer.update(2500);
     test.renderer.update(150);
@@ -261,7 +390,7 @@ describe("FrameSequenceRenderer", () => {
       },
     });
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
     test.context.drawImage.mockClear();
     test.renderer.update(2500);
     test.renderer.update(120);
@@ -281,7 +410,7 @@ describe("FrameSequenceRenderer", () => {
       },
     });
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
     test.context.drawImage.mockClear();
     test.renderer.update(2500);
     // tail-wag minInterval is 5000, so no action should trigger yet:
@@ -303,7 +432,7 @@ describe("FrameSequenceRenderer", () => {
       },
     });
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
     test.context.drawImage.mockClear();
     // Reach 2500ms: interval elapsed, phase = 340ms, trigger armed but deferred.
     test.renderer.update(2500);
@@ -332,7 +461,7 @@ describe("FrameSequenceRenderer", () => {
       },
     });
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
     test.context.drawImage.mockClear();
     test.renderer.update(2500); // phase 340, armed
     test.renderer.update(200); // 2700: boundary crossed within this tick
@@ -347,7 +476,7 @@ describe("FrameSequenceRenderer", () => {
       },
     });
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
     test.context.drawImage.mockClear();
     test.renderer.update(2500); // armed at phase 340
     test.renderer.update(100); // 2600
@@ -364,7 +493,8 @@ describe("FrameSequenceRenderer", () => {
     it("用当前动作所有帧的并集轮廓，而不是静态首帧", async () => {
       const test = rendererHarness();
       test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-      await test.load();
+      // 只加载默认动作：烘焙次数必须恰好是 1，多一次就说明又预热了别的动作。
+      await test.renderer.load(test.asset);
 
       // 烘焙一次：breath 的 3 帧叠加（alpha 取"任意帧不透明"，所以用 lighter）。
       expect(test.maskContexts).toHaveLength(1);
@@ -384,10 +514,11 @@ describe("FrameSequenceRenderer", () => {
     it("动作切换时重新烘焙并集，并把窗口区域标记为待刷新", async () => {
       const test = rendererHarness();
       test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-      await test.load();
+      await test.renderer.load(test.asset);
       expect(test.renderer.consumeSilhouetteDirty()).toBe(true);
 
       test.renderer.playMotion("react-happy"); // semantics -> tail-wag
+      await test.renderer.whenReady(); // tail-wag 按需解码完成后才切换显示
       test.renderer.update(1);
       expect(test.renderer.consumeSilhouetteDirty()).toBe(true);
       expect(test.maskContexts).toHaveLength(2);
@@ -401,7 +532,7 @@ describe("FrameSequenceRenderer", () => {
     it("同一动作内不重复刷新窗口区域（只标记一次）", async () => {
       const test = rendererHarness();
       test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-      await test.load();
+      await test.renderer.load(test.asset);
       expect(test.renderer.consumeSilhouetteDirty()).toBe(true);
 
       test.renderer.update(180);
@@ -415,7 +546,7 @@ describe("FrameSequenceRenderer", () => {
     it("视口变化后重画 hit surface 并再次标记待刷新", async () => {
       const test = rendererHarness();
       test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-      await test.load();
+      await test.renderer.load(test.asset);
       test.renderer.consumeSilhouetteDirty();
 
       test.renderer.resize({ width: 300, height: 600, dpr: 2 });
@@ -460,7 +591,7 @@ describe("FrameSequenceRenderer 交互保持（holdRange）", () => {
   it("carried 按住：拎起到窗口起点后只在 [lo,hi] 内循环悬空，永不出窗口", async () => {
     const test = rendererHarness(grabAsset([35, 63]));
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
 
     test.renderer.playMotion("carried", { loop: true });
     // 拎起段线性前进：第 k 次 update(42) 后 elapsed = k*42 → 帧 k。
@@ -490,7 +621,7 @@ describe("FrameSequenceRenderer 交互保持（holdRange）", () => {
   it("landed 松手：从窗口末尾续播放下尾段，播完回归默认动作", async () => {
     const test = rendererHarness(grabAsset([35, 63]));
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
 
     test.renderer.playMotion("carried", { loop: true });
     test.renderer.update(60000); // 按住远超总时长，elapsed 已无界增长
@@ -512,17 +643,17 @@ describe("FrameSequenceRenderer 交互保持（holdRange）", () => {
     expect(backToIdle).toBe(frameAt(test, "breath/f0000.webp"));
   });
 
-  it("拎起中途松手：不跳到放下段，从当前帧自然续播", async () => {
+  it("拎起中途松手：立即跳到放下段", async () => {
     const test = rendererHarness(grabAsset([35, 63]));
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
-    await test.load();
+    await test.loadAll();
 
     test.renderer.playMotion("carried", { loop: true });
     for (let k = 1; k <= 10; k += 1) test.renderer.update(42); // 停在第 10 帧（< lo）
     test.renderer.playMotion("landed");
-    test.renderer.update(42);
+    test.renderer.update(1);
     const resumed = test.context.drawImage.mock.calls.at(-1)![0];
-    expect(resumed).toBe(frameAt(test, "grab/f0011.webp"));
-    expect(resumed).not.toBe(frameAt(test, "grab/f0064.webp"));
+    expect(resumed).toBe(frameAt(test, "grab/f0064.webp"));
+    expect(resumed).not.toBe(frameAt(test, "grab/f0010.webp"));
   });
 });

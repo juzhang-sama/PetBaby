@@ -1,5 +1,6 @@
 pub mod cat_character;
 pub mod compiler;
+pub mod frame_sequence;
 pub mod importer;
 pub mod installer;
 pub mod loader;

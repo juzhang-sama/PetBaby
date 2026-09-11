@@ -22,6 +22,7 @@ from .pixel_png import (
     postprocess_pixel_png,
 )
 from .pixel_prompt import (
+    ANALYSIS_UNSUPPORTED_SPECIES,
     TRAIT_KEYS,
     analysis_prompt,
     completion_prompt,
@@ -61,13 +62,19 @@ def analyze_pixel_identity(
     if request.step != "analyzeIdentity" or request.profile is not None:
         raise ContractError("pixel identity analysis requires a null profile")
     images = tuple(image.png for image in request.source_images)
-    observed = PixelAppearanceProfile.parse(
-        client.analyze_json(
-            analysis_prompt(request.style_profile_id),
-            images,
-            profile_schema(TRAIT_KEYS, "user", request.style_profile_id),
-        )
+    raw_analysis = client.analyze_json(
+        analysis_prompt(request.style_profile_id),
+        images,
+        profile_schema(TRAIT_KEYS, "user", request.style_profile_id),
     )
+    # 输入侧硬拒绝：模型明确判定「没有单只可辨认的猫或狗」时立刻失败，
+    # 并且在提交补全步骤之前失败（省一次付费调用）。
+    # 若放行到 PixelAppearanceProfile.parse，报错会退化成笼统的物种非法，看不出是照片的问题。
+    if raw_analysis.get("species") == ANALYSIS_UNSUPPORTED_SPECIES:
+        raise ContractError(
+            "photo avatar requires photos showing a single clearly identifiable cat or dog"
+        )
+    observed = PixelAppearanceProfile.parse(raw_analysis)
     if observed.style_profile_id != request.style_profile_id:
         raise ContractError("pixel analysis styleProfileId does not match request")
     if any(trait.source != "user" for trait in observed.traits) or observed.completion_summary:
@@ -80,11 +87,18 @@ def analyze_pixel_identity(
         client.analyze_json(
             completion_prompt(observed, request.modification, missing),
             images,
-            profile_schema(missing, "ai-completed", request.style_profile_id),
+            profile_schema(
+                missing,
+                "ai-completed",
+                request.style_profile_id,
+                observed.species,
+            ),
         )
     )
     if completion.style_profile_id != request.style_profile_id:
         raise ContractError("pixel completion styleProfileId does not match request")
+    if completion.species != observed.species:
+        raise ContractError("pixel completion species does not match analysis")
     completed_by_key = {trait.key: trait for trait in completion.traits}
     if (
         set(completed_by_key) != set(missing)
@@ -94,7 +108,7 @@ def analyze_pixel_identity(
         raise ContractError("pixel completion must contain exactly the missing traits")
     merged = PixelAppearanceProfile(
         schema_version=1,
-        species="cat",
+        species=observed.species,
         style_profile_id=request.style_profile_id,
         traits=tuple(
             observed_by_key.get(key) or completed_by_key[key] for key in TRAIT_KEYS

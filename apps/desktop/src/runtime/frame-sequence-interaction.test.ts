@@ -104,6 +104,7 @@ describe("内置宠物互动语义", () => {
 
     // 点身体 → react-curious → lick 首帧
     renderer.playMotion("react-curious");
+    await renderer.whenReady();
     contexts[0]!.drawImage.mockClear();
     renderer.update(1);
     const lickFrame = contexts[0]!.drawImage.mock.calls[0]![0];

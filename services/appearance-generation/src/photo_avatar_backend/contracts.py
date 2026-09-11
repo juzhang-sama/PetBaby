@@ -174,8 +174,8 @@ class PixelAppearanceProfile:
         )
         if payload["schemaVersion"] != 1:
             raise ContractError("pixel profile schemaVersion must be 1")
-        if payload["species"] != "cat":
-            raise ContractError("pixel profile species must be cat")
+        if payload["species"] not in ("cat", "dog"):
+            raise ContractError("pixel profile species must be cat or dog")
         style_profile_id = _require_supported_pixel_style(payload["styleProfileId"])
         raw_traits = payload["traits"]
         raw_summary = payload["completionSummary"]
@@ -191,7 +191,7 @@ class PixelAppearanceProfile:
         completed_keys = tuple(trait.key for trait in traits if trait.source == "ai-completed")
         if set(summary) != set(completed_keys):
             raise ContractError("pixel completionSummary must equal completed trait keys")
-        return cls(1, "cat", style_profile_id, traits, summary)
+        return cls(1, payload["species"], style_profile_id, traits, summary)
 
 
 @dataclass(frozen=True)

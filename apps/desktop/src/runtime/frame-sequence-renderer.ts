@@ -32,6 +32,8 @@ export interface FrameSequenceRendererOptions {
   createMaskCanvas?: () => HTMLCanvasElement;
   loadImage?: (url: string) => Promise<FrameImage>;
   random?: () => number;
+  /** Maximum number of decoded action groups retained, including the default action. */
+  maxCachedActions?: number;
 }
 
 interface LoadedAction {
@@ -47,10 +49,21 @@ export class FrameSequenceRenderer implements PetRenderer {
   private readonly loadImage: (url: string) => Promise<FrameImage>;
   private readonly createMaskCanvas: (() => HTMLCanvasElement) | undefined;
   private readonly random: () => number;
+  private readonly maxCachedActions: number;
 
   private baseImage: FrameImage | undefined;
   private actions: LoadedAction[] = [];
   private defaultAction: string | undefined;
+  /**
+   * 常驻动作：默认动作 + 交互动作（grab-release 这类不在 idleSchedule 里的）。
+   * 交互动作是用户主动触发的（拖拽拎起），首次触发才解码会出现肉眼可见的延迟，
+   * 所以后台预热并永不淘汰；偶发动作（idleSchedule 里的 yawn/lick）触发时机本来
+   * 就是随机的，按需加载的那一两百毫秒用户感知不到，仍走按需 + LRU 淘汰。
+   */
+  private residentActionIds = new Set<string>();
+  private actionCatalog = new Map<string, FrameSequenceRenderAction>();
+  private actionUseClock = 0;
+  private actionLastUsed = new Map<string, number>();
   private semantics: Record<string, string> = {};
   private idleSchedule: FrameSequenceIdleSchedule | null = null;
   private hitBounds: NormalizedRectV6 | undefined;
@@ -109,6 +122,11 @@ export class FrameSequenceRenderer implements PetRenderer {
     this.createMaskCanvas = options.createMaskCanvas
       ?? (typeof document === "undefined" ? undefined : () => document.createElement("canvas"));
     this.random = options.random ?? Math.random;
+    if (options.maxCachedActions !== undefined
+      && (!Number.isInteger(options.maxCachedActions) || options.maxCachedActions < 2)) {
+      throw new RangeError("maxCachedActions must be an integer >= 2");
+    }
+    this.maxCachedActions = options.maxCachedActions ?? 2;
     this.displayCanvas.style.display = "block";
     this.hitCanvas.style.display = "none";
     this.displayCanvas.style.visibility = "hidden";
@@ -121,33 +139,36 @@ export class FrameSequenceRenderer implements PetRenderer {
       throw new TypeError("FrameSequenceRenderer only accepts frame-sequence assets");
     }
     const loadToken = ++this.loadToken;
+    // 换素材时让上一批尚未完成的按需加载失效，避免旧动作的解码结果切进新素材。
+    this.actionGeneration += 1;
     try {
       const baseImage = await this.loadImage(asset.baseImageUrl);
       if (this.destroyed || loadToken !== this.loadToken) return;
 
-      // 默认动作阻塞加载（首帧显示必需）；其余动作后台有界并发加载，
-      // 避免启动时一次性解码 500+ 帧（内存峰值 ~726MB）并串行拖慢首帧。
+      // 只阻塞默认动作；其他动作在首次使用时加载，避免启动时解码全部帧。
       const defaultActionDef = asset.actions.find((a) => a.actionId === asset.defaultAction);
-      const eager: LoadedAction[] = [];
-      const deferred: FrameSequenceRenderAction[] = [];
-      for (const action of asset.actions) {
-        if (!defaultActionDef || action.actionId === asset.defaultAction) {
-          const frames: FrameImage[] = [];
-          for (const url of action.frameUrls) {
-            frames.push(await this.loadImage(url));
-          }
-          eager.push({ action, frames });
-        } else {
-          deferred.push(action);
-        }
+      if (!defaultActionDef) {
+        throw new Error(`default action is not declared: ${asset.defaultAction}`);
       }
+      const frames: FrameImage[] = [];
+      for (const url of defaultActionDef.frameUrls) frames.push(await this.loadImage(url));
       if (this.destroyed || loadToken !== this.loadToken) return;
 
       this.baseImage = baseImage;
-      this.actions = eager;
+      this.actions = [{ action: defaultActionDef, frames }];
       this.defaultAction = asset.defaultAction;
+      this.actionCatalog = new Map(asset.actions.map((action) => [action.actionId, action]));
+      this.actionUseClock = 0;
+      this.actionLastUsed = new Map([[asset.defaultAction, ++this.actionUseClock]]);
       this.actionDefs = new Map(
         asset.actions.map((a) => [a.actionId, { frameDurationMs: a.frameDurationMs, holdRange: a.holdRange }]),
+      );
+      // 交互动作 = 没登记进 idleSchedule 的动作。默认动作常驻，其余（偶发）按需。
+      const scheduled = new Set((asset.idleSchedule?.entries ?? []).map((entry) => entry.actionId));
+      this.residentActionIds = new Set(
+        asset.actions
+          .filter((a) => a.actionId === asset.defaultAction || !scheduled.has(a.actionId))
+          .map((a) => a.actionId),
       );
       this.holdHeld = false;
       this.semantics = { ...asset.semantics };
@@ -173,44 +194,19 @@ export class FrameSequenceRenderer implements PetRenderer {
       this.recomputeLayout();
       this.renderDisplay();
 
-      // 非默认动作（yawn/lick 等偶发动作）后台加载，不阻塞首帧。
-      this.backgroundLoad = this.loadDeferred(deferred, loadToken);
+      // 后台预热交互动作（默认动作之外），保证用户第一次拖拽就有帧可播。
+      this.backgroundLoad = Promise.resolve();
+      for (const actionId of this.residentActionIds) {
+        if (actionId === asset.defaultAction) continue;
+        this.backgroundLoad = this.backgroundLoad.then(() => this.ensureActionLoaded(actionId));
+      }
     } catch (error) {
       if (this.destroyed || loadToken !== this.loadToken) return;
       throw error;
     }
   }
 
-  /**
-   * 后台有界并发加载非默认动作。加载完成后逐个追加到 this.actions——
-   * idleSchedule 的 actionExists 门会自动把它们纳入偶发动作候选，未加载前不会被触发。
-   * 全程 loadToken 守卫：新 load() 或 destroy() 使本批次作废。
-   */
-  private async loadDeferred(
-    actions: FrameSequenceRenderAction[],
-    loadToken: number,
-  ): Promise<void> {
-    const CONCURRENCY = 6;
-    const queue = [...actions];
-    const worker = async (): Promise<void> => {
-      while (queue.length > 0) {
-        if (this.destroyed || loadToken !== this.loadToken) return;
-        const action = queue.shift()!;
-        const frames: FrameImage[] = [];
-        for (const url of action.frameUrls) {
-          if (this.destroyed || loadToken !== this.loadToken) return;
-          frames.push(await this.loadImage(url));
-        }
-        if (this.destroyed || loadToken !== this.loadToken) return;
-        this.actions.push({ action, frames });
-      }
-    };
-    await Promise.all(
-      Array.from({ length: Math.min(CONCURRENCY, Math.max(1, queue.length)) }, () => worker()),
-    );
-  }
-
-  /** 等待后台加载的非默认动作全部就绪（测试与调用方专用）。 */
+  /** 等待当前动作的按需加载完成。 */
   async whenReady(): Promise<void> {
     await this.backgroundLoad;
   }
@@ -242,35 +238,38 @@ export class FrameSequenceRenderer implements PetRenderer {
     const actionId = this.semantics[motion] ?? this.defaultAction;
     const generation = ++this.actionGeneration;
     // 松手语义：正持握着该动作（悬空窗口循环中），又来一发不带 loop 的同动作
-    // playMotion（landed）→ 不重置进度，把进度快照到 hold 窗口末尾，续播"放下+稳定"尾段。
-    // 若在进入 hold 窗口前就松手（lift 中途），则保留当前进度线性播完（经过悬空帧自然下落）。
+    // playMotion（landed）→ 不重置动作，把进度快照到 hold 窗口末尾，立即续播"放下+稳定"尾段。
     const releasing = this.holdHeld && this.currentActionId === actionId
       && !(options?.loop ?? false);
     this.holdHeld = false;
-    this.currentActionId = actionId;
-    if (!releasing) {
-      this.actionElapsedMs = 0;
-    } else {
-      const def = this.actionDefs.get(actionId);
-      const holdRange = def?.holdRange;
-      const duration = def?.frameDurationMs ?? 0;
-      if (holdRange && duration > 0 && this.actionElapsedMs >= holdRange[0] * duration) {
-        this.actionElapsedMs = (holdRange[1] + 1) * duration;
-      }
-    }
-    this.actionLoop = options?.loop ?? (motion === "idle");
-    // loop + 动作声明 holdRange → 交互保持：播放到区间后只在窗口内循环悬空。
-    if (this.actionLoop && this.actionDefs.get(actionId)?.holdRange) {
-      this.holdHeld = true;
-    }
     this.idleAccumulatedMs = 0;
     this.pendingAlignedOneShot = false;
+    const loop = options?.loop ?? (motion === "idle");
+
+    if (this.findAction(actionId)) {
+      this.touchAction(actionId);
+      this.switchAction(actionId, loop, releasing);
+    } else {
+      // 动作还没解码完：不要立刻把显示切过去（否则会先画一帧 base/空帧再跳变）。
+      // 继续播放当前待机动作，解码完成且这次请求仍是最新时才切换。
+      this.backgroundLoad = this.backgroundLoad.then(async () => {
+        await this.ensureActionLoaded(actionId);
+        if (this.destroyed || generation !== this.actionGeneration) return;
+        if (!this.findAction(actionId)) return;
+        this.switchAction(actionId, loop, releasing);
+        // 显示已切到新动作，上一轮的"当前动作"不再受保护，现在才淘汰它。
+        this.evictActions();
+        this.renderDisplay();
+      });
+    }
     let active = true;
     return {
       cancel: () => {
         if (!active) return;
         active = false;
         if (generation === this.actionGeneration && this.defaultAction) {
+          // 递增 generation，让尚未完成的按需加载结果失效，避免它把动作切回来。
+          this.actionGeneration += 1;
           this.currentActionId = this.defaultAction;
           this.actionElapsedMs = 0;
           this.actionLoop = false;
@@ -401,6 +400,9 @@ export class FrameSequenceRenderer implements PetRenderer {
     this.hitCanvas.remove();
     this.baseImage = undefined;
     this.actions = [];
+    this.actionCatalog = new Map();
+    this.residentActionIds = new Set();
+    this.actionLastUsed = new Map();
     this.unionMasks = new Map();
     this.renderedHitActionId = undefined;
     this.silhouetteDirty = false;
@@ -413,12 +415,43 @@ export class FrameSequenceRenderer implements PetRenderer {
     this.destroyed = true;
   }
 
-  private startOneShot(actionId: string): void {
+  /** 真正把"正在显示的动作"切换过去；releasing 时进度快照到 hold 窗口末尾。 */
+  private switchAction(actionId: string, loop: boolean, releasing: boolean): void {
     this.currentActionId = actionId;
-    this.actionElapsedMs = 0;
-    this.actionLoop = false;
+    this.actionLoop = loop;
+    if (releasing) {
+      const def = this.actionDefs.get(actionId);
+      const holdRange = def?.holdRange;
+      const duration = def?.frameDurationMs ?? 0;
+      this.actionElapsedMs = holdRange && duration > 0 ? (holdRange[1] + 1) * duration : 0;
+    } else {
+      this.actionElapsedMs = 0;
+    }
+    // loop + 动作声明 holdRange → 交互保持：播放到区间后只在窗口内循环悬空。
+    if (loop && this.actionDefs.get(actionId)?.holdRange) {
+      this.holdHeld = true;
+    }
+  }
+
+  private startOneShot(actionId: string): void {
     this.idleAccumulatedMs = 0;
     this.nextOneShotAtMs = Infinity;
+    if (this.findAction(actionId)) {
+      this.touchAction(actionId);
+      this.switchAction(actionId, false, false);
+      return;
+    }
+    // 首次触发的动作还没解码：继续播待机，解码完成后才从第 0 帧接上，
+    // 期间不能把 actionElapsedMs 提前累计进去。
+    const generation = this.actionGeneration;
+    this.backgroundLoad = this.backgroundLoad.then(async () => {
+      await this.ensureActionLoaded(actionId);
+      if (this.destroyed || generation !== this.actionGeneration) return;
+      if (!this.findAction(actionId)) return;
+      this.switchAction(actionId, false, false);
+      this.evictActions();
+      this.renderDisplay();
+    });
   }
 
   private defaultLoopDurationMs(): number {
@@ -463,11 +496,61 @@ export class FrameSequenceRenderer implements PetRenderer {
   }
 
   private actionExists(actionId: string): boolean {
-    return this.actions.some((loaded) => loaded.action.actionId === actionId);
+    return this.actionCatalog.has(actionId);
   }
 
   private findAction(actionId: string): LoadedAction | undefined {
     return this.actions.find((loaded) => loaded.action.actionId === actionId);
+  }
+
+  private touchAction(actionId: string): void {
+    if (this.findAction(actionId)) this.actionLastUsed.set(actionId, ++this.actionUseClock);
+  }
+
+  private async ensureActionLoaded(actionId: string): Promise<void> {
+    if (this.destroyed || !this.defaultAction) return;
+    if (this.findAction(actionId)) {
+      this.touchAction(actionId);
+      return;
+    }
+    const action = this.actionCatalog.get(actionId);
+    if (!action) return;
+    const loadToken = this.loadToken;
+    const frames: FrameImage[] = [];
+    for (const url of action.frameUrls) {
+      if (this.destroyed || loadToken !== this.loadToken) return;
+      frames.push(await this.loadImage(url));
+    }
+    if (this.destroyed || loadToken !== this.loadToken) return;
+    this.actions = this.actions.filter((loaded) => loaded.action.actionId !== actionId);
+    this.actions.push({ action, frames });
+    this.touchAction(actionId);
+    this.evictActions(actionId);
+  }
+
+  private evictActions(protectedId?: string): void {
+    // 刚解码完、但显示还没切过去的动作也必须保护，否则会被自己这一轮淘汰掉。
+    const protectedIds = new Set([
+      ...this.residentActionIds,
+      this.defaultAction,
+      this.currentActionId,
+      protectedId,
+    ]);
+    // 常驻动作不受缓存上限约束（它们是交互零延迟的硬需求）；上限只约束偶发动作。
+    const limit = Math.max(this.maxCachedActions, this.residentActionIds.size);
+    while (this.actions.length > limit) {
+      const candidate = this.actions
+        .filter((loaded) => !protectedIds.has(loaded.action.actionId))
+        .sort((left, right) =>
+          (this.actionLastUsed.get(left.action.actionId) ?? 0)
+          - (this.actionLastUsed.get(right.action.actionId) ?? 0)
+        )[0];
+      if (!candidate) return;
+      const actionId = candidate.action.actionId;
+      this.actions = this.actions.filter((loaded) => loaded.action.actionId !== actionId);
+      this.actionLastUsed.delete(actionId);
+      this.unionMasks.delete(actionId);
+    }
   }
 
   private recomputeLayout(): void {

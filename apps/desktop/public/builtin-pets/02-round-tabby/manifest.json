@@ -96,8 +96,14 @@
   ],
   "semantics": {
     "idle": "breath",
+    "look-left": "breath",
+    "look-right": "breath",
     "react-happy": "tail-wag",
-    "react-curious": "tail-wag"
+    "react-curious": "tail-wag",
+    "carried": "breath",
+    "landed": "breath",
+    "sleep": "breath",
+    "wake": "breath"
   },
   "idleSchedule": {
     "entries": [

@@ -5,6 +5,7 @@ use super::cat_character::{
     parse_cat_character_manifest, parse_cat_spatial_manifest, RuntimeAssetManifestV4,
     RuntimeAssetManifestV5,
 };
+use super::frame_sequence::{parse_frame_sequence_manifest, RuntimeAssetManifestV7};
 
 #[derive(Debug, Clone, Deserialize, Serialize, PartialEq)]
 #[serde(rename_all = "camelCase")]
@@ -80,6 +81,7 @@ pub enum RuntimeAssetManifest {
     V3(RuntimeAssetManifestV3),
     V4(RuntimeAssetManifestV4),
     V5(RuntimeAssetManifestV5),
+    V7(RuntimeAssetManifestV7),
 }
 
 pub fn manifest_files(manifest: &RuntimeAssetManifest) -> &[ManifestFileEntry] {
@@ -89,6 +91,7 @@ pub fn manifest_files(manifest: &RuntimeAssetManifest) -> &[ManifestFileEntry] {
         RuntimeAssetManifest::V3(value) => &value.files,
         RuntimeAssetManifest::V4(value) => &value.files,
         RuntimeAssetManifest::V5(value) => &value.files,
+        RuntimeAssetManifest::V7(value) => &value.files,
     }
 }
 
@@ -99,6 +102,7 @@ pub fn manifest_identity(manifest: &RuntimeAssetManifest) -> (&str, &str) {
         RuntimeAssetManifest::V3(value) => (&value.pet_id, &value.variant_id),
         RuntimeAssetManifest::V4(value) => (&value.pet_id, &value.variant_id),
         RuntimeAssetManifest::V5(value) => (&value.pet_id, &value.variant_id),
+        RuntimeAssetManifest::V7(value) => (&value.pet_id, &value.variant_id),
     }
 }
 
@@ -200,6 +204,10 @@ pub fn parse_manifest(json: &str) -> Result<RuntimeAssetManifest, String> {
     }
     if version == 5 {
         return parse_cat_spatial_manifest(value).map(RuntimeAssetManifest::V5);
+    }
+    // 帧序列资产：schemaVersion 6 与 7 归一化为 V7。
+    if version == 6 || version == 7 {
+        return parse_frame_sequence_manifest(value).map(RuntimeAssetManifest::V7);
     }
     if version != 2 {
         return Err(format!("unsupported schemaVersion: {version}"));

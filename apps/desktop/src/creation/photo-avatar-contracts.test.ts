@@ -151,6 +151,20 @@ describe("photo avatar contracts", () => {
       .toThrow("styleProfileId");
   });
 
+  it.each(["cat", "dog"] as const)("accepts pixel species %s", (species) => {
+    expect(parsePixelAppearanceProfileV1({
+      ...validPixelProfile("pixel-style-v2-animation-ready"),
+      species,
+    }).species).toBe(species);
+  });
+
+  it("rejects pixel species outside cat and dog", () => {
+    expect(() => parsePixelAppearanceProfileV1({
+      ...validPixelProfile("pixel-style-v2-animation-ready"),
+      species: "bird",
+    })).toThrow("cat or dog");
+  });
+
   it("preserves the supported style id in pixel snapshots", () => {
     const snapshot = parsePixelPhotoAvatarSnapshot({
       route: "pixel-v1",

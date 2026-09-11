@@ -45,6 +45,26 @@ export interface FrameSequenceIdleSchedule {
   alignToDefaultLoop?: boolean;
 }
 
+/**
+ * 产品会发出的全部动作（唯一真源：`pet-presentation-controller.ts` 的 `dispatch`）。
+ *
+ * `semantics` 必须显式声明这里的每一个键 —— 没有专属动作的就显式指向
+ * `defaultAction`。运行时取法是 `semantics[motion] ?? defaultAction`，
+ * 键缺失与「故意不响应」在数据上不可区分，静默回落无法被验收。
+ * 显式声明后，「此处回落待机」变成一个看得见的决定。
+ */
+export const PRODUCT_MOTIONS = [
+  "idle",
+  "look-left",
+  "look-right",
+  "react-happy",
+  "react-curious",
+  "carried",
+  "landed",
+  "sleep",
+  "wake",
+] as const;
+
 export interface RuntimeAssetManifestV6 {
   schemaVersion: 6;
   renderer: "frame-sequence-v1";
@@ -327,6 +347,12 @@ export function parseFrameSequenceManifest(json: unknown): RuntimeAssetManifestV
       throw new Error(`semantics.${motion} references unknown action: ${actionId}`);
     }
     semantics[motion] = actionId;
+  }
+  const missingMotions = PRODUCT_MOTIONS.filter((motion) => !(motion in semantics));
+  if (missingMotions.length > 0) {
+    throw new Error(
+      `semantics must declare every product motion: missing ${missingMotions.join(", ")}`,
+    );
   }
 
   const blink = value.blink === undefined ? undefined : parseBlink(value.blink);

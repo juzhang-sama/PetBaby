@@ -111,6 +111,7 @@ describe("合并包：呼吸 + 眨眼（真实资产）", () => {
       .toBe(imageByUrl.get("/fake/宠物动作-毛砌墙-v3-2026-08-31/frames/breath/f0041.png"));
     // 4250→5040（循环边界）：眨眼触发，第一帧 = blink f0000
     renderer.update(5040 - 4250);
+    await renderer.whenReady();
     expect(contexts[0]!.drawImage.mock.calls.at(-1)![0])
       .toBe(imageByUrl.get("/fake/宠物动作-毛砌墙-v3-2026-08-31/frames/blink/f0000.png"));
     // 眨眼推进到 168ms（第 5 帧，index = floor(168/42) = 4）→ 仍在 blink 中

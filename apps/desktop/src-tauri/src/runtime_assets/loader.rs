@@ -81,7 +81,8 @@ pub fn inspect_pet_asset(pets_dir: &Path, pet_id: &str) -> AssetHealth {
             RuntimeAssetManifest::V2(_)
             | RuntimeAssetManifest::V3(_)
             | RuntimeAssetManifest::V4(_)
-            | RuntimeAssetManifest::V5(_),
+            | RuntimeAssetManifest::V5(_)
+            | RuntimeAssetManifest::V7(_),
         ) => "healthy",
         Err(AssetReadError::Missing) => "missing",
         Err(AssetReadError::Corrupt) => "corrupt",
@@ -231,6 +232,105 @@ mod tests {
         )
         .unwrap();
         (pets_dir, root)
+    }
+
+    /// schema 7 帧序列资产目录（两帧，足以覆盖"清单—文件—哈希"三段校验）。
+    fn setup_v7() -> (std::path::PathBuf, std::path::PathBuf) {
+        let n = COUNTER.fetch_add(1, Ordering::SeqCst);
+        let root =
+            std::env::temp_dir().join(format!("desktop-pet-v7-loader-{}-{n}", std::process::id()));
+        let assets = root.join("pets").join("pet-frame").join("assets");
+        std::fs::create_dir_all(assets.join("frames/idle")).unwrap();
+        let first = b"frame-0000";
+        let second = b"frame-0001";
+        std::fs::write(assets.join("frames/idle/f0000.webp"), first).unwrap();
+        std::fs::write(assets.join("frames/idle/f0001.webp"), second).unwrap();
+        let manifest = serde_json::json!({
+            "schemaVersion": 7,
+            "renderer": "frame-sequence-v1",
+            "petId": "pet-frame",
+            "variantId": "variant-frame",
+            "displayName": "帧序列测试",
+            "species": "dog",
+            "baseImage": "frames/idle/f0000.webp",
+            "defaultAction": "idle",
+            "anchorPolicy": "fixed",
+            "actions": [{
+                "actionId": "idle",
+                "loop": true,
+                "frameDurationMs": 42,
+                "frames": ["frames/idle/f0000.webp", "frames/idle/f0001.webp"]
+            }],
+            "semantics": {
+                "idle": "idle",
+                "look-left": "idle",
+                "look-right": "idle",
+                "react-happy": "idle",
+                "react-curious": "idle",
+                "carried": "idle",
+                "landed": "idle",
+                "sleep": "idle",
+                "wake": "idle"
+            },
+            "files": [
+                { "role": "base", "relativePath": "frames/idle/f0000.webp", "sha256": sha256_hex(first) },
+                { "role": "frame", "relativePath": "frames/idle/f0001.webp", "sha256": sha256_hex(second) }
+            ]
+        });
+        std::fs::write(
+            assets.join("manifest.json"),
+            serde_json::to_vec_pretty(&manifest).unwrap(),
+        )
+        .unwrap();
+        let pets_dir = root.join("pets");
+        (pets_dir, root)
+    }
+
+    fn builtin_pets_dir() -> std::path::PathBuf {
+        std::path::PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/builtin-pets")
+    }
+
+    #[test]
+    fn accepts_real_frame_sequence_asset_directories() {
+        // schema 7 曾经会在这里被判成 Corrupt（parse_manifest 只认 1/3/4/5），
+        // 于是帧序列资产永远过不了资产层的安装前校验。
+        for pet_id in [
+            "01-longhair-black-white",
+            "04-warm-brown-tabby",
+            "05-silver-tabby",
+        ] {
+            let dir = builtin_pets_dir().join(pet_id);
+            validate_asset_directory(&dir)
+                .unwrap_or_else(|error| panic!("{pet_id} 必须通过资产校验：{error}"));
+        }
+    }
+
+    #[test]
+    fn reports_healthy_for_a_frame_sequence_asset_directory() {
+        let (pets_dir, root) = setup_v7();
+        assert_eq!(inspect_pet_asset(&pets_dir, "pet-frame").status, "healthy");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_corrupt_when_a_frame_file_changes() {
+        // 确认校验不是"看见 schema 7 就放过"：帧内容变了必须判 Corrupt。
+        let (pets_dir, root) = setup_v7();
+        std::fs::write(
+            pets_dir.join("pet-frame/assets/frames/idle/f0001.webp"),
+            b"tampered",
+        )
+        .unwrap();
+        assert_eq!(inspect_pet_asset(&pets_dir, "pet-frame").status, "corrupt");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn reports_corrupt_when_a_frame_file_is_missing() {
+        let (pets_dir, root) = setup_v7();
+        std::fs::remove_file(pets_dir.join("pet-frame/assets/frames/idle/f0001.webp")).unwrap();
+        assert_eq!(inspect_pet_asset(&pets_dir, "pet-frame").status, "corrupt");
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn write_png(path: &Path, width: u32, height: u32) {

@@ -651,12 +651,17 @@
   ],
   "semantics": {
     "idle": "idle-combo",
+    "look-left": "idle-combo",
+    "look-right": "idle-combo",
+    "react-happy": "idle-combo",
+    "react-curious": "lick",
+    "carried": "grab-release",
+    "landed": "grab-release",
+    "sleep": "idle-combo",
+    "wake": "idle-combo",
     "yawn": "yawn",
     "lick": "lick",
-    "react-curious": "lick",
-    "grab-release": "grab-release",
-    "carried": "grab-release",
-    "landed": "grab-release"
+    "grab-release": "grab-release"
   },
   "files": [
     {

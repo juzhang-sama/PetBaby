@@ -276,8 +276,8 @@ pub fn parse_pixel_appearance_profile_v1(json: &str) -> Result<PixelAppearancePr
     if profile.schema_version != 1 {
         return Err("schemaVersion must be 1".into());
     }
-    if profile.species != "cat" {
-        return Err("species must be cat".into());
+    if !matches!(profile.species.as_str(), "cat" | "dog") {
+        return Err("species must be cat or dog".into());
     }
     let mut summary = HashSet::new();
     for (index, key) in profile.completion_summary.iter().enumerate() {
@@ -670,6 +670,40 @@ mod tests {
                 expected
             );
         }
+    }
+
+    #[test]
+    fn pixel_profile_parser_accepts_cat_and_dog() {
+        for species in ["cat", "dog"] {
+            let profile = json!({
+                "schemaVersion": 1,
+                "species": species,
+                "styleProfileId": "pixel-style-v2-animation-ready",
+                "traits": [],
+                "completionSummary": []
+            });
+            assert_eq!(
+                parse_pixel_appearance_profile_v1(&profile.to_string())
+                    .unwrap()
+                    .species,
+                species
+            );
+        }
+    }
+
+    #[test]
+    fn pixel_profile_parser_rejects_species_outside_cat_and_dog() {
+        let profile = json!({
+            "schemaVersion": 1,
+            "species": "bird",
+            "styleProfileId": "pixel-style-v2-animation-ready",
+            "traits": [],
+            "completionSummary": []
+        });
+        assert_eq!(
+            parse_pixel_appearance_profile_v1(&profile.to_string()),
+            Err("species must be cat or dog".to_string())
+        );
     }
 
     #[test]

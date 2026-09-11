@@ -100,30 +100,34 @@ describe("parseFrameSequenceManifest", () => {
     expect(() => parseFrameSequenceManifest(manifest)).toThrow(/unknown action/);
   });
 
-  it("rejects an inverted hitBounds", () => {
+  it("rejects semantics that do not declare every product motion", () => {
     const manifest = validV6Manifest();
     manifest.semantics = { idle: "breath" };
+    expect(() => parseFrameSequenceManifest(manifest)).toThrow(
+      /every product motion: missing look-left, look-right, react-happy, react-curious, carried, landed, sleep, wake/,
+    );
+  });
+
+  it("rejects an inverted hitBounds", () => {
+    const manifest = validV6Manifest();
     manifest.hitBounds = { left: 0.9, top: 0.1, right: 0.1, bottom: 0.9 };
     expect(() => parseFrameSequenceManifest(manifest)).toThrow(/inverted rect/);
   });
 
   it("rejects blink intervals where max < min", () => {
     const manifest = validV6Manifest();
-    manifest.semantics = { idle: "breath" };
     manifest.blink = { enabled: true, minIntervalMs: 6000, maxIntervalMs: 2500 };
     expect(() => parseFrameSequenceManifest(manifest)).toThrow(/blink/);
   });
 
   it("rejects file entries with an invalid sha256", () => {
     const manifest = validV6Manifest();
-    manifest.semantics = { idle: "breath" };
     manifest.files = [{ ...manifest.files[0]!, sha256: "not-a-hash" }];
     expect(() => parseFrameSequenceManifest(manifest)).toThrow(/sha256/);
   });
 
   it("accepts a manifest without blink and hitBounds", () => {
     const manifest = validV6Manifest();
-    manifest.semantics = { idle: "breath" };
     manifest.blink = undefined;
     manifest.hitBounds = undefined;
     const parsed = parseFrameSequenceManifest(manifest);

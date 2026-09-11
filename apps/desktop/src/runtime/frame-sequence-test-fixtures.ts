@@ -25,7 +25,17 @@ export function validV6Manifest(): RuntimeAssetManifestV6 {
         frames: ["actions/blink/f00.png", "actions/blink/f01.png"],
       },
     ],
-    semantics: { idle: "breath" },
+    semantics: {
+      idle: "breath",
+      "look-left": "breath",
+      "look-right": "breath",
+      "react-happy": "breath",
+      "react-curious": "breath",
+      carried: "breath",
+      landed: "breath",
+      sleep: "breath",
+      wake: "breath",
+    },
     blink: { enabled: true, minIntervalMs: 2500, maxIntervalMs: 6000 },
     hitBounds: { left: 0.05, top: 0.08, right: 0.95, bottom: 0.98 },
     files: [

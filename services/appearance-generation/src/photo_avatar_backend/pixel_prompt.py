@@ -12,6 +12,12 @@ TRAIT_KEYS = (
     "temperament",
 )
 
+# 分析步专用：允许模型声明「照片里没有单只明确可辨认的猫或狗」。
+# 这是输入侧硬拒绝的唯一出口——若 schema 只给 cat/dog，模型会被结构性地强迫二选一，
+# 鸟、风景、多只合影都会被硬塞进某个物种并一路装成宠物。
+# 该值不允许出现在 profile 合同里（PixelAppearanceProfile 只接受 cat|dog）。
+ANALYSIS_UNSUPPORTED_SPECIES = "unsupported"
+
 
 def profile_wire(profile: PixelAppearanceProfile) -> dict[str, JsonValue]:
     return {
@@ -36,7 +42,7 @@ def analysis_prompt(style_profile_id: str) -> str:
     shape = json.dumps(
         {
             "schemaVersion": 1,
-            "species": "cat",
+            "species": f"<cat or dog, or {ANALYSIS_UNSUPPORTED_SPECIES}>",
             "styleProfileId": style_profile_id,
             "traits": [
                 {
@@ -52,7 +58,11 @@ def analysis_prompt(style_profile_id: str) -> str:
         separators=(",", ":"),
     )
     return (
-        "Extract only traits directly visible in the cat photo; do not invent or complete missing traits. "
+        "Extract only traits directly visible in the cat or dog photo; do not invent or complete missing traits. "
+        "The photos must show a single clearly identifiable cat or dog. "
+        f'If they do not — no animal, more than one animal, or an animal that is clearly neither — set "species" to '
+        f'"{ANALYSIS_UNSUPPORTED_SPECIES}" and leave the traits array empty. '
+        "Never guess a species to satisfy the schema. "
         f"Return exactly one JSON object with this shape: {shape}. "
         "The only allowed trait keys are: "
         + keys
@@ -72,7 +82,9 @@ def completion_prompt(
     }
     return (
         "Complete only the listed missing pixel identity traits using the photo and observed traits. "
-        "Return exactly one JSON object with schemaVersion 1, species cat, styleProfileId "
+        "Return exactly one JSON object with schemaVersion 1, species "
+        + observed.species
+        + ", styleProfileId "
         + observed.style_profile_id
         + ", a traits array containing exactly these keys with source ai-completed and empty "
         "evidencePhotoIds, and completionSummary equal to the missing keys. Missing keys and context: "
@@ -84,6 +96,7 @@ def profile_schema(
     keys: tuple[str, ...],
     source: str,
     style_profile_id: str,
+    species: str | None = None,
 ) -> dict[str, JsonValue]:
     evidence: dict[str, JsonValue]
     if source == "user":
@@ -128,7 +141,15 @@ def profile_schema(
         "required": ["schemaVersion", "species", "styleProfileId", "traits", "completionSummary"],
         "properties": {
             "schemaVersion": {"type": "integer", "enum": [1]},
-            "species": {"type": "string", "enum": ["cat"]},
+            "species": {
+                "type": "string",
+                # 分析步（species=None）额外开放「无法判定」出口；补全步锁死到已判定的物种。
+                "enum": (
+                    [species]
+                    if species is not None
+                    else ["cat", "dog", ANALYSIS_UNSUPPORTED_SPECIES]
+                ),
+            },
             "styleProfileId": {"type": "string", "enum": [style_profile_id]},
             "traits": {"type": "array", "items": trait},
             "completionSummary": completion_summary,

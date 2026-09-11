@@ -49,7 +49,7 @@ export type PixelIdentityTraitV1 = {
 
 export type PixelAppearanceProfileV1 = {
   readonly schemaVersion: 1;
-  readonly species: "cat";
+  readonly species: "cat" | "dog";
   readonly styleProfileId: PixelStyleProfileId;
   readonly traits: readonly PixelIdentityTraitV1[];
   readonly completionSummary: readonly PixelIdentityTraitKey[];
@@ -75,7 +75,9 @@ export function parsePixelAppearanceProfileV1(input: unknown): PixelAppearancePr
     "schemaVersion", "species", "styleProfileId", "traits", "completionSummary",
   ]);
   if (value.schemaVersion !== 1) fail("schemaVersion must be 1");
-  if (value.species !== "cat") fail("species must be cat");
+  if (value.species !== "cat" && value.species !== "dog") {
+    fail("species must be cat or dog");
+  }
   const styleProfileId = pixelStyleProfileId(value.styleProfileId);
   if (!Array.isArray(value.traits)) fail("traits must be an array");
   if (!Array.isArray(value.completionSummary)) fail("completionSummary must be an array");
@@ -96,7 +98,7 @@ export function parsePixelAppearanceProfileV1(input: unknown): PixelAppearancePr
     }
   }
 
-  return { schemaVersion: 1, species: "cat", styleProfileId, traits, completionSummary };
+  return { schemaVersion: 1, species: value.species, styleProfileId, traits, completionSummary };
 }
 
 export function parsePixelPhotoAvatarSnapshot(input: unknown): PixelPhotoAvatarSnapshot {

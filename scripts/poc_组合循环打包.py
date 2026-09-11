@@ -22,6 +22,21 @@ from pathlib import Path
 ROOT = Path(__file__).resolve().parents[1]
 FRAME_MS = 42
 
+# 产品会发出的全部动作（唯一真源：apps/desktop/src/runtime/pet-presentation-controller.ts）。
+# schemaVersion-7 校验器要求 semantics 显式声明每一个键：没有专属动作的就显式指向
+# defaultAction。键缺失与"故意不响应"在数据上不可区分，静默回落无法被验收。
+PRODUCT_MOTIONS = (
+    "idle",
+    "look-left",
+    "look-right",
+    "react-happy",
+    "react-curious",
+    "carried",
+    "landed",
+    "sleep",
+    "wake",
+)
+
 
 def sha256_of(path: Path) -> str:
     digest = hashlib.sha256()
@@ -80,7 +95,7 @@ def main() -> int:
             "frameDurationMs": FRAME_MS,
             "frames": rel_frames,
         }],
-        "semantics": {"idle": args.action_id},
+        "semantics": {motion: args.action_id for motion in PRODUCT_MOTIONS},
         "files": files,
         "_provenance": {
             "generator": "scripts/poc_组合循环打包.py",

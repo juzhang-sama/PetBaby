@@ -11,6 +11,7 @@ sys.path.insert(0, str(Path(__file__).resolve().parents[1]))
 
 from photo_avatar_backend.contracts import (  # noqa: E402
     ContractError,
+    PixelAppearanceProfile,
     PixelStepRequest,
     ProviderErrorPayload,
     StepRequest,
@@ -96,6 +97,34 @@ def test_pixel_request_rejects_unknown_explicit_style() -> None:
 
     with pytest.raises(ContractError, match="styleProfileId"):
         PixelStepRequest.parse(payload)
+
+
+@pytest.mark.parametrize("species", ["cat", "dog"])
+def test_pixel_profile_accepts_supported_species(species: str) -> None:
+    profile = PixelAppearanceProfile.parse(
+        {
+            "schemaVersion": 1,
+            "species": species,
+            "styleProfileId": "pixel-style-v2-animation-ready",
+            "traits": [],
+            "completionSummary": [],
+        }
+    )
+
+    assert profile.species == species
+
+
+def test_pixel_profile_rejects_species_outside_cat_and_dog() -> None:
+    with pytest.raises(ContractError, match="cat or dog"):
+        PixelAppearanceProfile.parse(
+            {
+                "schemaVersion": 1,
+                "species": "bird",
+                "styleProfileId": "pixel-style-v2-animation-ready",
+                "traits": [],
+                "completionSummary": [],
+            }
+        )
 
 
 def test_legacy_pixel_request_without_style_is_v1_only() -> None:

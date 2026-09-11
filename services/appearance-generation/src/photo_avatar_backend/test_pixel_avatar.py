@@ -15,6 +15,7 @@ from .contracts import (
 from .lk888_client import Lk888Error, MediaState
 from .pixel_avatar import analyze_pixel_identity, audit_pixel_png, generate_pixel_avatar
 from .pixel_png import normalize_pixel_png, pixelate_pixel_png
+from .pixel_prompt import ANALYSIS_UNSUPPORTED_SPECIES
 from .pixel_style import load_pixel_style_pack
 
 
@@ -57,12 +58,13 @@ def _png(
 def _profile_wire(
     *,
     observed_keys: tuple[str, ...],
+    species: str = "cat",
     style_profile_id: str = "pixel-style-v1",
 ) -> dict[str, object]:
     observed = set(observed_keys)
     return {
         "schemaVersion": 1,
-        "species": "cat",
+        "species": species,
         "styleProfileId": style_profile_id,
         "traits": [
             {
@@ -108,17 +110,20 @@ def _request(
 
 
 class IdentityClient:
-    def __init__(self) -> None:
+    def __init__(self, *, species: str = "cat") -> None:
+        self.species = species
         self.calls: list[tuple[tuple[bytes, ...], dict[str, object]]] = []
+        self.prompts: list[str] = []
 
     def analyze_json(
         self, prompt: str, images: tuple[bytes, ...] | list[bytes], schema: dict[str, object]
     ) -> dict[str, object]:
         self.calls.append((tuple(images), schema))
+        self.prompts.append(prompt)
         if len(self.calls) == 1:
             return {
                 "schemaVersion": 1,
-                "species": "cat",
+                "species": self.species,
                 "styleProfileId": "pixel-style-v1",
                 "traits": [
                     {
@@ -132,15 +137,63 @@ class IdentityClient:
             }
         return {
             "schemaVersion": 1,
-            "species": "cat",
+            "species": self.species,
             "styleProfileId": "pixel-style-v1",
             "traits": [
                 trait
-                for trait in _profile_wire(observed_keys=())["traits"]
+                for trait in _profile_wire(observed_keys=(), species=self.species)["traits"]
                 if trait["key"] != "faceShape"
             ],
             "completionSummary": [key for key in TRAIT_KEYS if key != "faceShape"],
         }
+
+
+def test_pixel_identity_merge_preserves_dog_species() -> None:
+    from photo_avatar_backend.pixel_avatar import analyze_pixel_identity
+
+    client = IdentityClient(species="dog")
+    result = analyze_pixel_identity(
+        _request(step="analyzeIdentity", profile=None),
+        client=client,
+    )
+
+    assert result["species"] == "dog"
+    assert client.calls[0][1]["properties"]["species"] == {
+        "type": "string",
+        "enum": ["cat", "dog", ANALYSIS_UNSUPPORTED_SPECIES],
+    }
+    assert client.calls[1][1]["properties"]["species"] == {
+        "type": "string",
+        "enum": ["dog"],
+    }
+
+
+def test_pixel_identity_rejects_photos_without_a_single_identifiable_cat_or_dog() -> None:
+    """输入侧硬拒绝：模型明确判定不是猫/狗时，必须在分析步就失败。
+
+    否则 species 校验只发生在「模型已经二选一之后」，形同虚设——
+    鸟或风景照片会被硬塞进 cat/dog 一路装成宠物。
+    """
+
+    client = IdentityClient(species=ANALYSIS_UNSUPPORTED_SPECIES)
+    with pytest.raises(ContractError) as error:
+        analyze_pixel_identity(_request(step="analyzeIdentity", profile=None), client=client)
+
+    message = str(error.value)
+    assert "cat" in message and "dog" in message
+    # 判定不通过时必须尽早失败，不得再提交补全步骤（省一次付费调用）。
+    assert len(client.calls) == 1
+
+
+def test_pixel_analysis_prompt_asks_for_a_single_identifiable_subject() -> None:
+    client = IdentityClient()
+    analyze_pixel_identity(_request(step="analyzeIdentity", profile=None), client=client)
+
+    prompt = client.prompts[0]
+    # schema 给了「无法判定」这个出口，prompt 必须告诉模型什么时候用它，
+    # 否则模型仍然会在 cat/dog 里硬选一个。
+    assert ANALYSIS_UNSUPPORTED_SPECIES in prompt
+    assert "single" in prompt.lower()
 
 
 class ImageClient:
