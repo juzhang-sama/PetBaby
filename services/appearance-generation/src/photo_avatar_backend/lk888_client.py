@@ -4,7 +4,7 @@ import json
 import re
 from base64 import b64encode
 from dataclasses import dataclass
-from typing import Any, Mapping, Sequence
+from typing import Any, Callable, Mapping, Sequence
 from urllib.parse import urlparse
 
 import httpx
@@ -13,8 +13,10 @@ from .config import BackendConfig
 
 
 _MAX_ARTIFACT_BYTES = 20 * 1024 * 1024
+_MAX_VIDEO_BYTES = 256 * 1024 * 1024
 _MAX_PROVIDER_DIAGNOSTIC_CHARS = 300
 _PNG_SIGNATURE = b"\x89PNG\r\n\x1a\n"
+_MP4_FTYP_OFFSET = 4
 _SAFE_PROVIDER_FIELD = re.compile(r"[A-Za-z0-9_.\[\]-]{1,80}")
 _PROVIDER_DIAGNOSTIC_TAGS = (
     ("response_format", ("response_format", "response format")),
@@ -34,6 +36,15 @@ _MEDIA_STATES = frozenset(
 _MEDIA_REQUIRED_STATE_FIELDS = frozenset(
     {"task_id", "state", "is_final", "result_url", "error"}
 )
+
+
+def _is_video_media_type(value: str) -> bool:
+    # CDNs sometimes serve MP4 as a generic binary; the ftyp check below is the real gate.
+    return value.startswith("video/") or value == "application/octet-stream"
+
+
+def _is_mp4(body: bytes) -> bool:
+    return len(body) >= 12 and body[_MP4_FTYP_OFFSET : _MP4_FTYP_OFFSET + 4] == b"ftyp"
 
 
 class Lk888Error(RuntimeError):
@@ -88,6 +99,37 @@ class MediaState:
         if result_url is not None or raw_error is not None:
             raise _protocol_error("media status non-result state cannot include result or error")
         return cls(normalized_task_id, state, is_final, None, None)
+
+
+@dataclass(frozen=True)
+class _ArtifactKind:
+    """One downloadable result type: declared media type, real signature, size cap."""
+
+    label: str
+    max_bytes: int
+    timeout: float
+    accepts_media_type: Callable[[str], bool]
+    accepts_body: Callable[[bytes], bool]
+
+    @property
+    def limit_name(self) -> str:
+        return f"{self.max_bytes // (1024 * 1024)} MiB"
+
+
+_PNG_ARTIFACT = _ArtifactKind(
+    label="PNG",
+    max_bytes=_MAX_ARTIFACT_BYTES,
+    timeout=120,
+    accepts_media_type=lambda value: value == "image/png",
+    accepts_body=lambda body: body.startswith(_PNG_SIGNATURE),
+)
+_VIDEO_ARTIFACT = _ArtifactKind(
+    label="MP4",
+    max_bytes=_MAX_VIDEO_BYTES,
+    timeout=300,
+    accepts_media_type=_is_video_media_type,
+    accepts_body=_is_mp4,
+)
 
 
 class Lk888Client:
@@ -146,12 +188,48 @@ class Lk888Client:
         params: dict[str, Any] = {"size": "2048x2048", "quality": "auto"}
         if images:
             params["images"] = [_data_url(image) for image in images]
+        return self._submit(self.config.image_model, prompt, params)
+
+    def submit_video(
+        self,
+        prompt: str,
+        *,
+        images: Sequence[bytes] = (),
+        version: str = "标准",
+        duration: str = "5",
+        resolution: str = "720p",
+        aspect_ratio: str | None = "1:1",
+        mode: str | None = "shouweizhen",
+    ) -> str:
+        """Submit a Seedance 2.0 video task through the platform media protocol.
+
+        ``images`` holds the frames the mode expects: empty means text-to-video, one means
+        a first frame, two means first plus last frame. ``mode`` selects 首尾帧
+        (``shouweizhen``) or 参考生 (``cankaosheng``) on the models that expose it — pass
+        ``None`` for models without a ``mode`` parameter, such as ``kwvideo-v2``.
+        Option values must come from ``GET /v1/skills/models/<model>``; the provider stays
+        the single source of truth, so invalid combinations surface as ``invalidInput``.
+        """
+        params: dict[str, Any] = {
+            "version": version,
+            "duration": duration,
+            "resolution": resolution,
+        }
+        if mode is not None:
+            params["mode"] = mode
+        if aspect_ratio is not None:
+            params["aspect_ratio"] = aspect_ratio
+        if images:
+            params["images"] = [_data_url(image) for image in images]
+        return self._submit(self.config.video_model, prompt, params)
+
+    def _submit(self, model: str, prompt: str, params: dict[str, Any]) -> str:
         response = self._request(
             "POST",
             f"{self.config.lk888_base_url}/v1/media/generate",
             timeout=300,
             json={
-                "model": self.config.image_model,
+                "model": model,
                 "prompt": prompt,
                 "params": params,
             },
@@ -183,6 +261,7 @@ class Lk888Client:
         return normalized_task_id
 
     def poll_image(self, task_id: str) -> MediaState:
+        """Poll any media task, image or video; the status endpoint is model-agnostic."""
         if not task_id.strip():
             raise Lk888Error("invalidInput", False, "task_id must be non-empty")
         response = self._request(
@@ -194,32 +273,42 @@ class Lk888Client:
         return MediaState.parse(_response_json(response, "media status response"), task_id)
 
     def download(self, url: str) -> bytes:
+        return self._download_artifact(url, _PNG_ARTIFACT)
+
+    def download_video(self, url: str) -> bytes:
+        return self._download_artifact(url, _VIDEO_ARTIFACT)
+
+    def _download_artifact(self, url: str, kind: _ArtifactKind) -> bytes:
         if not _is_https_url(url):
             raise Lk888Error("invalidInput", False, "artifact URL must use HTTPS")
         try:
             with self.http.stream(
-                "GET", url, follow_redirects=False, timeout=120
+                "GET", url, follow_redirects=False, timeout=kind.timeout
             ) as response:
                 if response.is_redirect:
                     raise Lk888Error("invalidInput", False, "artifact redirect is forbidden")
                 self._require_success(response)
                 media_type = response.headers.get("content-type", "").split(";", 1)[0]
-                if media_type.lower() != "image/png":
-                    raise Lk888Error("invalidInput", False, "artifact is not PNG")
+                if not kind.accepts_media_type(media_type.lower()):
+                    raise Lk888Error("invalidInput", False, f"artifact is not {kind.label}")
                 declared_size = response.headers.get("content-length")
                 if declared_size is not None:
                     try:
-                        if int(declared_size) > _MAX_ARTIFACT_BYTES:
+                        if int(declared_size) > kind.max_bytes:
                             raise Lk888Error(
-                                "invalidInput", False, "artifact exceeds 20 MiB"
+                                "invalidInput",
+                                False,
+                                f"artifact exceeds {kind.limit_name}",
                             )
                     except ValueError as exc:
                         raise _protocol_error("artifact content length is invalid") from exc
                 body = bytearray()
                 for chunk in response.iter_bytes():
                     body.extend(chunk)
-                    if len(body) > _MAX_ARTIFACT_BYTES:
-                        raise Lk888Error("invalidInput", False, "artifact exceeds 20 MiB")
+                    if len(body) > kind.max_bytes:
+                        raise Lk888Error(
+                            "invalidInput", False, f"artifact exceeds {kind.limit_name}"
+                        )
         except Lk888Error:
             raise
         except httpx.TimeoutException as exc:
@@ -227,8 +316,8 @@ class Lk888Client:
         except httpx.HTTPError as exc:
             raise Lk888Error("network", True, "artifact download failed") from exc
         result = bytes(body)
-        if not result.startswith(_PNG_SIGNATURE):
-            raise Lk888Error("invalidInput", False, "artifact is not PNG")
+        if not kind.accepts_body(result):
+            raise Lk888Error("invalidInput", False, f"artifact is not {kind.label}")
         return result
 
     def _request(self, method: str, url: str, **kwargs: Any) -> httpx.Response:

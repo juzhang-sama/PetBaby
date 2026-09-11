@@ -27,6 +27,7 @@ class BackendConfig:
     lk888_base_url: str = _LK888_BASE_URL
     analysis_model: str = "gpt-4o"
     image_model: str = "gpt-image-2"
+    video_model: str = "seedance-2.0-guanfang"
     host: str = "127.0.0.1"
     port: int = 8787
     state_dir: Path = Path("output/photo-avatar-backend")
@@ -61,6 +62,7 @@ class BackendConfig:
         port = _parse_port(env.get("PHOTO_AVATAR_BACKEND_PORT", "8787"))
         analysis_model = _fixed_model(env, "LK888_ANALYSIS_MODEL", "gpt-4o")
         image_model = _fixed_model(env, "LK888_IMAGE_MODEL", "gpt-image-2")
+        video_model = _fixed_model(env, "LK888_VIDEO_MODEL", "seedance-2.0-guanfang")
         state_dir = _state_dir(env)
 
         return cls(
@@ -69,6 +71,7 @@ class BackendConfig:
             lk888_base_url=base_url,
             analysis_model=analysis_model,
             image_model=image_model,
+            video_model=video_model,
             host=host,
             port=port,
             state_dir=state_dir,

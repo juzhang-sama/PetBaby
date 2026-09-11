@@ -1,3 +1,4 @@
+import base64
 import json
 import sys
 from pathlib import Path
@@ -16,6 +17,8 @@ from photo_avatar_backend.lk888_client import (  # noqa: E402
 
 PNG = b"\x89PNG\r\n\x1a\nsource"
 UV_GUIDE = b"\x89PNG\r\n\x1a\nguide"
+MP4 = b"\x00\x00\x00\x18ftypisom\x00\x00\x02\x00isomiso2avc1"
+FIRST_FRAME = b"\x89PNG\r\n\x1a\nfirst-frame"
 PROFILE_SCHEMA = {
     "type": "object",
     "properties": {"species": {"type": "string"}},
@@ -666,3 +669,113 @@ def test_download_returns_png_without_following_redirects():
 
     assert client_with(handler).download("https://cdn.lk888.ai/result.png") == PNG
     assert len(seen) == 1
+
+
+def test_submit_video_uses_the_video_model_and_seedance_parameters():
+    transport = RecordingTransport()
+    client = client_with(transport)
+
+    task_id = client.submit_video(
+        "breathe and blink, pure green screen",
+        images=[FIRST_FRAME],
+        version="标准",
+        duration="12",
+        resolution="720p",
+        aspect_ratio="1:1",
+    )
+
+    assert task_id == "task-17"
+    assert transport.requests[0].url.path == "/v1/media/generate"
+    assert transport.requests[0].extensions["timeout"]["read"] == 300
+    body = transport.json_bodies[0]
+    assert body["model"] == "seedance-2.0-guanfang"
+    assert body["params"] == {
+        "version": "标准",
+        "duration": "12",
+        "resolution": "720p",
+        "mode": "shouweizhen",
+        "aspect_ratio": "1:1",
+        "images": ["data:image/png;base64," + base64.b64encode(FIRST_FRAME).decode()],
+    }
+
+
+def test_submit_video_omits_optional_parameters_when_unset():
+    transport = RecordingTransport()
+
+    client_with(transport).submit_video(
+        "a cat wagging its tail", aspect_ratio=None, mode=None
+    )
+
+    assert transport.json_bodies[0]["params"] == {
+        "version": "标准",
+        "duration": "5",
+        "resolution": "720p",
+    }
+
+
+def test_submit_video_keeps_first_and_last_frames_in_order():
+    transport = RecordingTransport()
+    last_frame = b"\x89PNG\r\n\x1a\nlast-frame"
+
+    client_with(transport).submit_video("settle back", images=[FIRST_FRAME, last_frame])
+
+    encoded = transport.json_bodies[0]["params"]["images"]
+    assert encoded == [
+        "data:image/png;base64," + base64.b64encode(FIRST_FRAME).decode(),
+        "data:image/png;base64," + base64.b64encode(last_frame).decode(),
+    ]
+
+
+@pytest.mark.parametrize(
+    "content_type", ["video/mp4", "application/octet-stream"]
+)
+def test_download_video_returns_mp4_payload(content_type):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": content_type},
+            content=MP4,
+            request=request,
+        )
+
+    assert client_with(handler).download_video("https://cdn.lk888.ai/clip.mp4") == MP4
+
+
+@pytest.mark.parametrize(
+    ("content_type", "content"),
+    [
+        ("text/html", MP4),
+        ("image/png", MP4),
+        ("video/mp4", b"not-an-mp4-at-all"),
+        ("video/mp4", b""),
+    ],
+)
+def test_download_video_rejects_non_video_payloads(content_type, content):
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            headers={"content-type": content_type},
+            content=content,
+            request=request,
+        )
+
+    with pytest.raises(Lk888Error) as raised:
+        client_with(handler).download_video("https://cdn.lk888.ai/clip.mp4")
+
+    assert raised.value.code == "invalidInput"
+    assert raised.value.retryable is False
+
+
+def test_download_video_still_refuses_redirects_and_plain_http():
+    def redirecting(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            302,
+            headers={"location": "https://other.example/clip.mp4"},
+            request=request,
+        )
+
+    with pytest.raises(Lk888Error):
+        client_with(redirecting).download_video("https://cdn.lk888.ai/clip.mp4")
+
+    with pytest.raises(Lk888Error, match="HTTPS"):
+        client_with(redirecting).download_video("http://cdn.lk888.ai/clip.mp4")
