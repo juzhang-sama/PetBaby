@@ -43,7 +43,7 @@ describe("startup pet source", () => {
   });
 
   it("treats the built-in pixel pets as built-in sources", () => {
-    expect(BUILTIN_PIXEL_PETS).toHaveLength(5);
+    expect(BUILTIN_PIXEL_PETS).toHaveLength(6);
     for (const pet of BUILTIN_PIXEL_PETS) {
       expect(selectStartupPetSource(pet.petId)).toEqual({
         kind: "builtin",

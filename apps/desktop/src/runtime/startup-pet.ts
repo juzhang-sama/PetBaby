@@ -41,6 +41,13 @@ export const BUILTIN_PIXEL_PETS = [
     manifestUrl: "/builtin-pets/05-silver-tabby/manifest.json",
     previewUrl: "/builtin-pets/05-silver-tabby/frames/idle-combo/f0000.webp",
   },
+  // 果冻（短毛猫）：第一只「真实照片 → AI 视频 → 抠像 → 帧序列」端到端跑通的宠物。
+  // 2026-09-12 接入（photo → master → green-screen first frame → Seedance 12s → matting → 四判据全 PASS）。
+  {
+    petId: "06-guodong",
+    manifestUrl: "/builtin-pets/06-guodong/manifest.json",
+    previewUrl: "/builtin-pets/06-guodong/frames/idle-combo/f0000.webp",
+  },
 ] as const;
 
 export type BuiltinPixelPet = (typeof BUILTIN_PIXEL_PETS)[number];
