@@ -1,0 +1,1767 @@
+{
+  "schemaVersion": 7,
+  "renderer": "frame-sequence-v1",
+  "petId": "07-long-hair-cat",
+  "variantId": "combo-loop-v1",
+  "displayName": "长毛猫",
+  "species": "cat",
+  "baseImage": "frames/idle-combo/f0000.webp",
+  "defaultAction": "idle-combo",
+  "anchorPolicy": "fixed",
+  "actions": [
+    {
+      "actionId": "idle-combo",
+      "loop": true,
+      "frameDurationMs": 42,
+      "frames": [
+        "frames/idle-combo/f0000.webp",
+        "frames/idle-combo/f0001.webp",
+        "frames/idle-combo/f0002.webp",
+        "frames/idle-combo/f0003.webp",
+        "frames/idle-combo/f0004.webp",
+        "frames/idle-combo/f0005.webp",
+        "frames/idle-combo/f0006.webp",
+        "frames/idle-combo/f0007.webp",
+        "frames/idle-combo/f0008.webp",
+        "frames/idle-combo/f0009.webp",
+        "frames/idle-combo/f0010.webp",
+        "frames/idle-combo/f0011.webp",
+        "frames/idle-combo/f0012.webp",
+        "frames/idle-combo/f0013.webp",
+        "frames/idle-combo/f0014.webp",
+        "frames/idle-combo/f0015.webp",
+        "frames/idle-combo/f0016.webp",
+        "frames/idle-combo/f0017.webp",
+        "frames/idle-combo/f0018.webp",
+        "frames/idle-combo/f0019.webp",
+        "frames/idle-combo/f0020.webp",
+        "frames/idle-combo/f0021.webp",
+        "frames/idle-combo/f0022.webp",
+        "frames/idle-combo/f0023.webp",
+        "frames/idle-combo/f0024.webp",
+        "frames/idle-combo/f0025.webp",
+        "frames/idle-combo/f0026.webp",
+        "frames/idle-combo/f0027.webp",
+        "frames/idle-combo/f0028.webp",
+        "frames/idle-combo/f0029.webp",
+        "frames/idle-combo/f0030.webp",
+        "frames/idle-combo/f0031.webp",
+        "frames/idle-combo/f0032.webp",
+        "frames/idle-combo/f0033.webp",
+        "frames/idle-combo/f0034.webp",
+        "frames/idle-combo/f0035.webp",
+        "frames/idle-combo/f0036.webp",
+        "frames/idle-combo/f0037.webp",
+        "frames/idle-combo/f0038.webp",
+        "frames/idle-combo/f0039.webp",
+        "frames/idle-combo/f0040.webp",
+        "frames/idle-combo/f0041.webp",
+        "frames/idle-combo/f0042.webp",
+        "frames/idle-combo/f0043.webp",
+        "frames/idle-combo/f0044.webp",
+        "frames/idle-combo/f0045.webp",
+        "frames/idle-combo/f0046.webp",
+        "frames/idle-combo/f0047.webp",
+        "frames/idle-combo/f0048.webp",
+        "frames/idle-combo/f0049.webp",
+        "frames/idle-combo/f0050.webp",
+        "frames/idle-combo/f0051.webp",
+        "frames/idle-combo/f0052.webp",
+        "frames/idle-combo/f0053.webp",
+        "frames/idle-combo/f0054.webp",
+        "frames/idle-combo/f0055.webp",
+        "frames/idle-combo/f0056.webp",
+        "frames/idle-combo/f0057.webp",
+        "frames/idle-combo/f0058.webp",
+        "frames/idle-combo/f0059.webp",
+        "frames/idle-combo/f0060.webp",
+        "frames/idle-combo/f0061.webp",
+        "frames/idle-combo/f0062.webp",
+        "frames/idle-combo/f0063.webp",
+        "frames/idle-combo/f0064.webp",
+        "frames/idle-combo/f0065.webp",
+        "frames/idle-combo/f0066.webp",
+        "frames/idle-combo/f0067.webp",
+        "frames/idle-combo/f0068.webp",
+        "frames/idle-combo/f0069.webp",
+        "frames/idle-combo/f0070.webp",
+        "frames/idle-combo/f0071.webp",
+        "frames/idle-combo/f0072.webp",
+        "frames/idle-combo/f0073.webp",
+        "frames/idle-combo/f0074.webp",
+        "frames/idle-combo/f0075.webp",
+        "frames/idle-combo/f0076.webp",
+        "frames/idle-combo/f0077.webp",
+        "frames/idle-combo/f0078.webp",
+        "frames/idle-combo/f0079.webp",
+        "frames/idle-combo/f0080.webp",
+        "frames/idle-combo/f0081.webp",
+        "frames/idle-combo/f0082.webp",
+        "frames/idle-combo/f0083.webp",
+        "frames/idle-combo/f0084.webp",
+        "frames/idle-combo/f0085.webp",
+        "frames/idle-combo/f0086.webp",
+        "frames/idle-combo/f0087.webp",
+        "frames/idle-combo/f0088.webp",
+        "frames/idle-combo/f0089.webp",
+        "frames/idle-combo/f0090.webp",
+        "frames/idle-combo/f0091.webp",
+        "frames/idle-combo/f0092.webp",
+        "frames/idle-combo/f0093.webp",
+        "frames/idle-combo/f0094.webp",
+        "frames/idle-combo/f0095.webp",
+        "frames/idle-combo/f0096.webp",
+        "frames/idle-combo/f0097.webp",
+        "frames/idle-combo/f0098.webp",
+        "frames/idle-combo/f0099.webp",
+        "frames/idle-combo/f0100.webp",
+        "frames/idle-combo/f0101.webp",
+        "frames/idle-combo/f0102.webp",
+        "frames/idle-combo/f0103.webp",
+        "frames/idle-combo/f0104.webp",
+        "frames/idle-combo/f0105.webp",
+        "frames/idle-combo/f0106.webp",
+        "frames/idle-combo/f0107.webp",
+        "frames/idle-combo/f0108.webp",
+        "frames/idle-combo/f0109.webp",
+        "frames/idle-combo/f0110.webp",
+        "frames/idle-combo/f0111.webp",
+        "frames/idle-combo/f0112.webp",
+        "frames/idle-combo/f0113.webp",
+        "frames/idle-combo/f0114.webp",
+        "frames/idle-combo/f0115.webp",
+        "frames/idle-combo/f0116.webp",
+        "frames/idle-combo/f0117.webp",
+        "frames/idle-combo/f0118.webp",
+        "frames/idle-combo/f0119.webp",
+        "frames/idle-combo/f0120.webp",
+        "frames/idle-combo/f0121.webp",
+        "frames/idle-combo/f0122.webp",
+        "frames/idle-combo/f0123.webp",
+        "frames/idle-combo/f0124.webp",
+        "frames/idle-combo/f0125.webp",
+        "frames/idle-combo/f0126.webp",
+        "frames/idle-combo/f0127.webp",
+        "frames/idle-combo/f0128.webp",
+        "frames/idle-combo/f0129.webp",
+        "frames/idle-combo/f0130.webp",
+        "frames/idle-combo/f0131.webp",
+        "frames/idle-combo/f0132.webp",
+        "frames/idle-combo/f0133.webp",
+        "frames/idle-combo/f0134.webp",
+        "frames/idle-combo/f0135.webp",
+        "frames/idle-combo/f0136.webp",
+        "frames/idle-combo/f0137.webp",
+        "frames/idle-combo/f0138.webp",
+        "frames/idle-combo/f0139.webp",
+        "frames/idle-combo/f0140.webp",
+        "frames/idle-combo/f0141.webp",
+        "frames/idle-combo/f0142.webp",
+        "frames/idle-combo/f0143.webp",
+        "frames/idle-combo/f0144.webp",
+        "frames/idle-combo/f0145.webp",
+        "frames/idle-combo/f0146.webp",
+        "frames/idle-combo/f0147.webp",
+        "frames/idle-combo/f0148.webp",
+        "frames/idle-combo/f0149.webp",
+        "frames/idle-combo/f0150.webp",
+        "frames/idle-combo/f0151.webp",
+        "frames/idle-combo/f0152.webp",
+        "frames/idle-combo/f0153.webp",
+        "frames/idle-combo/f0154.webp",
+        "frames/idle-combo/f0155.webp",
+        "frames/idle-combo/f0156.webp",
+        "frames/idle-combo/f0157.webp",
+        "frames/idle-combo/f0158.webp",
+        "frames/idle-combo/f0159.webp",
+        "frames/idle-combo/f0160.webp",
+        "frames/idle-combo/f0161.webp",
+        "frames/idle-combo/f0162.webp",
+        "frames/idle-combo/f0163.webp",
+        "frames/idle-combo/f0164.webp",
+        "frames/idle-combo/f0165.webp",
+        "frames/idle-combo/f0166.webp",
+        "frames/idle-combo/f0167.webp",
+        "frames/idle-combo/f0168.webp",
+        "frames/idle-combo/f0169.webp",
+        "frames/idle-combo/f0170.webp",
+        "frames/idle-combo/f0171.webp",
+        "frames/idle-combo/f0172.webp",
+        "frames/idle-combo/f0173.webp",
+        "frames/idle-combo/f0174.webp",
+        "frames/idle-combo/f0175.webp",
+        "frames/idle-combo/f0176.webp",
+        "frames/idle-combo/f0177.webp",
+        "frames/idle-combo/f0178.webp",
+        "frames/idle-combo/f0179.webp",
+        "frames/idle-combo/f0180.webp",
+        "frames/idle-combo/f0181.webp",
+        "frames/idle-combo/f0182.webp",
+        "frames/idle-combo/f0183.webp",
+        "frames/idle-combo/f0184.webp",
+        "frames/idle-combo/f0185.webp",
+        "frames/idle-combo/f0186.webp",
+        "frames/idle-combo/f0187.webp",
+        "frames/idle-combo/f0188.webp",
+        "frames/idle-combo/f0189.webp",
+        "frames/idle-combo/f0190.webp",
+        "frames/idle-combo/f0191.webp",
+        "frames/idle-combo/f0192.webp",
+        "frames/idle-combo/f0193.webp",
+        "frames/idle-combo/f0194.webp",
+        "frames/idle-combo/f0195.webp",
+        "frames/idle-combo/f0196.webp",
+        "frames/idle-combo/f0197.webp",
+        "frames/idle-combo/f0198.webp",
+        "frames/idle-combo/f0199.webp",
+        "frames/idle-combo/f0200.webp",
+        "frames/idle-combo/f0201.webp",
+        "frames/idle-combo/f0202.webp",
+        "frames/idle-combo/f0203.webp",
+        "frames/idle-combo/f0204.webp",
+        "frames/idle-combo/f0205.webp",
+        "frames/idle-combo/f0206.webp",
+        "frames/idle-combo/f0207.webp",
+        "frames/idle-combo/f0208.webp",
+        "frames/idle-combo/f0209.webp",
+        "frames/idle-combo/f0210.webp",
+        "frames/idle-combo/f0211.webp",
+        "frames/idle-combo/f0212.webp",
+        "frames/idle-combo/f0213.webp",
+        "frames/idle-combo/f0214.webp",
+        "frames/idle-combo/f0215.webp",
+        "frames/idle-combo/f0216.webp",
+        "frames/idle-combo/f0217.webp",
+        "frames/idle-combo/f0218.webp",
+        "frames/idle-combo/f0219.webp",
+        "frames/idle-combo/f0220.webp",
+        "frames/idle-combo/f0221.webp",
+        "frames/idle-combo/f0222.webp",
+        "frames/idle-combo/f0223.webp",
+        "frames/idle-combo/f0224.webp",
+        "frames/idle-combo/f0225.webp",
+        "frames/idle-combo/f0226.webp",
+        "frames/idle-combo/f0227.webp",
+        "frames/idle-combo/f0228.webp",
+        "frames/idle-combo/f0229.webp",
+        "frames/idle-combo/f0230.webp",
+        "frames/idle-combo/f0231.webp",
+        "frames/idle-combo/f0232.webp",
+        "frames/idle-combo/f0233.webp",
+        "frames/idle-combo/f0234.webp",
+        "frames/idle-combo/f0235.webp",
+        "frames/idle-combo/f0236.webp",
+        "frames/idle-combo/f0237.webp",
+        "frames/idle-combo/f0238.webp",
+        "frames/idle-combo/f0239.webp",
+        "frames/idle-combo/f0240.webp",
+        "frames/idle-combo/f0241.webp",
+        "frames/idle-combo/f0242.webp",
+        "frames/idle-combo/f0243.webp",
+        "frames/idle-combo/f0244.webp",
+        "frames/idle-combo/f0245.webp",
+        "frames/idle-combo/f0246.webp",
+        "frames/idle-combo/f0247.webp",
+        "frames/idle-combo/f0248.webp",
+        "frames/idle-combo/f0249.webp",
+        "frames/idle-combo/f0250.webp",
+        "frames/idle-combo/f0251.webp",
+        "frames/idle-combo/f0252.webp",
+        "frames/idle-combo/f0253.webp",
+        "frames/idle-combo/f0254.webp",
+        "frames/idle-combo/f0255.webp",
+        "frames/idle-combo/f0256.webp",
+        "frames/idle-combo/f0257.webp",
+        "frames/idle-combo/f0258.webp",
+        "frames/idle-combo/f0259.webp",
+        "frames/idle-combo/f0260.webp",
+        "frames/idle-combo/f0261.webp",
+        "frames/idle-combo/f0262.webp",
+        "frames/idle-combo/f0263.webp",
+        "frames/idle-combo/f0264.webp",
+        "frames/idle-combo/f0265.webp",
+        "frames/idle-combo/f0266.webp",
+        "frames/idle-combo/f0267.webp",
+        "frames/idle-combo/f0268.webp",
+        "frames/idle-combo/f0269.webp",
+        "frames/idle-combo/f0270.webp",
+        "frames/idle-combo/f0271.webp",
+        "frames/idle-combo/f0272.webp",
+        "frames/idle-combo/f0273.webp",
+        "frames/idle-combo/f0274.webp",
+        "frames/idle-combo/f0275.webp",
+        "frames/idle-combo/f0276.webp",
+        "frames/idle-combo/f0277.webp",
+        "frames/idle-combo/f0278.webp",
+        "frames/idle-combo/f0279.webp",
+        "frames/idle-combo/f0280.webp",
+        "frames/idle-combo/f0281.webp",
+        "frames/idle-combo/f0282.webp",
+        "frames/idle-combo/f0283.webp",
+        "frames/idle-combo/f0284.webp",
+        "frames/idle-combo/f0285.webp",
+        "frames/idle-combo/f0286.webp",
+        "frames/idle-combo/f0287.webp"
+      ]
+    }
+  ],
+  "semantics": {
+    "idle": "idle-combo",
+    "look-left": "idle-combo",
+    "look-right": "idle-combo",
+    "react-happy": "idle-combo",
+    "react-curious": "idle-combo",
+    "carried": "idle-combo",
+    "landed": "idle-combo",
+    "sleep": "idle-combo",
+    "wake": "idle-combo"
+  },
+  "files": [
+    {
+      "role": "base",
+      "relativePath": "frames/idle-combo/f0000.webp",
+      "sha256": "84e81ea711b2e97f7e9883cb5c0f8abfd3edcff3714f65ac9fabac5bba27a188"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0001.webp",
+      "sha256": "3aef8e993a3f2b9b81350be22df673b4cfab4671b5af940e1c555c265cae6e14"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0002.webp",
+      "sha256": "af965e3832e1813c716ae7243dbb3d0ed36fef2d3a6566286c8f595cdc7fb60d"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0003.webp",
+      "sha256": "450258f8f8af35af83aed83cae569421c51d5d445feb2bba9502f66e847eaf83"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0004.webp",
+      "sha256": "db23d3f2d60d32194e7fa3deb46c46125517234badb7c176cbd2504aceb1126c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0005.webp",
+      "sha256": "f87846d9b4fc4d6a422c56e3106afdbde5c4ecedbb46f81f573f7fc660d85448"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0006.webp",
+      "sha256": "35929015d656b6d46515c8d1459ad8c4781670c4b6acb3aca9903871a04f7332"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0007.webp",
+      "sha256": "03cb290dc3da85b4d1818812f8fb91097a360cd7aab34b875bffb1df0f966a05"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0008.webp",
+      "sha256": "393fabde3dd4be75e075dc34c15cd273b00a9d8cb19dc4077597e7883e933b78"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0009.webp",
+      "sha256": "993522ebab562535b0260b8aaa4c8336c66c189c91d3289a714fcc390ed85b05"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0010.webp",
+      "sha256": "1accf4b15950f8262ad939c53c80adb11004f024aac6b3f8f8a9443084dcb9ae"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0011.webp",
+      "sha256": "bab3ef2ee1d4ba9a7073ab877e1d4f1474ba2c1d6ecefbc3c46db7dbac3b530a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0012.webp",
+      "sha256": "db94a7dd5e6b3d0f372598d4342f1d924f6b4ebae827c335a0fbcd735bfb69a8"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0013.webp",
+      "sha256": "9491d4dbf02c32832de33b61ef1a62fbcf0554f926a89dc8787fcba8570d613a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0014.webp",
+      "sha256": "d0dbc1e15dfaf9499ce1f1a11f2504a5ef12f5defa845705155f68de2a6b4809"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0015.webp",
+      "sha256": "a0083a85f6dfcbf1f8b4ca661da5484e40f44d76c391eb4abaffe3316f730b3e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0016.webp",
+      "sha256": "203c6ebc19decfa0495fe388c5edfcff92e9cc84d81f9ea22332dcfab92893a0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0017.webp",
+      "sha256": "5bec09ffb75d4f1f197ca1a7709c96f3f49ab0d0a7409793ffd8c2c4954359f9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0018.webp",
+      "sha256": "63afcd79d7f5b2694188a21ba5942be1c47d027d5b589f536a284fd17595c4a6"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0019.webp",
+      "sha256": "30f68ff72735acbc7d6f24aa9951c296559dc656b068b40bd459cdf0bc7b7b54"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0020.webp",
+      "sha256": "c7baf28e475175ac13712ff54718c65db97d0b644180268d154e48001ff5287c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0021.webp",
+      "sha256": "602c8ce8867d1a3e883352f513c5a16327c342fc840408b96c12170e07221638"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0022.webp",
+      "sha256": "1dd7a4e9c5aaf75d6d432d972990c9701d203e6d987d8dba0f9d449a13c6736c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0023.webp",
+      "sha256": "5ec2e000b5399402f44345416e1976b5bbca484a370a9b38c889ab8fd47f11ba"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0024.webp",
+      "sha256": "358826f54a55ad9f6e144a5a6241685ac2c9a4ef66afd62254e2f56973a3acd1"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0025.webp",
+      "sha256": "962fa12da7d5c9144e99b1b443c6a00ad50fa6fddd41dd3e97a15655273e9ebf"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0026.webp",
+      "sha256": "6df335799e911528f4985324d311e4b6e0c626a9f32f70878ba4e3edef979be5"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0027.webp",
+      "sha256": "8bb3781d2220d0c401a70e530a06dff2e78a166a97143e957550e85b2653d4e9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0028.webp",
+      "sha256": "7a4584f290d3aecf9ae561f5a2ebf3dab6bd6ff57cc044585910a02845a42c00"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0029.webp",
+      "sha256": "565a63ebbfc37bb38f92523da02e98a36caea586b05a45c0e8cda1120073670a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0030.webp",
+      "sha256": "be59eaa1b6127ea3417c5c412e454738f7c52f4bcaba33a8f7778d7f47d5f263"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0031.webp",
+      "sha256": "e46719fd595fbf1c6da9a19173e45e715ef553cbbffa7dcc765ae1d1b9e3e8b0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0032.webp",
+      "sha256": "0c646a25e2adb274a12455fa10eba67888545691b99fad947c8ba87f3876f976"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0033.webp",
+      "sha256": "3fea138705fb123c65b897e1b83fad609afd065b99b591cd954dcec4d8a5569a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0034.webp",
+      "sha256": "b9dd60b1ae76815d6fa3f718e39ab5016263fdd85494e05fb8b96e407a0eaa91"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0035.webp",
+      "sha256": "6a12eeb46b1b19c1f56f46b2730d1abea8e5b93c76ac14659edccb667a13e85e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0036.webp",
+      "sha256": "6be88b7cf5813cbb5642bd04a1fd66ba62ff1c3f7a76e7fac4d0ffb8a6ad2601"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0037.webp",
+      "sha256": "ef0810f8332becb2d9e10c2a747f00c0c51ef3367ddb50fe22af8aa18bac7d08"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0038.webp",
+      "sha256": "ef3ab23569f897d1678c50523ebe3af2f1e7eecdb9859337c81c6d68fb598026"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0039.webp",
+      "sha256": "7f98a1fd8f265b68b44eedebbfca78952e6f54d187de4fd37c3d92e6e9d5d45f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0040.webp",
+      "sha256": "2731f64932997201f19062feb6d8b71ba7451ccd79126379e4f5224a0480e978"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0041.webp",
+      "sha256": "54032efcce5873912a64727d97fcda6f4c091e321af9c39d4caf653c9e2f4a5e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0042.webp",
+      "sha256": "9331248bff369461226faaeb5f1bc73219e6432a8b5911f000ee0ab4873b0a39"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0043.webp",
+      "sha256": "9b90f703e34cf8ddd70235119fd63c0299303806b690d02e8d4f40460ef35eec"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0044.webp",
+      "sha256": "6fa237642089dd08e64ab14ff0894d820d95528eee03b6d0f7b4266183347c1d"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0045.webp",
+      "sha256": "03be3fc7fd526b5fd8c92e7f2f2e00a81431616497e10d4c0d42bd570280c046"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0046.webp",
+      "sha256": "aff9b4e48c6e17236d088455c814ebdb333c9fb710e244be18c3cf0914eeaaa0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0047.webp",
+      "sha256": "031ef81b4845bcce3819e20a1bf0fd3bffd6f8dabe396edec42f44a9d271c1cb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0048.webp",
+      "sha256": "0e873785476164298abc9b80e9119f9e85ba1ff4ad1c858e97fd0f5307f57e28"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0049.webp",
+      "sha256": "3ffcf2d536c08ea65123643a221e6c36298960ef2e2776fb7cd8c27989a55cea"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0050.webp",
+      "sha256": "b7a26574fe5badb6d710a94df113d8b5fda35ba0c970ca116de14d1b4f36a057"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0051.webp",
+      "sha256": "005325835096deda540a8b4760da062edd67316adea5b77c94860bf49bd1035c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0052.webp",
+      "sha256": "491d7059912e6d8869e9849df4c490598875794bf328e283db8a854c38ed5d8e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0053.webp",
+      "sha256": "1080eea95fd6963ad1d39c93681a331034143210c4e063f175fcd00cef3d7841"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0054.webp",
+      "sha256": "ecf58a9f37ff6964d54e83c494b3c00787b4e30ca2bb7b160d1640afdd37c7a8"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0055.webp",
+      "sha256": "cab680a52f75d68275ad90e132b08410bb1ed4434ea14f01813947b5d9a014b2"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0056.webp",
+      "sha256": "61e2654d07bc93e62b928f4126d59f0a9ba33b36a4039eda6469ec6de4ba7a5a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0057.webp",
+      "sha256": "773c16416a5d9501606753012cfbcbc9ff095394187b683f73a237d77a4e9905"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0058.webp",
+      "sha256": "a3206f12d966ebd79981b604032c02e6d64dbeebf99469d68dd84939164e2240"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0059.webp",
+      "sha256": "46353d307bd1f46d2fe24cd3e516332d3374583d4fe26331290c53d1938d0ab0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0060.webp",
+      "sha256": "7776dee80ac17d89ab13a924c551bbf3e496ccd1d1d47512daf344e2294cc223"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0061.webp",
+      "sha256": "9ba28fccc15c57ba4f7fc60c6e65c0f1a1f1b08c7eeacb3b104ae8dcd771f4c2"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0062.webp",
+      "sha256": "099503dad97ef01b7a1af0cc5b2fa16dc33a3b5f11dc477d46afbb3469ba2fb7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0063.webp",
+      "sha256": "f1929f0bca4bae034fac99485e6525589dea62c478c64697032a8ba9ff7e6cfc"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0064.webp",
+      "sha256": "a66d8376c0701c3a801ea0bbb89d57077d255424df616b786b056a32af5a7d33"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0065.webp",
+      "sha256": "68c6212df22a6d13c12fcacef189e46dd3de4270a4750001bf383f4968086d1c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0066.webp",
+      "sha256": "3c26837618263e6246772bc8b608badea740255228c84edd503849838535b286"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0067.webp",
+      "sha256": "af35dfe3d07af07959554e270a1a5404f55413100dff29d046b880308b5bc040"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0068.webp",
+      "sha256": "94c894ef2c0482865b7065cd9e1ee5cad3c8a6577006e9758ca221120742848b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0069.webp",
+      "sha256": "cb97cbd0baee96d3e88058ea5095e3f2295eba61ecd917b3df9e54309c706c1d"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0070.webp",
+      "sha256": "fadcdc0ca5f4c2d465943b3729dae7c3a447ecc773819a876ff5d8758fdb3756"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0071.webp",
+      "sha256": "49ba5e0241dd603156b55c9e38039a6ce7766374ed6afa3d4834ec71588a2285"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0072.webp",
+      "sha256": "6b3b8452f8bdf28de8a728fc8f92da4e80044cd0c9dff4d0e9937e94045f4342"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0073.webp",
+      "sha256": "8d1fa34d25e4368d940e699d54abe6fb864b699d0b77b23dee08cbc16d78e258"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0074.webp",
+      "sha256": "e9e62a8e36dfe11768daebe93b04a150656d71574446af6fe48a3bd5222cfa08"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0075.webp",
+      "sha256": "eace85effe0a4b82014149845422b95bdb4e97299c9bc0d229957958c31a2f63"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0076.webp",
+      "sha256": "fe9409ca17ac85264fd2330f9812c8132a5fd5af22d463e503b5c2450ef8b54d"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0077.webp",
+      "sha256": "99941c80fc6d135d8e20d2c9828711ebb44f73caf6d903880be62f45df913af0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0078.webp",
+      "sha256": "f3d80331e38c2872759f4c04890af65a8e6bdcff17cbd673d392153316ce1c66"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0079.webp",
+      "sha256": "2c8bce2af83017c187b33ed5dd815ca7427bdfb3e934361519335244a673164b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0080.webp",
+      "sha256": "143ee9b1d416ca44378e23bae0cf801f876e2aef748ae651173d48cded3cf190"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0081.webp",
+      "sha256": "ec9b2fa2548ff50f242b8ac32bdc5f7295e2ae060243d2cc8d47f75c7a85573b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0082.webp",
+      "sha256": "cbe058b2854f6381c7254ac9c21c63de9c3b7712d2dbfada04dff18675fd2af7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0083.webp",
+      "sha256": "b936ab4ab1dba32d8a92dd52178d3553a0e6df09adafc17de79ba6acc233b976"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0084.webp",
+      "sha256": "89e235af4c2b5592bd3b39667cf19f8a8294da4eecf5557df3c7132cb7f54ba1"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0085.webp",
+      "sha256": "657f60dcbaa926a5477b21573168810782329a88fa1cc38ce2edb8da8dec530c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0086.webp",
+      "sha256": "6638ccdcfad7d5a877df7d8801ebea6a55f0cb8e7d413df90de0e6ff7e058461"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0087.webp",
+      "sha256": "66485f003433a592f9cd5c01f281cdaab42ac7ca41329c0f992c3c9eb96c5306"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0088.webp",
+      "sha256": "e324a03a79d509914ed9349498d104d924177e9e702805803782da83c878a3f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0089.webp",
+      "sha256": "c808697f974cbfdab08911860c4d09edddc6ad011877a5ce9e5bb29ec1fb97b9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0090.webp",
+      "sha256": "532195e6f9823583d5bb9ae87f8082d9fa95425158ac389385da10b8b8c127f4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0091.webp",
+      "sha256": "d96ed0f744741cdd6aabed47f137e2b0c849f2993fe4ccc0a5055d81fd60f346"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0092.webp",
+      "sha256": "25203aed2ebed56df44634cf7ed267cdf7ac6d481270bd70c40617f768bf924c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0093.webp",
+      "sha256": "1c2e3ac7ef7dabc3de08a788fdecb37bf3bb3b41f22c8d04651e3f69910a5995"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0094.webp",
+      "sha256": "64a087c3ed2bb8bae188db8c58f65d14ae9ce494952f6f4e715455854e61e4ce"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0095.webp",
+      "sha256": "0fe76871ff551d108339abecafd5c54e5ea1f8dbea3fbc8389bb5a01986d7443"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0096.webp",
+      "sha256": "52af37912acb5f72bd1ded047fd452bce365058be9e7985712275324200bde09"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0097.webp",
+      "sha256": "9eb1d614f9e43fb25b45b7608caf2911b755ebb6e300b01cd21e8fab41c5d654"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0098.webp",
+      "sha256": "573e1f4392f39c52a0b515fbe4392b57400b04723045c2a4b107495fa8fb7013"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0099.webp",
+      "sha256": "19414de15ef572720a44e90e7498ff745bc09b672a6e3b596eea7b57c09f62bf"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0100.webp",
+      "sha256": "152e2420b1ccef9026f6f577a29e8f588064cd20845965b4355ccff72efe93a4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0101.webp",
+      "sha256": "075c9fe37f88dc946c622257c9f68d2421d5c156aa08b8ba932ac2c6737697f5"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0102.webp",
+      "sha256": "fce537831957330b68f1d54d79ea56fae8be02fab4acd3339d616b09f6df76a7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0103.webp",
+      "sha256": "8092980a2237a3005d88e54d61fbb7cb0869efd87afb2feb19ab14e44e584d4a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0104.webp",
+      "sha256": "d9a7143dd3fc01f02ad2bd98d3745446d49826715bf3a591e5a39cc490b86cf6"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0105.webp",
+      "sha256": "83da51ba33b9eb94a0f06f315ad2bcf102d9b89fb415c062f1bfef54a475be98"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0106.webp",
+      "sha256": "524b7d41183fd9c1a9b7a9fb06fca32fed78252dc55c607db5b3f2085c6dd5e8"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0107.webp",
+      "sha256": "5f4e2e74e460d0469a137c4975ef28a61c4f61b0781651996db5162bf1d562c4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0108.webp",
+      "sha256": "8114e9929a34f8f2fa469fe38b5608489e0691a6cdb658b13e8819721acbcf3a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0109.webp",
+      "sha256": "6413acfec82ac9e9f49a87ac89993d4e92de6abf5acc516381400968cc17ddba"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0110.webp",
+      "sha256": "426f09bd3bc2b1ae19262ffa04fe6ec8827812a29c1d7461fe37c86b5fb79831"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0111.webp",
+      "sha256": "96a2252b97703500f8599dc3d7964bce879343609e4e3982dd78e504b0b6d549"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0112.webp",
+      "sha256": "faff9e5ae3ec2795d7c2bdb4755e5cbdc4f372a17b9895db98c4ee0bb99b9808"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0113.webp",
+      "sha256": "6b4bff5ebccb60f0647e9ef96da8c3744721049957d796a6d643f08e8e07d838"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0114.webp",
+      "sha256": "483a964f8a4ebdd2efe1648021144a40590707b5aa2d4c6ba81cdb2740c3aa29"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0115.webp",
+      "sha256": "8011ba88264cbd627e74d7f26f7d79e3fe47e357c4d1a8bed801560519855084"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0116.webp",
+      "sha256": "94ac7d5e033d8eb29be6e5f860318ce6a8359fbe635f0f251cb6d02656b84006"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0117.webp",
+      "sha256": "41ca24b583bf2525d0718d1c6bad656a370eefdbcebf1fb37548f2ad6491d4c4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0118.webp",
+      "sha256": "95b6e015c9aaa21b430f6368f30d352c9a6fb64ac4a4f7e995d8c5c7bc15b559"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0119.webp",
+      "sha256": "e949175baf450e620d4af1e4c08b5fd04323d65851f61527163ee25d8ea2f0f9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0120.webp",
+      "sha256": "938311d5a46e363d025308cd56ee95730f2adf9c12b6a01a388d074c2b468760"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0121.webp",
+      "sha256": "cd284653e72c57ce56371e032236d95716eba45a4fb2c9be9edc0ef95e6a6a9a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0122.webp",
+      "sha256": "33d1168b7ecf739f320303479c7122c6d336441d1da7a73054fded3e26e13753"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0123.webp",
+      "sha256": "fd7608a6cebc4803fa250f60ab08abdfc270c0a2945f9a4c0232437689c6b221"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0124.webp",
+      "sha256": "712a4df7200cdf9c60d9be6d77640b4f054e033b8b7140ed3249b5d7a5a76ae4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0125.webp",
+      "sha256": "fb77dd90aca3021c303d66ac9bb13c595f583cf0e9f3e8e3c6961f577d5c4878"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0126.webp",
+      "sha256": "bb2f15fd22e49c9543d664731cf73e9a43b9a1bd8e2c380512756f1e5dae84e6"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0127.webp",
+      "sha256": "ed4c47aa5782a935e8211e6eee9651b550ea1afbd822f6e742c2f52370a83333"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0128.webp",
+      "sha256": "7b086a184ce2bbf1953ff32c8875e4a82daad9daf4c75b9df047fe8ea812af8a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0129.webp",
+      "sha256": "53fd209a4ad906c66f9dd05c06d733ee9923db6da0cdaf4ded51baf44ea43de2"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0130.webp",
+      "sha256": "ac89ae84ee3b8ecf564b56bbb1eee90fbc0448828699fb72afe774f6b26df890"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0131.webp",
+      "sha256": "aa8fd5d7560c1192f09ef703a475053461a2062d6da58b87481ae994fca9775b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0132.webp",
+      "sha256": "989fb7bde504ffdd1af1daf97f6445c557f3bdbcd34ff25126e774fa32564f4e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0133.webp",
+      "sha256": "13c0f6452c9cfe2c4a07efe026445c3f6ad647fc92a43ffd8707fbc590b027a1"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0134.webp",
+      "sha256": "cd35c0d013f58ab6239d03d1e362f27d9c1599b91ef3a23edc8a514415a23944"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0135.webp",
+      "sha256": "162eba3ce4cb72377521708eb62f5696d41afad01789f8e7c4cd80c4be8d194c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0136.webp",
+      "sha256": "81b99fae78140b3f78cfcb00d6fd887a20f6a32ca55cbb1d272def8ed9f6e3df"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0137.webp",
+      "sha256": "c09a6d63a6dd7945a20ad8d62b8963fe4b920806c1447ebbffd7db3d38c62150"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0138.webp",
+      "sha256": "e223f1de70d5bde67465becbb942ffc91b83c9f3af238440d50af3a89ee607bb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0139.webp",
+      "sha256": "98bde9b9f60a997b694b15a8f6aca3776dec8d5336ba48476c09df73e0efce7c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0140.webp",
+      "sha256": "b39ab70425a182b3c39aa326edba30a95fdf1a8678016cafc821c06d4321eec7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0141.webp",
+      "sha256": "4854a6c024d272ce7fabae73f203265612490883ade43ac4f661d15a969b9f11"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0142.webp",
+      "sha256": "e8b09a6367c5e53d759278e4b7b6f6ad9bfe1a37cc9e845ebb2390dc01ecf7ca"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0143.webp",
+      "sha256": "0898b291bad17d089c0f661ea1faae0f9723e89b0bd16e2ee7e23c629f188b8f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0144.webp",
+      "sha256": "3987cd9c9032122ad586cbdf874d3e86d1d2abf3e2ebf2580e7857ad4b03f773"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0145.webp",
+      "sha256": "7088c861ad27992d58fee2da1d19912e1a4c2c5a64627d4b4d867ce89c840265"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0146.webp",
+      "sha256": "5eabf779a2619bddc609742d75843487a25135315a3a92daea826a71da081761"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0147.webp",
+      "sha256": "c58fc011a51d6ed529c19f75a1249416a471fb0ec55fd29eef0cbf3e3bfc57de"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0148.webp",
+      "sha256": "160c1b120798594248756ae0ba8a1507ba8f842b06f5c2b8933decf94070573e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0149.webp",
+      "sha256": "26de709839b6e0075d8b3adc646211becb714a590a24fd9c204eb56ca7df3c05"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0150.webp",
+      "sha256": "6a0f342326c3bbf01053cf19bdb7457ae3f7cda28ea2d56f3b4211187eecc696"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0151.webp",
+      "sha256": "fffecc68c0a88adb027f82fcc61958516fc8cdb051be0ca6f82e08a6be07d532"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0152.webp",
+      "sha256": "ce2f27209038c2297a5824edcd9a7b7ae1c0833c2cf275fbffba995e3a96eca1"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0153.webp",
+      "sha256": "bb9aaa3af9ef9449cc8a0baa4ecedf388ed6fac6eac53c1a173da1dff874346b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0154.webp",
+      "sha256": "903917c557c0dba0077e75c6a3e64ccd801d12186eaa556bb79f1d6472b67af8"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0155.webp",
+      "sha256": "99ac89a11b23d310dbd1084b50f75c90717b50ba0949aa124c05710edcf1ff4d"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0156.webp",
+      "sha256": "34ea9647b39349176c73121f1d9e59d89794e61bb31bb2825dcf6bba72ae4149"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0157.webp",
+      "sha256": "80156d53520858368ebc2cbea4e9cdeed6af14be074ee659764a032728097dda"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0158.webp",
+      "sha256": "00875ab9cf311c88f311ccfc473525153ec90bdfe8c30635e9b875d36806e819"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0159.webp",
+      "sha256": "28a6b0720bef6fd4701887d04f1276ad55a80946ddfbb00686aca698d1896a44"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0160.webp",
+      "sha256": "251cba871c78ca9a648685da6ec189d6e1a26416178ee8845518d5111383788c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0161.webp",
+      "sha256": "edb75724fb70896cdb620c7954d9001116ecdc41072af132513e261f01d9552b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0162.webp",
+      "sha256": "48b229f5fbc608d07840abdb7cce2268b557f6955c8576d93fd571344b656c6b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0163.webp",
+      "sha256": "7587648ec4aaf46ab353625ed4e3c054ff6e190084596a06546cc1975e223325"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0164.webp",
+      "sha256": "709e6d97b843944c073b65f4314420d3430e4b9af6149b170d77884585ff4d8f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0165.webp",
+      "sha256": "951ed72779a0c77934633fd5ce1771c98cf8a569bda15b0e3a6828992cc64130"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0166.webp",
+      "sha256": "3f07bbbdf7d2af696ad6e2b2c093400e7dbcb7c1133ef558692cc9442b896d88"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0167.webp",
+      "sha256": "27ced799785326bc73a910f85b6a2bb2c15adb011b6bfcc3ef1c19589fbf7ece"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0168.webp",
+      "sha256": "722e3229d89cc4df9a0ddc00ff41ad8b649d325b9e6d58b77730d9965ec09a0d"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0169.webp",
+      "sha256": "7082e5947ca424cc4f9d49fccf192d1589d3957fa5352fbace31975f433ec779"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0170.webp",
+      "sha256": "f49deb3e4db5314b59291b167ed47476d5a678aca92eab7904ee204a0c3bebb1"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0171.webp",
+      "sha256": "5c80f23edd82196ce3535c69950f0c0612ff92282698e6336a201d027e3453ce"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0172.webp",
+      "sha256": "7f42b2e1e0a2e2712b68a0eec67ce215736638e886929c9eb2c09c8127976d1a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0173.webp",
+      "sha256": "0e9252a09b48e621e91243ed8ac83e4b300b865cd6cecb9461236101e39f0293"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0174.webp",
+      "sha256": "88f4d5a08f676890df2eeda8120544536b35e051293a92f68e5146a32a8e36d6"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0175.webp",
+      "sha256": "7f7329904e6ef26f964de2ff0199bdad0e5a01473a5e34c8c9b74f562a4a247e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0176.webp",
+      "sha256": "41c9b102fac238d9795dc91c53704da27b81be364bb4084e97a21156e5cb80a8"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0177.webp",
+      "sha256": "8e9c924b1f8367e728e4344093af74676ea81a14ff4a0005a5ce28094bca093c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0178.webp",
+      "sha256": "7264030354eb4f07fb89ab949ddf806e5065eed790a267d959cc7ea5ecfd8b61"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0179.webp",
+      "sha256": "d940ae1838d3b41d4951f8eedcb67395b8be6a52f40a9249956a8b13cd8b66c6"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0180.webp",
+      "sha256": "b2e55617f102a09e48cf537f4f0c8c0acbd974e9be5df5ad614cf997bce8051b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0181.webp",
+      "sha256": "671cb1272480222549d9543c192b9454b497e59b7915d75810d06cfe45d1a496"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0182.webp",
+      "sha256": "a1e27c92478b2886e725dbbb358e7b199e352077174f646ea40e140c74dd9376"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0183.webp",
+      "sha256": "3f25dfd46bbfe5f8ee7860fdd23b2e59209c19bfec4ba1e2d11516d8b2820eff"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0184.webp",
+      "sha256": "0b19cdee45d60dd17b010dc124b50c8503f59a3ad00aa3fead5a80aec48c0f9c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0185.webp",
+      "sha256": "d2e9238579815342ef8646f9e35295db9039c0dd626fc084b813d26e1daf5536"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0186.webp",
+      "sha256": "27d42f7daa1eb08cfb0e27e80720d5ad4ebcb79697b75200a1ea175668b61f67"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0187.webp",
+      "sha256": "2f02702f87795fda9eadf4ae76030fe521b2d8b176ddc45b8b14040cb96883e5"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0188.webp",
+      "sha256": "7eddb82eea7072256b00353180322c0f1f23d17aa33146717395f690c42feda0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0189.webp",
+      "sha256": "f37769c176431259e89b9a898f1f3d7d5e8e6abe1d369070b22315c86d00eeb7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0190.webp",
+      "sha256": "eb410201d25ebb86e0b4f8129e3e7ecc45d6508021fb1540671805e1a85f8b30"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0191.webp",
+      "sha256": "d5cf9583159ae3ccac8a8f1ec874236af2fc1237ed2055460ca9f835a6b1c1df"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0192.webp",
+      "sha256": "dd45ca7bc13209e8295fa85015c82f62732029fbefb555fc00108d7c259f6259"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0193.webp",
+      "sha256": "94bb772ac64ba1643de3ab9b97f9720c39db37585384c118dd8e960c550a5900"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0194.webp",
+      "sha256": "d98dd635c613b5d68ff5ed123386a27c4ad2596570c43b2331f39eaf99e5facc"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0195.webp",
+      "sha256": "85081412c198ebce3ebcc0bf780793dcf9aa8b08929d7501177719bf23f8bb0b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0196.webp",
+      "sha256": "11b11d8e8e4e4679bacde0894d09a5253a65ae1056029e7e2e28a26f7889f071"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0197.webp",
+      "sha256": "a0f04d78a47bb105f399a8fd8ac34a1c2e77c53b1aa32e29220d6b7213f3c8b6"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0198.webp",
+      "sha256": "5d3c70cdc98d23fc86f12f3a17d754b433091461b52bac2e61af48caaf61c884"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0199.webp",
+      "sha256": "ac24f8b53beb1ffba6aa19f5375546f16a50c261f4873ccf12ad596c25a12e29"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0200.webp",
+      "sha256": "b6cc616db9ca92dc6b43f4fb339f72b4b8d626c55f2a154de8d8b29fe6fac7f0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0201.webp",
+      "sha256": "001b8b5ee135e58ed3663de326cd55d83e94ebd46c283b3c6939cabb90e8c251"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0202.webp",
+      "sha256": "a289e23dba5a51f70bb24b35ea7089997ebb1f4951c5512519a4c48796696e77"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0203.webp",
+      "sha256": "774e0f24ce3743c7eda2e79f255cee994832a094cd49fa793e5052ca0f07c9c2"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0204.webp",
+      "sha256": "7fbed8652bde94d3d9f0b72c37811da2f04acbbe5382e8ab07425d7626e59b1e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0205.webp",
+      "sha256": "049ca449b3027e59c1bda10d06d9aaa481809f01ea07e73198132d60ac3b1361"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0206.webp",
+      "sha256": "fcb58139bb81e2bd6f364cea213ff3a8ce02b70c0d62f847d8ae1b72f25a14b7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0207.webp",
+      "sha256": "c46543816e3583d05ca95541484e450387fd8bd9916ab54d18e1d45f904fc4be"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0208.webp",
+      "sha256": "91e5617d6f8e61699714574eb23cf6b30c207030d58b3515dbf67fb6b9f02d87"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0209.webp",
+      "sha256": "a3faca4c608992f22311f8d403a90d5dd79972a5762786abed476ce6a5147682"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0210.webp",
+      "sha256": "0f0a3db63a26137c8625d799762b40eb1d304f4432da1159d2faf22c235d58ca"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0211.webp",
+      "sha256": "53a28dc7b62620ccc263ce1cbdb95b2e0442c0b0f44d24c4e94ce4cc69a69ba1"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0212.webp",
+      "sha256": "8e861e377d32b01be33015888fe77a2aa9876762a9f2e43976f11faaf2aac48b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0213.webp",
+      "sha256": "9eedd35d1237357c977d67a7d6b067650c334f5984bdfe4947a65ae49fec7059"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0214.webp",
+      "sha256": "7852afa5db22a4791eae366cb12de7bef2d7d17c6acac51f988099219b18b86f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0215.webp",
+      "sha256": "c1d2e58e5cdfb091ad9f17ab2f86454520ed57f7dc735838af13b2eaaae5b472"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0216.webp",
+      "sha256": "088757080d388f2284ccf09f7b3b91434548581a3d775993264848c2e7648582"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0217.webp",
+      "sha256": "eec9da73b98ae86e78b881eba38095f711a3e71d0061b3a1df170bddd4890574"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0218.webp",
+      "sha256": "ec2792e90ae254bacef23f73de58ab258cf48184fae1ef474d85ccfa61c6f49a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0219.webp",
+      "sha256": "005d0e01c29c014911796209cb8affdda6e0af7d635da613e9824b2b4722a01a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0220.webp",
+      "sha256": "ec4c0668d02184668764488bb24329d081a0b56e436c6cc73e799efc90702d81"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0221.webp",
+      "sha256": "0910618fe5abe47ff64f84916aefaa9f2fc13f9e602fa65098e48ec88583c2d7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0222.webp",
+      "sha256": "4238a2dce89d4ab96555e14e527b1b4ad40a73b4b8f42c8c5d1739ac73779164"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0223.webp",
+      "sha256": "de24e9544f7c3a873ef9f4a86d588a848752689e824aea933dc99bc7c435968b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0224.webp",
+      "sha256": "686931a8adf035d6a14a797cabc8c80344f37654a186f6e4cb62006a1d55c6fc"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0225.webp",
+      "sha256": "5e9c25e5014079c3c1e1471aa19412d2b3f382cba931991acf2893223bc3dd8e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0226.webp",
+      "sha256": "71335b517687bb508936a5a6c9e7483f2d7a2c615c0e097970811a09003f855e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0227.webp",
+      "sha256": "7bf579f20eb9e6a3f5c03480bd91d7447a6cec5d768edb31668e7edd44ddb2ff"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0228.webp",
+      "sha256": "962e63dde270815ad90d7d7e9a53016b8b2cb976e9bd56477864cb9b7f088347"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0229.webp",
+      "sha256": "0a04850f486d1522be9a8d2988ba7d8b8477217111ae92f6ee27fc29cc97c9ef"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0230.webp",
+      "sha256": "f65018e796d2898b4bb15c47d150089f7b26c21114cdecbdf1601d9699712b76"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0231.webp",
+      "sha256": "5c344736be18bfd303e202ada0678a87247f074f187fef0af376526a1e762543"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0232.webp",
+      "sha256": "64a794e09181d6b5e1611e0b161e3910ec1df1ec82d4db491e2a8d0e4280fcb5"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0233.webp",
+      "sha256": "af1dd17a0ea0367a0bf225f5ab48f11352fe10c07608f0527709e4d9cbe8f052"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0234.webp",
+      "sha256": "af7a9ee5dfc3eada9d33d179ef1f34fff3236d93a892c27048e889f67cd6397e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0235.webp",
+      "sha256": "8d7acf0622d82958749def61339f26ff87e4f36b8bcddbc708bb6938437711d9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0236.webp",
+      "sha256": "21c7eb48f49e9f68a246a11e14521ce6c24be24db3e66c93bfb216aeacfbee15"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0237.webp",
+      "sha256": "a8d9f5d92445886532d0fa1f4e260f4d2e986e86816b9a6e9ef4da447bf1e51c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0238.webp",
+      "sha256": "def3171af78ca7b613c6b8cc50c61dcb8337339e138e35f664f888a46e9477d3"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0239.webp",
+      "sha256": "4799ae5b67baea83c617dceb13c9e42c4bd4d33d8f639798b26344d6066cfd09"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0240.webp",
+      "sha256": "b3f79be0ca1c3316ac0640e2c951c6d4e9f2850ad816a0ae518895a026445d7c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0241.webp",
+      "sha256": "113fccd406f8efc0d6406ffdd24e688d1fe89111b7cc438f7f5fdeebb8dd1052"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0242.webp",
+      "sha256": "822a51273d222f73db1f15069565ea96df10c33ff6b42981613b15cfe472b2f4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0243.webp",
+      "sha256": "a83041f78e140b08f973c3da58b424be504a742240621cc38c1ceba0054f26ea"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0244.webp",
+      "sha256": "474896c96787341341831351318c36ab456b8fa575cb66e13ce3dd44d28da1a9"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0245.webp",
+      "sha256": "ad5ee546af8ac9606c35fb52930d0c6585cdc5bb56e11797e2d4a7346a58671a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0246.webp",
+      "sha256": "94e7744fe44e13db29f5a493bf687d01f5d2332d27d645398498b10d5c7ab4a4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0247.webp",
+      "sha256": "14e0dbe9717fbb238dd138f38b186a44aaebf9173a191091248b1194b2ea7a93"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0248.webp",
+      "sha256": "fff6e80b941172e5cb6bdee00115b1b9eb8785a246f6c65e8ac3f7d7f2e83f2b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0249.webp",
+      "sha256": "d408c38b41738677c957f820c829f0a7982628067d21f66f998c61f772a879b4"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0250.webp",
+      "sha256": "33a6507e31c792b513427ca47103d00afe36dc0065b546f9478d8b5838ee694f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0251.webp",
+      "sha256": "b2563bfe18ad3cd840d1796dfab6a101e1065966510f0e30b943ecb0f70b0736"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0252.webp",
+      "sha256": "0ed025fbb493f2c96bf3586aa926ae9441179bcbab10d028f3dc0300810c9b2b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0253.webp",
+      "sha256": "93574e7c3c65d375c48321c417e4f7e9ad84d6fd2c59a2c8060602146790dd7a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0254.webp",
+      "sha256": "22d80c9ada34b4c54b9c9725be8346da95f8861b21226b61180670e26814b150"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0255.webp",
+      "sha256": "a975101d13799160ef302945721e8715d568d8cddefcce09ec31fee54bb3e6dc"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0256.webp",
+      "sha256": "d4cff050125f0237191491448f0dcefabcca2af2ac67c2975a7a05b6692a27bb"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0257.webp",
+      "sha256": "6e7f0aab36afa881d343e9674cc48955faa80517c1a13a452578160bb1e53483"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0258.webp",
+      "sha256": "8aed0a68aa2533c5f5713aa8528a8427d0aa1af021dc84c199e12914fcf4df23"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0259.webp",
+      "sha256": "ac3841b64e04500b08a619b68452d9e50e19bfdfe6fdbeb8486ce93df8667081"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0260.webp",
+      "sha256": "97745b396735fd73d4ed1341cd64dc66da51ec38616425dee9672b8fee4e4100"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0261.webp",
+      "sha256": "a586eed1c242c319be70c3dfc688c653637712a5b1f93ed430c9e3bb1e446a8b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0262.webp",
+      "sha256": "e35edb0a57af54ab149fd2681bfc56aa5b0449ff3d34887dac2d3ee243455aff"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0263.webp",
+      "sha256": "34434a9ab6cf3547d95f92ea77dabb42e326b8c27fbd7e310cf852d968977438"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0264.webp",
+      "sha256": "1eea9f6ef6afcc996cbf78cf4ea1e0cfe398875723ef1d1ea9652937bf447960"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0265.webp",
+      "sha256": "3978d01ec0be0c12e26d952ce6e70532689ad7943f4f220e2c214fbad87bde56"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0266.webp",
+      "sha256": "e6f91413b57502811a486f000900209bc460c31fc2538906caafa70563df79ed"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0267.webp",
+      "sha256": "dc5dd50119338b1b95cd3e98353c9ff483ecf7bdf7418652c4306e842e43f215"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0268.webp",
+      "sha256": "aa55ab342df3bc9501badc42d2df49a4336361a90272fa0e79115385418b4c6b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0269.webp",
+      "sha256": "2ee38db3bea400b9823412fb6820a36850a1cb066450b9102b13e59b7c0cb701"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0270.webp",
+      "sha256": "862b5558814a27c674d8011e2a95a64364d2cf0b30e95989f4e14689dc0fbc3b"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0271.webp",
+      "sha256": "9d2a178b4d35dad5108e03948d204fc229219bafa5994271fc9299faced0c34c"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0272.webp",
+      "sha256": "ee75c86fa9054b616244370439f8dd17a527db25d416bb99971caee67af2f08a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0273.webp",
+      "sha256": "a19b5636b84ab0a1788047fce5024f5a8f546afd15ac3dbbe6b2792a05a4f942"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0274.webp",
+      "sha256": "c995dc618ddb216d85e653038bd5cb886509ed14b3d19955e32c41db3cd70003"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0275.webp",
+      "sha256": "2525d8ad575e9b6f1005be24688c63c39548361317e2d0c5717c863d64998ef3"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0276.webp",
+      "sha256": "10eb602b2e52ea443dfef1dfdce57cf632505485200f5f6dd7ed927551afad64"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0277.webp",
+      "sha256": "e97bcd5940256d9c3ecf5fcd7d061803cd1093f09d1d7dc998cf8791c9ff68f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0278.webp",
+      "sha256": "085917bac399d6438ebe80d319a9fef55b41edcbb252b95d966163e5bbb8003e"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0279.webp",
+      "sha256": "6ba6cfc8b7bf9463d051766505ecf6383e100bdfb1edf05bbf0c664e1dcddbd2"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0280.webp",
+      "sha256": "d61a29cee30ae3b5ae7316257fea0faacab666a1dfbe163ba896d769ab00a59a"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0281.webp",
+      "sha256": "c2b1af919cc0ffac030010dc6ad6024031de92eb18b504f48de8f951745b50f7"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0282.webp",
+      "sha256": "b8b5702476e0360781e2007766e9c7e285e62ada1ee412b5b68281c20877400f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0283.webp",
+      "sha256": "6dda27bc57fd19a7fd86c19511b7687aa73f49ef272662dccc81a1d4dbcd6a95"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0284.webp",
+      "sha256": "7b5777aff811069926ca81c926b8f53ad2db4a6801f911c4ab9351a885023414"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0285.webp",
+      "sha256": "5404248666028aeadb557cf460e2c53311407366f9ece25f0bd27393ed730bff"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0286.webp",
+      "sha256": "264f545141d380b13294800dd5ce402188b82b8d27d730dbf99068266ba82b86"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0287.webp",
+      "sha256": "2289550a405f52e1cb6adb3f42c07d9f58e4e3a2bf418564ea5ca3b669b29fe9"
+    }
+  ],
+  "_provenance": {
+    "generator": "scripts/poc_组合循环打包.py",
+    "framesDir": "D:\\petBaby\\desktop-pet\\output\\宠物动作-长毛猫-2026-09-12\\04-抠像-final\\frames",
+    "durationMs": 12096,
+    "note": "单视频循环包：呼吸+眨眼+摇尾焊死在同一循环，无 idleSchedule，运行时纯循环播放。"
+  }
+}

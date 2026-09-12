@@ -48,6 +48,22 @@ export const BUILTIN_PIXEL_PETS = [
     manifestUrl: "/builtin-pets/06-guodong/manifest.json",
     previewUrl: "/builtin-pets/06-guodong/frames/idle-combo/f0000.webp",
   },
+  // 长毛猫 / 短毛犬 / 金毛：同批 4 张真实照片的另外 3 只（2026-09-12 接入，证明跨物种跨毛长通用）。
+  {
+    petId: "07-long-hair-cat",
+    manifestUrl: "/builtin-pets/07-long-hair-cat/manifest.json",
+    previewUrl: "/builtin-pets/07-long-hair-cat/frames/idle-combo/f0000.webp",
+  },
+  {
+    petId: "08-short-hair-dog",
+    manifestUrl: "/builtin-pets/08-short-hair-dog/manifest.json",
+    previewUrl: "/builtin-pets/08-short-hair-dog/frames/idle-combo/f0000.webp",
+  },
+  {
+    petId: "09-golden-retriever",
+    manifestUrl: "/builtin-pets/09-golden-retriever/manifest.json",
+    previewUrl: "/builtin-pets/09-golden-retriever/frames/idle-combo/f0000.webp",
+  },
 ] as const;
 
 export type BuiltinPixelPet = (typeof BUILTIN_PIXEL_PETS)[number];

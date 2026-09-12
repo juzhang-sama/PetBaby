@@ -1023,6 +1023,9 @@ fn pixel_pet_display_name(pet_id: &str) -> String {
         "04-warm-brown-tabby" => "毛砌墙（暖棕虎斑）".to_owned(),
         "05-silver-tabby" => "建国（银渐层）".to_owned(),
         "06-guodong" => "果冻（短毛猫）".to_owned(),
+        "07-long-hair-cat" => "长毛猫".to_owned(),
+        "08-short-hair-dog" => "短毛犬".to_owned(),
+        "09-golden-retriever" => "金毛".to_owned(),
         _ => pet_id.to_owned(),
     }
 }

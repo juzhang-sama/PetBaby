@@ -18,6 +18,10 @@ pub const BUILTIN_PIXEL_PET_IDS: &[&str] = &[
     "05-silver-tabby",
     // 果冻（短毛猫）：第一只「真实照片 → AI 视频 → 抠像 → 帧序列」端到端跑通的宠物。2026-09-12 接入。
     "06-guodong",
+    // 同批 4 张真实照片的另外 3 只。2026-09-12 接入。
+    "07-long-hair-cat",
+    "08-short-hair-dog",
+    "09-golden-retriever",
 ];
 const ACTIVE_KEY: &str = "app:active_pet_id";
 
