@@ -574,6 +574,139 @@ pub const MIGRATIONS: &[&str] = &[
     SET style_profile_id='live2d-v5'
     WHERE route='live2d-v5';
     "#,
+    // v14: 写实风（frame-video-v1）复用同一套 run / attempt / artifact 表
+    //
+    // 为什么是「同表换 route」而不是另起一张 run 表：
+    //   - `photo_avatar_step_attempts` / `_profiles` / `_artifacts` 都 FK 到
+    //     `photo_avatar_runs(session_id)`，另起一张就得连带再建 2~3 张 + 复制整套
+    //     reserve/set/fail 逻辑；
+    //   - `route` 这一列本来就是为「多产线」加的（v12 引入，取值域设计成可增长）；
+    //   - 「一条 session 一条 run」**不是问题**：一个创建会话本来只走一条路线，
+    //     route 在 begin 时定死，regenerate 读回同一个值。真换路线 = 同 session 重来，
+    //     覆盖旧 run 正是应有行为。
+    //
+    // 四张表的 `route` 取值域统一到同一组三个值 —— 保持「route 在四张表里是同一个
+    // 取值域」这条不变量，比省一个字符串值钱（`profiles` 实际不写写实风的行，
+    // 但取值域一致才不会让人以为「这里不许写」）。
+    //
+    // `runs.style_profile_id` 放开为**可空**：写实风没有画风档位。塞一个
+    // 'frame-video-v1' 哨兵值会把「路线」和「画风」两个刻意分开的维度混进一列
+    // （老王 2026-09-13 拍板「画风 = 独立维度」）。NULL 才是诚实的「不适用」。
+    // 读取侧安全：全仓库只有 `pixel_snapshot` 读这一列，而它带 `route='pixel-v1'`
+    // 过滤，永远看不到 NULL。
+    //
+    // ⚠️ 顺序与 v12 完全一致，**不能改**：先改名父表 → 建新父表 → 拷 →
+    // 再逐个改名/重建子表（子表必须在父表改名之后重建，否则 SQLite 会把子表的
+    // FK 改指向临时名）→ 最后 drop 旧父表（这时已无人引用它）。
+    r#"
+    ALTER TABLE photo_avatar_runs RENAME TO photo_avatar_runs_v13;
+    CREATE TABLE photo_avatar_runs (
+      session_id TEXT PRIMARY KEY REFERENCES creation_sessions(session_id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL CHECK(revision >= 1),
+      route TEXT NOT NULL DEFAULT 'live2d-v5'
+        CHECK(route IN ('live2d-v5','pixel-v1','frame-video-v1')),
+      step TEXT NOT NULL CHECK(step IN (
+        'collecting','analyzeIdentity','completeAppearance','renderTextureAtlas','buildV5',
+        'generatePixelAvatar','generateMotionSource','packFrameSequence',
+        'qualityCheckPending','runtimeCheckPending','previewReady',
+        'cleanupPending','completed','failed','cancelled'
+      )),
+      provider_session_id TEXT,
+      provider_job_id TEXT,
+      generation_token TEXT NOT NULL,
+      modification_instruction TEXT,
+      locked_trait_keys_json TEXT,
+      error_code TEXT,
+      error_message TEXT,
+      updated_at TEXT NOT NULL,
+      style_profile_id TEXT
+        CHECK(style_profile_id IN ('live2d-v5','pixel-style-v1','pixel-style-v2-animation-ready'))
+    );
+    INSERT INTO photo_avatar_runs(
+      session_id, revision, route, step, provider_session_id, provider_job_id,
+      generation_token, modification_instruction, locked_trait_keys_json,
+      error_code, error_message, updated_at, style_profile_id
+    )
+    SELECT session_id, revision, route, step, provider_session_id, provider_job_id,
+           generation_token, modification_instruction, locked_trait_keys_json,
+           error_code, error_message, updated_at, style_profile_id
+    FROM photo_avatar_runs_v13;
+
+    ALTER TABLE photo_avatar_step_attempts RENAME TO photo_avatar_step_attempts_v13;
+    CREATE TABLE photo_avatar_step_attempts (
+      session_id TEXT NOT NULL REFERENCES photo_avatar_runs(session_id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL,
+      route TEXT NOT NULL DEFAULT 'live2d-v5'
+        CHECK(route IN ('live2d-v5','pixel-v1','frame-video-v1')),
+      step TEXT NOT NULL CHECK(step IN (
+        'analyzeIdentity','completeAppearance','renderTextureAtlas','generatePixelAvatar',
+        'generateMotionSource','packFrameSequence'
+      )),
+      attempt_no INTEGER NOT NULL CHECK(attempt_no BETWEEN 1 AND 3),
+      provider_job_id TEXT,
+      status TEXT NOT NULL CHECK(status IN ('submitted','running','succeeded','failed','cancelled','superseded')),
+      retryable INTEGER NOT NULL CHECK(retryable IN (0,1)),
+      error_code TEXT,
+      started_at TEXT NOT NULL,
+      finished_at TEXT,
+      PRIMARY KEY(session_id, revision, route, step, attempt_no)
+    );
+    INSERT INTO photo_avatar_step_attempts(
+      session_id, revision, route, step, attempt_no, provider_job_id, status,
+      retryable, error_code, started_at, finished_at
+    )
+    SELECT session_id, revision, route, step, attempt_no, provider_job_id, status,
+           retryable, error_code, started_at, finished_at
+    FROM photo_avatar_step_attempts_v13;
+    DROP TABLE photo_avatar_step_attempts_v13;
+    CREATE INDEX photo_avatar_attempt_lookup
+      ON photo_avatar_step_attempts(session_id, revision, route, step, attempt_no DESC);
+
+    ALTER TABLE photo_avatar_profiles RENAME TO photo_avatar_profiles_v13;
+    CREATE TABLE photo_avatar_profiles (
+      session_id TEXT NOT NULL REFERENCES photo_avatar_runs(session_id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL,
+      route TEXT NOT NULL DEFAULT 'live2d-v5'
+        CHECK(route IN ('live2d-v5','pixel-v1','frame-video-v1')),
+      profile_kind TEXT NOT NULL DEFAULT 'live2d-v5' CHECK(profile_kind IN ('live2d-v5','pixel-v1')),
+      schema_version INTEGER NOT NULL CHECK(schema_version=1),
+      body_module_id TEXT,
+      profile_json TEXT NOT NULL,
+      profile_sha256 TEXT NOT NULL CHECK(length(profile_sha256)=64),
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(session_id, revision, route)
+    );
+    INSERT INTO photo_avatar_profiles(
+      session_id, revision, route, profile_kind, schema_version, body_module_id,
+      profile_json, profile_sha256, created_at
+    )
+    SELECT session_id, revision, route, profile_kind, schema_version, body_module_id,
+           profile_json, profile_sha256, created_at
+    FROM photo_avatar_profiles_v13;
+    DROP TABLE photo_avatar_profiles_v13;
+
+    ALTER TABLE photo_avatar_artifacts RENAME TO photo_avatar_artifacts_v13;
+    CREATE TABLE photo_avatar_artifacts (
+      session_id TEXT NOT NULL REFERENCES photo_avatar_runs(session_id) ON DELETE CASCADE,
+      revision INTEGER NOT NULL,
+      route TEXT NOT NULL DEFAULT 'live2d-v5'
+        CHECK(route IN ('live2d-v5','pixel-v1','frame-video-v1')),
+      kind TEXT NOT NULL CHECK(kind IN ('textureAtlas','previewPackage','pixelAvatar','frameSequence')),
+      relative_path TEXT NOT NULL,
+      sha256 TEXT NOT NULL CHECK(length(sha256)=64),
+      local_path TEXT,
+      audit_json TEXT,
+      created_at TEXT NOT NULL,
+      PRIMARY KEY(session_id, revision, route, kind)
+    );
+    INSERT INTO photo_avatar_artifacts(
+      session_id, revision, route, kind, relative_path, sha256, local_path, audit_json, created_at
+    )
+    SELECT session_id, revision, route, kind, relative_path, sha256, local_path, audit_json, created_at
+    FROM photo_avatar_artifacts_v13;
+    DROP TABLE photo_avatar_artifacts_v13;
+    DROP TABLE photo_avatar_runs_v13;
+    "#,
 ];
 
 fn table_exists(db: &Connection, table: &str) -> Result<bool, String> {
@@ -2949,6 +3082,94 @@ mod tests {
             .unwrap();
         assert_eq!(pixel, "pixel-style-v1");
         assert_eq!(live2d, "live2d-v5");
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    /// v14：写实风（frame-video-v1）复用同一套 photo_avatar_* 表。
+    ///
+    /// 一次测四件事：① 老行的画风值逐字活下来（重建表最容易在这里丢东西）；
+    /// ② 新 route / 新 step / 新 kind 都放行；③ `style_profile_id` 可以为 NULL；
+    /// ④ **闸口没松** —— route 仍只认那三个值，attempt 仍硬顶 3 次。
+    #[test]
+    fn v14_opens_the_photo_avatar_tables_to_the_frame_route() {
+        const SESSION: &str = "session-frame";
+        let (db, root) = temp_db();
+        apply_through(&db, 13);
+        insert_draft_pet_and_session(&db, "pet-frame", SESSION, "upload").unwrap();
+        db.execute(
+            "INSERT INTO photo_avatar_runs
+             (session_id, revision, route, style_profile_id, step, generation_token, updated_at)
+             VALUES (?1, 1, 'pixel-v1', 'pixel-style-v2-animation-ready',
+                     'analyzeIdentity', 'token-frame', '10')",
+            [SESSION],
+        )
+        .unwrap();
+
+        apply(&db).unwrap();
+
+        let kept: String = db
+            .query_row(
+                "SELECT style_profile_id FROM photo_avatar_runs WHERE session_id=?1",
+                [SESSION],
+                |row| row.get(0),
+            )
+            .unwrap();
+        assert_eq!(
+            kept, "pixel-style-v2-animation-ready",
+            "重建四张表不许动老行的画风值"
+        );
+
+        // 写实风的那一行：新 route + 新 step，且**没有画风**（NULL，不是哨兵值）
+        db.execute(
+            "UPDATE photo_avatar_runs
+             SET route='frame-video-v1', step='generateMotionSource', style_profile_id=NULL
+             WHERE session_id=?1",
+            [SESSION],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO photo_avatar_step_attempts
+             (session_id, revision, route, step, attempt_no, status, retryable, started_at)
+             VALUES (?1, 1, 'frame-video-v1', 'packFrameSequence', 1, 'submitted', 1, '10')",
+            [SESSION],
+        )
+        .unwrap();
+        db.execute(
+            "INSERT INTO photo_avatar_artifacts
+             (session_id, revision, route, kind, relative_path, sha256, created_at)
+             VALUES (?1, 1, 'frame-video-v1', 'frameSequence', 'frame-sequence.zip', ?2, '10')",
+            rusqlite::params![SESSION, "a".repeat(64)],
+        )
+        .unwrap();
+
+        assert!(
+            db.execute(
+                "UPDATE photo_avatar_runs SET route='pixel-v2' WHERE session_id=?1",
+                [SESSION],
+            )
+            .is_err(),
+            "route 取值域只放开一个值，不是取消 CHECK"
+        );
+        assert!(
+            db.execute(
+                "INSERT INTO photo_avatar_step_attempts
+                 (session_id, revision, route, step, attempt_no, status, retryable, started_at)
+                 VALUES (?1, 1, 'frame-video-v1', 'generateMotionSource', 4,
+                         'submitted', 1, '10')",
+                [SESSION],
+            )
+            .is_err(),
+            "attempt 上限仍是 3"
+        );
+        assert!(
+            db.execute(
+                "UPDATE photo_avatar_runs SET step='generateVideo' WHERE session_id=?1",
+                [SESSION],
+            )
+            .is_err(),
+            "step 取值域只加那两个，不是取消 CHECK"
+        );
+
         let _ = std::fs::remove_dir_all(root);
     }
 }
