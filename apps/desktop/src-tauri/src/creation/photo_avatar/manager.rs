@@ -637,6 +637,12 @@ impl PhotoAvatarManager {
                 | ProviderStepResult::PixelAvatar { .. } => {
                     Err("pixel provider result reached legacy photo avatar manager".into())
                 }
+                // 写实风两个 step 的结果同理：这条路（live2d-v5）不该看到它们。
+                // 列出来而不是用 `_`，是为了以后再加 resultType 时编译器会提醒这里。
+                ProviderStepResult::MotionSource { .. }
+                | ProviderStepResult::FrameSequence { .. } => {
+                    Err("frame provider result reached legacy photo avatar manager".into())
+                }
             },
             _ => Err("invalid provider job state".into()),
         }

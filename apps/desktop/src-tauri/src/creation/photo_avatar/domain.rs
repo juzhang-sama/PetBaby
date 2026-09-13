@@ -267,6 +267,28 @@ pub enum PixelRemoteStep {
     GeneratePixelAvatar,
 }
 
+/// 写实风（`route = frame-video-v1`）的两个远端 step。
+///
+/// 与像素风那两个是**并列**关系，不是扩展 —— 两条产线的 step 名与顺序都不一样
+/// （这里是「先花钱出视频，再 0 算力打包」）。共用一个枚举会让
+/// `reserve_attempt` 那种「step 必须是当前 step」的校验失去意义。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, PartialOrd, Ord, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FrameRemoteStep {
+    GenerateMotionSource,
+    PackFrameSequence,
+}
+
+impl FrameRemoteStep {
+    /// 进 DB、进 wire 的字符串名。与 Python 侧 `contracts._FRAME_STEPS` 逐字一致。
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::GenerateMotionSource => "generateMotionSource",
+            Self::PackFrameSequence => "packFrameSequence",
+        }
+    }
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PixelPhotoAvatarSnapshot {

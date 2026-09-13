@@ -1,7 +1,7 @@
 use super::domain::{
-    AppearanceProfileV1, CanonicalTextureAuditV1, IdentityTraitKey, PhotoAvatarErrorCode,
-    PixelAppearanceProfileV1, PixelAvatarAudit, PixelIdentityTraitKey, PixelRemoteStep,
-    PixelStyleProfileId, PHOTO_AVATAR_CONSENT_VERSION,
+    AppearanceProfileV1, CanonicalTextureAuditV1, FrameRemoteStep, IdentityTraitKey,
+    PhotoAvatarErrorCode, PixelAppearanceProfileV1, PixelAvatarAudit, PixelIdentityTraitKey,
+    PixelRemoteStep, PixelStyleProfileId, PHOTO_AVATAR_CONSENT_VERSION,
 };
 use super::profile::AppearanceCompletionV1;
 use super::store::{RemoteJob, RemoteStep};
@@ -122,6 +122,36 @@ where
     })
 }
 
+/// 写实风（`route = frame-video-v1`）的一步请求。
+///
+/// 字段与 Python 侧 `FrameStepRequest`（`contracts.py:46-60`）**逐一对应**，
+/// 一个不多一个不少 —— 那边是 `_require_exact_fields`，多一个字段就 400。
+/// 与像素请求最大的差别：**没有 profile / styleProfileId / modification / lockedTraits**，
+/// 换成 `petId` / `displayName` / `species`（母版提示词要物种，schema 7 包要 petId）。
+#[derive(Debug, Clone, Serialize)]
+#[serde(rename_all = "camelCase")]
+pub struct FrameProviderStepRequest {
+    pub route: String,
+    pub session_id: String,
+    pub revision: u32,
+    pub provider_session_id: Option<String>,
+    #[serde(serialize_with = "serialize_frame_step")]
+    pub step: FrameRemoteStep,
+    pub attempt: u8,
+    pub consent_version: String,
+    pub source_images: Vec<ProviderSourceImage>,
+    pub pet_id: String,
+    pub display_name: String,
+    pub species: String,
+}
+
+fn serialize_frame_step<S>(step: &FrameRemoteStep, serializer: S) -> Result<S::Ok, S::Error>
+where
+    S: Serializer,
+{
+    serializer.serialize_str(step.as_str())
+}
+
 impl Serialize for ProviderStepRequest {
     fn serialize<S: Serializer>(&self, serializer: S) -> Result<S::Ok, S::Error> {
         use serde::ser::SerializeStruct;
@@ -205,6 +235,33 @@ pub enum ProviderStepResult {
         height: u32,
         audit: PixelAvatarAudit,
     },
+    /// `generateMotionSource` 的产物：**没有 artifactUrl**。
+    ///
+    /// 视频留在服务侧 scratch（`scratch/<providerSessionId>/motion-source.mp4`），
+    /// 一个字节都不往客户端送；这里只需要知道「成了没有、是复用还是新跑」。
+    /// 其余字段是服务侧留档用的（哪次 task、取景收到哪个 scale），Rust 侧只做透传。
+    MotionSource {
+        video_bytes: u64,
+        reused: bool,
+        master_task_id: Option<String>,
+        video_task_id: Option<String>,
+        first_frame_scale: Option<f64>,
+        first_frame_left_margin: Option<f64>,
+        first_frame_right_margin: Option<f64>,
+    },
+    /// `packFrameSequence` 的产物：一支 schema 7 运行时包（**zip**）。
+    ///
+    /// `overall_passed` / `failed_criteria` 是四项验收的结论 —— 客户端靠它在
+    /// 「人工确认」那步提示「检测到哪条异常」。证据图**不在**包里，留服务侧。
+    FrameSequence {
+        artifact_url: String,
+        sha256: String,
+        frame_count: u32,
+        frame_duration_ms: u32,
+        frame_format: String,
+        overall_passed: bool,
+        failed_criteria: Vec<String>,
+    },
 }
 
 #[derive(Deserialize)]
@@ -240,6 +297,33 @@ enum ProviderStepResultWire {
         width: u32,
         height: u32,
         audit: PixelAvatarAudit,
+    },
+    /// 与 Python 侧 `MotionSource.to_wire()` 逐字对应（`resultType: "motionSource"`）。
+    /// `masterTaskId` / `videoTaskId` / 取景三项**可能是 null**，所以是 Option。
+    MotionSource {
+        video_bytes: u64,
+        reused: bool,
+        #[serde(default)]
+        master_task_id: Option<String>,
+        #[serde(default)]
+        video_task_id: Option<String>,
+        #[serde(default)]
+        first_frame_scale: Option<f64>,
+        #[serde(default)]
+        first_frame_left_margin: Option<f64>,
+        #[serde(default)]
+        first_frame_right_margin: Option<f64>,
+    },
+    /// 与 Python 侧 `FrameSequenceArtifact.to_wire()` 对应（`resultType: "frameSequence"`），
+    /// 外面再套一个 `artifactUrl` / `sha256`（由 `_job_wire` 展开）。
+    FrameSequence {
+        artifact_url: String,
+        sha256: String,
+        frame_count: u32,
+        frame_duration_ms: u32,
+        frame_format: String,
+        overall_passed: bool,
+        failed_criteria: Vec<String>,
     },
 }
 
@@ -342,6 +426,53 @@ impl<'de> Deserialize<'de> for ProviderStepResult {
                     audit,
                 })
             }
+            ProviderStepResultWire::MotionSource {
+                video_bytes,
+                reused,
+                master_task_id,
+                video_task_id,
+                first_frame_scale,
+                first_frame_left_margin,
+                first_frame_right_margin,
+            } => Ok(Self::MotionSource {
+                video_bytes,
+                reused,
+                master_task_id,
+                video_task_id,
+                first_frame_scale,
+                first_frame_left_margin,
+                first_frame_right_margin,
+            }),
+            ProviderStepResultWire::FrameSequence {
+                artifact_url,
+                sha256,
+                frame_count,
+                frame_duration_ms,
+                frame_format,
+                overall_passed,
+                failed_criteria,
+            } => {
+                // 交付物是 zip，sha256 就是它的（服务侧 `FrameSequenceArtifact` 算的）。
+                // 帧数/帧时长/格式是这个包能跑起来的必要条件，缺一个都装不进去 ——
+                // 与其让后面 builder 报一句模糊的错，不如在协议层就挡住。
+                if !is_lower_sha256(&sha256) {
+                    return Err(D::Error::custom("frame sequence sha256 is invalid"));
+                }
+                if frame_count == 0 || frame_duration_ms == 0 || frame_format.trim().is_empty() {
+                    return Err(D::Error::custom(
+                        "frame sequence result is missing frame metadata",
+                    ));
+                }
+                Ok(Self::FrameSequence {
+                    artifact_url,
+                    sha256,
+                    frame_count,
+                    frame_duration_ms,
+                    frame_format,
+                    overall_passed,
+                    failed_criteria,
+                })
+            }
         }
     }
 }
@@ -414,6 +545,23 @@ pub trait PhotoAvatarProvider: Send + Sync {
         url: &str,
         expected_sha256: &str,
     ) -> Result<Vec<u8>, PhotoAvatarError>;
+
+    /// 下载 `packFrameSequence` 交付的**帧序列包（zip）**。
+    ///
+    /// 单独一个方法而不是给 `download_artifact` 加参数：那个方法的契约是
+    /// 「2048×2048 PNG」，两条产线对「到手的东西长什么样」的判据完全不同，
+    /// 混在一个签名里迟早会有人传错 kind。
+    ///
+    /// **默认实现一律拒绝** —— 测试里的几个桩 provider 只服务像素/旧路线，
+    /// 真去下 zip 就该炸，而不是静默返回一包没校验的字节。真正支持的两处
+    /// （`ControlledBackendProvider` / `FakePhotoAvatarProvider`）各自覆写。
+    fn download_frame_sequence(
+        &self,
+        _url: &str,
+        _expected_sha256: &str,
+    ) -> Result<Vec<u8>, PhotoAvatarError> {
+        Err(cfg_error("this provider does not support frame sequences"))
+    }
 }
 
 #[derive(Clone)]
@@ -491,6 +639,112 @@ impl ControlledBackendProvider {
             provider_job_id: wire.provider_job_id,
         })
     }
+    /// 写实风（`frame-video-v1`）的一步提交。
+    ///
+    /// 本地先挡一遍，规则与 Python 侧 `FrameStepRequest.parse` 一致 ——
+    /// 「照片张数不对 / 该空的不空」本地就能判，不值得跑一趟 HTTP：
+    /// - 两个 step 都要求 `attempt ∈ 1..=3`（DB 里也是这个上限）；
+    /// - `generateMotionSource` 要 **1..=8 张照片**；
+    /// - `packFrameSequence` **必须没有照片**、且**必须有 `providerSessionId`**
+    ///   （它吃的是服务侧 scratch 里的那支 mp4，就靠这个 id 找）。
+    pub fn submit_frame_step(
+        &self,
+        request: FrameProviderStepRequest,
+    ) -> Result<RemoteJob, PhotoAvatarError> {
+        let provider_session_id = request
+            .provider_session_id
+            .as_deref()
+            .map(str::trim)
+            .filter(|value| !value.is_empty());
+        if request.route != "frame-video-v1"
+            || request.session_id.trim().is_empty()
+            || !(1..=3).contains(&request.attempt)
+            || request.pet_id.trim().is_empty()
+            || request.display_name.trim().is_empty()
+            || !matches!(request.species.as_str(), "cat" | "dog")
+        {
+            return Err(cfg_error("invalid frame provider request"));
+        }
+        match request.step {
+            FrameRemoteStep::GenerateMotionSource => {
+                if !(1..=8).contains(&request.source_images.len()) {
+                    return Err(cfg_error("generateMotionSource requires 1..8 photos"));
+                }
+            }
+            FrameRemoteStep::PackFrameSequence => {
+                if !request.source_images.is_empty() || provider_session_id.is_none() {
+                    return Err(cfg_error(
+                        "packFrameSequence requires a providerSessionId and no photos",
+                    ));
+                }
+            }
+        }
+        let body = serde_json::to_vec(&request).map_err(|error| cfg_error(error.to_string()))?;
+        let (status, bytes) = self.call("POST", "/v1/photo-avatar/steps", Some(&body))?;
+        let wire: RemoteJobWire = classify_status(status, &bytes).and_then(|response| {
+            serde_json::from_slice(&response).map_err(|error| protocol_error(error.to_string()))
+        })?;
+        if wire.provider_job_id.trim().is_empty()
+            || wire
+                .provider_session_id
+                .as_deref()
+                .is_none_or(|value| value.trim().is_empty())
+        {
+            return Err(protocol_error(
+                "frame provider job response is invalid".into(),
+            ));
+        }
+        Ok(RemoteJob {
+            provider_session_id: wire.provider_session_id,
+            provider_job_id: wire.provider_job_id,
+        })
+    }
+
+    /// 下载 artifact 的**纯传输**部分：校 URL → 禁 redirect → 按 `cap` 边下边卡大小。
+    ///
+    /// `cap` 是参数而不是常量：两条产线到手的文件完全不同（2048² PNG vs 几 MB 的 zip），
+    /// 上限自然不同。校验字节内容是调用方的事。
+    fn fetch_artifact_bytes(&self, url: &str, cap: usize) -> Result<Vec<u8>, PhotoAvatarError> {
+        validate_artifact_url(
+            &self.base_url,
+            url,
+            cfg!(debug_assertions),
+            self.allow_insecure_loopback,
+        )?;
+        let url = url.to_string();
+        let token = self.token.clone();
+        std::thread::spawn(move || {
+            tauri::async_runtime::block_on(async move {
+                let client = reqwest::Client::builder()
+                    .redirect(reqwest::redirect::Policy::none())
+                    .build()
+                    .map_err(|e| net_error(e.to_string()))?;
+                let mut response = client
+                    .get(url)
+                    .bearer_auth(token)
+                    .send()
+                    .await
+                    .map_err(|e| net_error(e.to_string()))?;
+                let status = response.status().as_u16();
+                if response.headers().get(reqwest::header::LOCATION).is_some() {
+                    return Err(cfg_error("artifact redirects are not allowed"));
+                }
+                validate_declared_artifact_size(response.content_length(), cap)?;
+                let mut body = Vec::new();
+                while let Some(chunk) = response
+                    .chunk()
+                    .await
+                    .map_err(|e| net_error(e.to_string()))?
+                {
+                    append_artifact_chunk(&mut body, &chunk, cap)?;
+                }
+                classify_status(status, &body)
+            })
+        })
+        .join()
+        .map_err(|_| net_error("artifact HTTP worker panicked".into()))?
+    }
+
     fn call(
         &self,
         method: &str,
@@ -584,45 +838,18 @@ impl PhotoAvatarProvider for ControlledBackendProvider {
         self.delete_session_with_outcome(id)
     }
     fn download_artifact(&self, url: &str, expected: &str) -> Result<Vec<u8>, PhotoAvatarError> {
-        validate_artifact_url(
-            &self.base_url,
-            url,
-            cfg!(debug_assertions),
-            self.allow_insecure_loopback,
-        )?;
-        let url = url.to_string();
-        let token = self.token.clone();
-        let bytes = std::thread::spawn(move || {
-            tauri::async_runtime::block_on(async move {
-                let client = reqwest::Client::builder()
-                    .redirect(reqwest::redirect::Policy::none())
-                    .build()
-                    .map_err(|e| net_error(e.to_string()))?;
-                let mut response = client
-                    .get(url)
-                    .bearer_auth(token)
-                    .send()
-                    .await
-                    .map_err(|e| net_error(e.to_string()))?;
-                let status = response.status().as_u16();
-                if response.headers().get(reqwest::header::LOCATION).is_some() {
-                    return Err(cfg_error("artifact redirects are not allowed"));
-                }
-                validate_declared_artifact_size(response.content_length())?;
-                let mut body = Vec::new();
-                while let Some(chunk) = response
-                    .chunk()
-                    .await
-                    .map_err(|e| net_error(e.to_string()))?
-                {
-                    append_artifact_chunk(&mut body, &chunk)?;
-                }
-                classify_status(status, &body)
-            })
-        })
-        .join()
-        .map_err(|_| net_error("artifact HTTP worker panicked".into()))??;
+        let bytes = self.fetch_artifact_bytes(url, MAX_ARTIFACT_BYTES)?;
         validate_artifact_bytes(&bytes, expected)?;
+        Ok(bytes)
+    }
+
+    fn download_frame_sequence(
+        &self,
+        url: &str,
+        expected: &str,
+    ) -> Result<Vec<u8>, PhotoAvatarError> {
+        let bytes = self.fetch_artifact_bytes(url, MAX_FRAME_SEQUENCE_BYTES)?;
+        validate_frame_sequence_bytes(&bytes, expected)?;
         Ok(bytes)
     }
 }
@@ -987,6 +1214,21 @@ impl PhotoAvatarProvider for FakePhotoAvatarProvider {
         validate_artifact_bytes(&bytes, expected)?;
         Ok(bytes)
     }
+    fn download_frame_sequence(
+        &self,
+        url: &str,
+        expected: &str,
+    ) -> Result<Vec<u8>, PhotoAvatarError> {
+        let bytes = self
+            .artifacts
+            .lock()
+            .unwrap()
+            .get(url)
+            .cloned()
+            .ok_or_else(|| cfg_error("unknown fake artifact"))?;
+        validate_frame_sequence_bytes(&bytes, expected)?;
+        Ok(bytes)
+    }
 }
 
 fn classify_status(status: u16, body: &[u8]) -> Result<Vec<u8>, PhotoAvatarError> {
@@ -1035,16 +1277,37 @@ fn net_error(message: String) -> PhotoAvatarError {
 
 const MAX_ARTIFACT_BYTES: usize = 20 * 1024 * 1024;
 
-fn validate_declared_artifact_size(content_length: Option<u64>) -> Result<(), PhotoAvatarError> {
-    if content_length.is_some_and(|size| size > MAX_ARTIFACT_BYTES as u64) {
-        return Err(cfg_error("artifact exceeds 20 MiB"));
+/// 帧序列包（zip）的单件上限，**比 PNG 那条宽得多**。
+///
+/// 实测 288 帧 WebP 的 zip 是 **7.1 / 8.95 / 9.65 MB**（见落地清单「打包实测」），
+/// 20 MiB 只剩两倍余量 —— 画面更花、毛更细的宠物完全可能顶到边，而**顶到边
+/// 的代价是：白等 136 秒打包 + 一次「服务端返回了坏东西」的假故障**。
+/// 64 MiB 给约 6.6 倍余量，量级上仍然拦得住「服务端发错文件」。
+const MAX_FRAME_SEQUENCE_BYTES: usize = 64 * 1024 * 1024;
+
+fn validate_declared_artifact_size(
+    content_length: Option<u64>,
+    cap: usize,
+) -> Result<(), PhotoAvatarError> {
+    if content_length.is_some_and(|size| size > cap as u64) {
+        return Err(cfg_error(format!(
+            "artifact exceeds {} MiB",
+            cap / (1024 * 1024)
+        )));
     }
     Ok(())
 }
 
-fn append_artifact_chunk(body: &mut Vec<u8>, chunk: &[u8]) -> Result<(), PhotoAvatarError> {
-    if body.len().saturating_add(chunk.len()) > MAX_ARTIFACT_BYTES {
-        return Err(cfg_error("artifact exceeds 20 MiB"));
+fn append_artifact_chunk(
+    body: &mut Vec<u8>,
+    chunk: &[u8],
+    cap: usize,
+) -> Result<(), PhotoAvatarError> {
+    if body.len().saturating_add(chunk.len()) > cap {
+        return Err(cfg_error(format!(
+            "artifact exceeds {} MiB",
+            cap / (1024 * 1024)
+        )));
     }
     body.extend_from_slice(chunk);
     Ok(())
@@ -1065,6 +1328,30 @@ fn validate_artifact_bytes(bytes: &[u8], expected_sha256: &str) -> Result<(), Ph
         .map_err(|e| cfg_error(format!("invalid PNG artifact: {e}")))?;
     if image.width() != 2048 || image.height() != 2048 {
         return Err(cfg_error("artifact must be exactly 2048x2048"));
+    }
+    if format!("{:x}", Sha256::digest(bytes)) != expected_sha256 {
+        return Err(cfg_error("artifact sha256 mismatch"));
+    }
+    Ok(())
+}
+
+/// 帧序列包（zip）的字节校验：**长度上限 + zip 魔数 + sha256**，就这三件。
+///
+/// ⚠️ **不能复用 `validate_artifact_bytes`** —— 那个是给 2048×2048 PNG 写的
+/// （硬编码 `\x89PNG` 开头 + 尺寸必须 `2048×2048`），`packFrameSequence` 交的
+/// zip 会被它当场拒掉，而且是**在付过 5.69 算力、等完 136 秒打包之后**才拒。
+///
+/// 解压后的结构校验（目录布局、manifest schema 7、逐文件 sha256）不在这里 ——
+/// 那是 `validate_asset_directory` 的活，本函数只管「到手的是不是我们要的那支包」。
+fn validate_frame_sequence_bytes(
+    bytes: &[u8],
+    expected_sha256: &str,
+) -> Result<(), PhotoAvatarError> {
+    if !is_lower_sha256(expected_sha256) {
+        return Err(cfg_error("artifact sha256 must be lowercase hex"));
+    }
+    if bytes.len() > MAX_FRAME_SEQUENCE_BYTES || !bytes.starts_with(b"PK\x03\x04") {
+        return Err(cfg_error("frame sequence artifact must be a zip <=64 MiB"));
     }
     if format!("{:x}", Sha256::digest(bytes)) != expected_sha256 {
         return Err(cfg_error("artifact sha256 mismatch"));
@@ -1536,6 +1823,152 @@ mod tests {
     }
 
     #[test]
+    fn frame_wire_matches_the_python_result_types() {
+        // motionSource：**没有 artifactUrl**，视频留在服务侧。
+        let motion: ProviderStepResult = serde_json::from_value(json!({
+            "resultType": "motionSource",
+            "videoBytes": 3145728,
+            "reused": true,
+            "masterTaskId": "task-master-1",
+            "videoTaskId": null,
+            "firstFrameScale": 0.85,
+            "firstFrameLeftMargin": 0.06,
+            "firstFrameRightMargin": null
+        }))
+        .unwrap();
+        assert!(matches!(
+            motion,
+            ProviderStepResult::MotionSource { video_bytes: 3145728, reused: true, .. }
+        ));
+
+        // frameSequence：zip + 四项验收结论。
+        let pack: ProviderStepResult = serde_json::from_value(json!({
+            "resultType": "frameSequence",
+            "artifactUrl": "https://backend.example/artifact.zip",
+            "sha256": "ab".repeat(32),
+            "frameCount": 288,
+            "frameDurationMs": 42,
+            "frameFormat": "webp",
+            "overallPassed": false,
+            "failedCriteria": ["1-尾巴完整"]
+        }))
+        .unwrap();
+        assert!(matches!(
+            pack,
+            ProviderStepResult::FrameSequence { frame_count: 288, overall_passed: false, ref failed_criteria, .. }
+                if failed_criteria == &vec!["1-尾巴完整".to_string()]
+        ));
+
+        // 少一块必要元数据就不该被当成「成功」——装不进去的包早拒早好。
+        let missing = serde_json::from_value::<ProviderStepResult>(json!({
+            "resultType": "frameSequence",
+            "artifactUrl": "https://backend.example/artifact.zip",
+            "sha256": "ab".repeat(32),
+            "frameCount": 0,
+            "frameDurationMs": 42,
+            "frameFormat": "webp",
+            "overallPassed": true,
+            "failedCriteria": []
+        }));
+        assert!(missing.is_err(), "frameCount=0 的包不可能装得进运行时");
+
+        // 字段名打错要被 `deny_unknown_fields` 抓住（这是 wire 契约的守卫）。
+        let typo = serde_json::from_value::<ProviderStepResult>(json!({
+            "resultType": "motionSource",
+            "videoBytes": 1,
+            "reused": false,
+            "videoTaskID": "x"
+        }));
+        assert!(typo.is_err());
+    }
+
+    /// 🔴 这就是那个「会白花 5.69 算力 + 白等 136 秒」的坑：
+    /// `download_artifact` 的校验器是给 2048×2048 PNG 写的，zip 必须走另一条。
+    #[test]
+    fn frame_sequence_download_keeps_zip_and_png_apart() {
+        let zip = {
+            let mut bytes = b"PK\x03\x04".to_vec();
+            bytes.extend_from_slice(b"not-really-a-zip-but-the-magic-is-right");
+            bytes
+        };
+        let zip_sha = format!("{:x}", Sha256::digest(&zip));
+        assert!(validate_frame_sequence_bytes(&zip, &zip_sha).is_ok());
+
+        // 同一条 zip 走 PNG 那条会被拒 —— 说明两条路确实分开了。
+        assert!(validate_artifact_bytes(&zip, &zip_sha).is_err());
+        // 反过来：PNG 走 zip 那条也要被拒（魔数不对）。
+        assert!(validate_frame_sequence_bytes(b"\x89PNG\r\n\x1a\n", &"00".repeat(32)).is_err());
+        // 哈希不符照拒（下载被中途换过）。
+        assert!(validate_frame_sequence_bytes(&zip, &"00".repeat(32)).is_err());
+        // 大写 hex 也是无效的 sha256。
+        assert!(validate_frame_sequence_bytes(&zip, &"AB".repeat(32)).is_err());
+    }
+
+    #[test]
+    fn submit_frame_step_rejects_impossible_requests_before_any_http() {
+        // base_url 指向一个关着的端口：如果校验没拦住而真去发请求，
+        // 拿到的会是 Network（可重试），而不是 Unsupported（本地配置错）。
+        let provider = ControlledBackendProvider::for_test("http://127.0.0.1:1");
+        let photo = ProviderSourceImage {
+            source_id: "photo-1".into(),
+            png_base64: "AAAA".into(),
+            sha256: "00".repeat(32),
+            width: 1024,
+            height: 1024,
+        };
+        let valid = |step: FrameRemoteStep, photos: Vec<ProviderSourceImage>, session: Option<&str>| {
+            FrameProviderStepRequest {
+                route: "frame-video-v1".into(),
+                session_id: "session-a".into(),
+                revision: 1,
+                provider_session_id: session.map(str::to_owned),
+                step,
+                attempt: 1,
+                consent_version: PHOTO_AVATAR_CONSENT_VERSION.into(),
+                source_images: photos,
+                pet_id: "pet-a".into(),
+                display_name: "我的猫".into(),
+                species: "cat".into(),
+            }
+        };
+        let rejects = |request: FrameProviderStepRequest| {
+            let error = provider.submit_frame_step(request).unwrap_err();
+            assert_eq!(
+                error.code,
+                PhotoAvatarErrorCode::Unsupported,
+                "该在本地就被拦住，不该发到网络上：{}",
+                error.message
+            );
+        };
+
+        rejects(valid(FrameRemoteStep::GenerateMotionSource, vec![], None));
+        rejects(valid(
+            FrameRemoteStep::GenerateMotionSource,
+            vec![photo.clone(); 9],
+            None,
+        ));
+        // packFrameSequence 吃服务侧 scratch 里的 mp4 → 不许带照片、必须有 session
+        rejects(valid(
+            FrameRemoteStep::PackFrameSequence,
+            vec![photo.clone()],
+            Some("provider-1"),
+        ));
+        rejects(valid(
+            FrameRemoteStep::PackFrameSequence,
+            vec![],
+            None,
+        ));
+        // 路线/物种/attempt 的白名单照旧
+        let mut wrong_route =
+            valid(FrameRemoteStep::GenerateMotionSource, vec![photo.clone()], None);
+        wrong_route.route = "pixel-v1".into();
+        rejects(wrong_route);
+        let mut wrong_species = valid(FrameRemoteStep::GenerateMotionSource, vec![photo], None);
+        wrong_species.species = "rabbit".into();
+        rejects(wrong_species);
+    }
+
+    #[test]
     fn fake_provider_consumes_running_success_and_error_outcomes() {
         let fake = FakePhotoAvatarProvider::new(vec![
             FakeOutcome::Running,
@@ -1843,15 +2276,36 @@ mod tests {
     }
 
     #[test]
-    fn declared_content_length_over_20_mib_is_rejected_before_reading() {
-        assert!(validate_declared_artifact_size(Some((MAX_ARTIFACT_BYTES + 1) as u64)).is_err());
-        assert!(validate_declared_artifact_size(Some(MAX_ARTIFACT_BYTES as u64)).is_ok());
+    fn declared_content_length_over_the_cap_is_rejected_before_reading() {
+        assert!(
+            validate_declared_artifact_size(Some((MAX_ARTIFACT_BYTES + 1) as u64), MAX_ARTIFACT_BYTES)
+                .is_err()
+        );
+        assert!(
+            validate_declared_artifact_size(Some(MAX_ARTIFACT_BYTES as u64), MAX_ARTIFACT_BYTES)
+                .is_ok()
+        );
+        // 帧序列包走的是另一条（宽得多的）上限 —— 20 MiB 的包它得收。
+        assert!(
+            validate_declared_artifact_size(
+                Some(MAX_ARTIFACT_BYTES as u64),
+                MAX_FRAME_SEQUENCE_BYTES
+            )
+            .is_ok()
+        );
+        assert!(
+            validate_declared_artifact_size(
+                Some((MAX_FRAME_SEQUENCE_BYTES + 1) as u64),
+                MAX_FRAME_SEQUENCE_BYTES
+            )
+            .is_err()
+        );
     }
 
     #[test]
-    fn chunked_body_is_rejected_when_accumulated_size_exceeds_20_mib() {
+    fn chunked_body_is_rejected_when_accumulated_size_exceeds_the_cap() {
         let mut body = vec![0; MAX_ARTIFACT_BYTES];
-        assert!(append_artifact_chunk(&mut body, &[1]).is_err());
+        assert!(append_artifact_chunk(&mut body, &[1], MAX_ARTIFACT_BYTES).is_err());
         assert_eq!(body.len(), MAX_ARTIFACT_BYTES);
     }
 
