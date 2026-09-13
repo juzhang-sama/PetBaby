@@ -53,6 +53,8 @@ def main() -> int:
     ap.add_argument("--pet", default="宠物动作-毛砌墙-v3-2026-08-31", help="petId")
     ap.add_argument("--name", default="毛砌墙（呼吸+眨眼+摇尾循环）", help="displayName")
     ap.add_argument("--action-id", default="idle-combo", help="actionId")
+    ap.add_argument("--species", default="cat", choices=["cat", "dog"],
+                    help="schema7 manifest 的 species 字段（上传狗必须传 dog，别让狗被记成猫）")
     args = ap.parse_args()
 
     frames_dir = Path(args.frames)

@@ -111,6 +111,52 @@ def build_prompt(prompt_file: Path, include_negative: bool) -> tuple[str, bool]:
     return main, bool(negative)
 
 
+def write_failure_record(
+    out_dir: Path,
+    *,
+    model: str,
+    params: dict,
+    prompt: str,
+    frame: Path,
+    prompt_file: Path,
+    error_code: str,
+    retryable: bool,
+    message: str,
+    diagnostic: str = "",
+    task_id: str | None = None,
+) -> None:
+    """失败也写 `生成记录.json`，让编排器能读到 error code。
+
+    没有这个记录，编排器只能去抠 stdout 文本才能判断该不该重试。而「该不该重试」
+    是有真实后果的：内容审核拒绝（`contentPolicy`）重试同一份提示词必然再被拒，
+    白烧算力（实测 task 135106434 一次 2.368 算力）。
+    """
+    (out_dir / "生成记录.json").write_text(
+        json.dumps(
+            {
+                "model": model,
+                "params": params,
+                "jobs": [],
+                "failure": {
+                    "taskId": task_id,
+                    "state": "failed",
+                    "errorCode": error_code,
+                    "retryable": retryable,
+                    "errorMessage": message,
+                    "errorDiagnostic": diagnostic,
+                    "prompt": prompt,
+                    "sourceFrame": str(frame),
+                    "sourcePromptFile": str(prompt_file),
+                },
+            },
+            ensure_ascii=False,
+            indent=2,
+        ),
+        encoding="utf-8",
+    )
+    print(f"[失败记录] {out_dir / '生成记录.json'}  code={error_code} retryable={retryable}")
+
+
 def main() -> int:
     parser = argparse.ArgumentParser(description="提交绿幕首帧，生成 Seedance 动作视频")
     parser.add_argument("--first-frame", required=True, help="绿幕首帧 PNG（图生视频首帧）")
@@ -169,6 +215,13 @@ def main() -> int:
 
     with httpx.Client(follow_redirects=False) as http:
         client = Lk888Client(config, http)
+        params_wire = {
+            "version": args.version,
+            "duration": args.duration,
+            "resolution": args.resolution,
+            "aspectRatio": args.aspect_ratio,
+            "mode": args.mode,
+        }
         params_note = (
             f"模型={config.video_model}  版本={args.version}  时长={args.duration}s  "
             f"分辨率={args.resolution}  画幅={args.aspect_ratio}  模式={args.mode}"
@@ -194,6 +247,18 @@ def main() -> int:
                 mode=args.mode,
             )
         except Lk888Error as exc:
+            write_failure_record(
+                out_dir,
+                model=config.video_model,
+                params=params_wire,
+                prompt=prompt,
+                frame=frame,
+                prompt_file=prompt_file,
+                error_code=exc.code,
+                retryable=exc.retryable,
+                message=str(exc),
+                diagnostic=exc.diagnostic,
+            )
             raise SystemExit(f"[提交失败] {exc.code}: {exc} {exc.diagnostic}") from exc
 
         print(f"[任务] task_id = {task_id}，开始轮询（最多 {int(args.timeout)}s）")
@@ -214,6 +279,19 @@ def main() -> int:
 
         if state.state != "success" or not state.result_url:
             detail = state.error.code if state.error else state.state
+            write_failure_record(
+                out_dir,
+                model=config.video_model,
+                params=params_wire,
+                prompt=prompt,
+                frame=frame,
+                prompt_file=prompt_file,
+                error_code=detail,
+                retryable=bool(state.error.retryable) if state.error else False,
+                message=str(state.error) if state.error else f"state={state.state}",
+                diagnostic=state.error.diagnostic if state.error else "",
+                task_id=task_id,
+            )
             raise SystemExit(f"[生成失败] state={state.state} {detail}")
 
         print(f"[下载] {state.result_url}")
