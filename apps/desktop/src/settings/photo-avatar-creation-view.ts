@@ -2,7 +2,7 @@ import type { PhotoAvatarRoute, PhotoAvatarSnapshot, PhotoAvatarUpload } from ".
 import type { CreationSnapshot } from "../creation/contracts";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 import type { PhotoAvatarPreviewHandle } from "./photo-avatar-pixel-preview";
-import { mountPhotoAvatarPreview } from "./photo-avatar-pixel-preview";
+import { mountPhotoAvatarPreview } from "./photo-avatar-preview";
 import { photoAvatarProgressCopy, photoAvatarStyleCopy } from "./photo-avatar-style-copy";
 
 export type PhotoAvatarCreationStep =

@@ -1,30 +1,29 @@
 import { creationApi } from "../creation/api";
 import { parseAnimatedImageManifest } from "../runtime/animated-image-manifest";
 import { AnimatedImageRenderer } from "../runtime/animated-image-renderer";
+import type {
+  PhotoAvatarPreviewHandle,
+  PixelRuntimeEvidence,
+} from "./photo-avatar-preview-contract";
 
-export type PixelRuntimeEvidence = {
-  readonly renderer: "animated-image-v1";
-  readonly neutralPixels: number;
-  readonly changedPixels: number;
-  readonly manifestSha256: string;
-};
+// 预览契约（handle / evidence）由两条产线共用，定义搬去了
+// `photo-avatar-preview-contract.ts`；这里 re-export 保持既有 import 不变。
+export type {
+  PhotoAvatarPreviewEvidence,
+  PixelRuntimeEvidence,
+  PhotoAvatarPreviewHandle,
+} from "./photo-avatar-preview-contract";
 
-export interface PhotoAvatarPreviewHandle {
-  readonly evidence: PixelRuntimeEvidence | null;
-  destroy(): void;
-}
-
-function decodeBase64(value: string): Uint8Array {
+// 下面这几个小工具（base64 / sha256 / 画布取像素 / 视野尺寸）是**两条产线共用**的，
+// 所以导出给 `photo-avatar-frame-preview.ts` 用 —— 与其再造一份，不如让它住在这里。
+export function decodeBase64(value: string): Uint8Array {
   const binary = atob(value);
   return Uint8Array.from(binary, (character) => character.charCodeAt(0));
 }
 
-async function manifestSha256(value: unknown): Promise<string> {
-  const encoded = new TextEncoder().encode(JSON.stringify(value, null, 2));
-  const digest = await crypto.subtle.digest("SHA-256", encoded);
-  return [...new Uint8Array(digest)]
-    .map((byte) => byte.toString(16).padStart(2, "0"))
-    .join("");
+export async function sha256Hex(bytes: Uint8Array): Promise<string> {
+  const digest = await crypto.subtle.digest("SHA-256", Uint8Array.from(bytes).buffer);
+  return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
 const HIDDEN_PREVIEW_WIDTH = 480;
@@ -44,7 +43,7 @@ export function photoAvatarPreviewViewport(
   };
 }
 
-function canvasPixels(canvas: HTMLCanvasElement): Uint8ClampedArray {
+export function canvasPixels(canvas: HTMLCanvasElement): Uint8ClampedArray {
   const context = canvas.getContext("2d");
   if (context === null || canvas.width <= 0 || canvas.height <= 0) return new Uint8ClampedArray();
   return context.getImageData(0, 0, canvas.width, canvas.height).data;
@@ -58,7 +57,7 @@ function visiblePixelCount(pixels: Uint8ClampedArray): number {
   return count;
 }
 
-function changedPixelCount(before: Uint8ClampedArray, after: Uint8ClampedArray): number {
+export function changedPixelCount(before: Uint8ClampedArray, after: Uint8ClampedArray): number {
   if (before.length === 0 || before.length !== after.length) return 0;
   let count = 0;
   for (let index = 0; index < before.length; index += 4) {
@@ -111,7 +110,13 @@ export async function mountPhotoAvatarPreview(
     if (neutralPixels <= 0 || changedPixels <= 20) {
       throw new Error("像素预览运行检查未检测到有效图像或动作变化");
     }
-    const manifestHash = await manifestSha256(manifestValue);
+    const manifestHash = await sha256Hex(
+      // ⚠️ 对**磁盘上的原始字节**算，不是拿解析后的 JSON 重新 `JSON.stringify` 再算 ——
+      // 后者要跟服务侧（Python `json.dumps(indent=2, ensure_ascii=False)`）写出来的字节
+      // 逐字节相等，是个**没人验证过的跨语言约定**。多读一次文件换掉这个假设：
+      // 后端拿的就是这份字节的哈希，算错等于这条链走不到「预览就绪」。
+      decodeBase64(await creationApi.photoAvatarPreviewFileB64(sessionId, snapshot.revision, "manifest.json")),
+    );
     evidence = { renderer: "animated-image-v1", neutralPixels, changedPixels, manifestSha256: manifestHash };
     if (snapshot.step === "runtimeCheckPending") {
       await creationApi.photoAvatarRuntimeCheckPassed(sessionId, snapshot.revision, manifestHash);
