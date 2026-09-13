@@ -24,7 +24,8 @@ from .audit import (
     AuditContractError,
     SemanticAtlasAuditV1,
 )
-from .contracts import ContractError, PixelStepRequest, StepRequest
+from .contracts import ContractError, FrameStepRequest, PixelStepRequest, StepRequest
+from .frame_pipeline import FramePipelineError, FrameSequenceArtifact
 from .lk888_client import Lk888Error
 from .pixel_audit import PixelAuditError, parse_pixel_avatar_audit
 from .pixel_avatar import PixelAvatarArtifact
@@ -56,8 +57,22 @@ _TOMBSTONE_FIELDS = frozenset(
     {"createdAt", "providerSessionId", "lk888TaskIds"}
 )
 _STATUSES = frozenset({"running", "succeeded", "failed", "cancelled", "deleted"})
-_STEPS = frozenset({"analyzeIdentity", "completeAppearance", "renderTextureAtlas", "generatePixelAvatar"})
+_STEPS = frozenset(
+    {
+        "analyzeIdentity",
+        "completeAppearance",
+        "renderTextureAtlas",
+        "generatePixelAvatar",
+        "generateMotionSource",
+        "packFrameSequence",
+    }
+)
 _PIXEL_CONTRACT_MESSAGE = "生成图片不符合像素素材要求，请重试。"
+# artifact 允许的扩展名 -> MIME。写实风交付的是**一支 zip**（schema 7 运行时包），
+# 其余路线交付 PNG。一个 job 只有一个 artifact，所以最终包必须打成 zip。
+_ARTIFACT_TYPES = {".png": "image/png", ".zip": "application/zip"}
+# 会「返回 artifact 而不是普通结果」的 runner 返回值类型。
+_ARTIFACT_RESULTS = (TextureArtifact, PixelAvatarArtifact, FrameSequenceArtifact)
 
 
 class JobStoreError(ValueError):
@@ -254,6 +269,10 @@ class JobStore:
                 )
             elif isinstance(exc, ContractError):
                 _LOGGER.warning("contract=%s", _safe_contract_diagnostic(exc))
+            elif isinstance(exc, FramePipelineError):
+                # 这里是唯一的捕获点，**不打日志就等于静默失败** ——
+                # 「job failed 但日志一片空白」是本项目最贵的一种坑，别再犯。
+                _LOGGER.warning("frame pipeline failed: %s", str(exc)[:512])
             with self._lock:
                 if job.status == "running":
                     job.status = "failed"
@@ -268,10 +287,15 @@ class JobStore:
             self._active_jobs.discard(job_id)
             if job.status != "running" or job.provider_session_id in self._deleted_sessions:
                 return
-            if isinstance(result, (TextureArtifact, PixelAvatarArtifact)):
+            if isinstance(result, _ARTIFACT_RESULTS):
                 try:
                     if isinstance(result, PixelAvatarArtifact):
                         self._store_pixel_artifact(job, result)
+                    elif isinstance(result, FrameSequenceArtifact):
+                        self._store_frame_sequence_artifact(job, result)
+                        # 元数据单独留在 job 状态里，`_job_wire` 才有东西回给客户端；
+                        # zip 字节走 artifact 存储，**不进状态文件**（`_persist` 从不写 result）。
+                        job.result = result.to_wire()
                     else:
                         self._store_artifact(job, result)
                 except Exception:
@@ -305,12 +329,16 @@ class JobStore:
             job.status = "succeeded"
             job.updated_at = _timestamp()
             self._persist(job)
-            self._write_terminal_audit(
-                job,
+            # audit 只认那两个 PNG artifact 类型：`AttemptAuditV1` 的形状是围绕
+            # 「provider 生成一张图」定的（provider_raw_sha256 / body_module_id / …），
+            # `FrameSequenceArtifact` 没有、也不该有这些字段，硬塞进去会 AttributeError。
+            # 写实风的审计另有落点（04-抠像/抠像参数.json、05-验收/验收报告.json 都在 scratch 里）。
+            audit_artifact = (
                 result
                 if isinstance(result, (TextureArtifact, PixelAvatarArtifact))
-                else None,
+                else None
             )
+            self._write_terminal_audit(job, audit_artifact)
 
     def status(self, job_id: str) -> JobState:
         _require_safe_id(job_id, "job id")
@@ -376,15 +404,7 @@ class JobStore:
     def read_artifact(self, artifact_id: str) -> bytes:
         _require_safe_id(artifact_id, "artifact id")
         with self._lock:
-            matching = next(
-                (job for job in self._jobs.values() if job.artifact_id == artifact_id),
-                None,
-            )
-            if matching is None or matching.artifact_path is None:
-                raise JobStoreError("artifact not found")
-            path = matching.artifact_path
-            if not path.is_relative_to(self._artifacts_dir):
-                raise JobStoreError("artifact path is invalid")
+            path = self._artifact_path_of(artifact_id)
             try:
                 return path.read_bytes()
             except FileNotFoundError as exc:
@@ -404,8 +424,8 @@ class JobStore:
                 or semantic_audit.immutable_digest() != artifact.provider_raw_sha256
             ):
                 raise JobStoreError("runner returned a conflicting semantic audit")
-        self._store_png_artifact(
-            job, artifact.png, artifact.sha256, artifact.provider_task_id
+        self._store_binary_artifact(
+            job, artifact.png, artifact.sha256, artifact.provider_task_id, suffix=".png"
         )
 
     def _store_pixel_artifact(
@@ -422,25 +442,72 @@ class JobStore:
             or audit.height != artifact.height
         ):
             raise JobStoreError("runner returned a conflicting pixel audit")
-        self._store_png_artifact(
-            job, artifact.png, artifact.sha256, audit.provider_task_id
+        self._store_binary_artifact(
+            job, artifact.png, artifact.sha256, audit.provider_task_id, suffix=".png"
         )
 
-    def _store_png_artifact(
-        self, job: _Job, png: bytes, sha256: str, provider_task_id: str
+    def _store_frame_sequence_artifact(
+        self, job: _Job, artifact: FrameSequenceArtifact
     ) -> None:
-        if hashlib.sha256(png).hexdigest() != sha256:
+        """写实风交付物：一支 zip。
+
+        **没有 provider task id** —— `packFrameSequence` 全程不调 API（抠像/验收/打包
+        都在本地），所以 `lk888_task_id` 保持 None。别塞占位值：那个字段是「上游删除」
+        用的，塞假的会让 tombstone 指向一个不存在的任务。
+        """
+        self._store_binary_artifact(job, artifact.payload, artifact.sha256, None, suffix=".zip")
+
+    def _store_binary_artifact(
+        self,
+        job: _Job,
+        data: bytes,
+        sha256: str,
+        provider_task_id: str | None,
+        *,
+        suffix: str,
+    ) -> None:
+        if suffix not in _ARTIFACT_TYPES:
+            raise JobStoreError("unsupported artifact suffix")
+        if hashlib.sha256(data).hexdigest() != sha256:
             raise JobStoreError("runner returned an invalid artifact hash")
-        _require_safe_id(provider_task_id, "task id")
-        if job.lk888_task_id not in {None, provider_task_id}:
-            raise JobStoreError("runner returned a conflicting task id")
+        if provider_task_id is not None:
+            _require_safe_id(provider_task_id, "task id")
+            if job.lk888_task_id not in {None, provider_task_id}:
+                raise JobStoreError("runner returned a conflicting task id")
         artifact_id = uuid4().hex
-        path = self._artifacts_dir / f"{artifact_id}.png"
+        path = self._artifacts_dir / f"{artifact_id}{suffix}"
         job.artifact_id = artifact_id
         job.artifact_path = path
         job.artifact_sha256 = sha256
-        job.lk888_task_id = provider_task_id
-        self._write_bytes(path, png)
+        if provider_task_id is not None:
+            job.lk888_task_id = provider_task_id
+        self._write_bytes(path, data)
+
+    def artifact_media_type(self, artifact_id: str) -> str:
+        """artifact 的 MIME，由存储路径的扩展名决定。
+
+        单独开一个方法而不是让 `read_artifact` 返回二元组：后者被测试大量
+        `assert store.read_artifact(...) == payload` 这样用，改返回类型会碎一片。
+        """
+        _require_safe_id(artifact_id, "artifact id")
+        with self._lock:
+            path = self._artifact_path_of(artifact_id)
+        suffix = path.suffix.lower()
+        media_type = _ARTIFACT_TYPES.get(suffix)
+        if media_type is None:
+            raise JobStoreError("artifact type is unsupported")
+        return media_type
+
+    def _artifact_path_of(self, artifact_id: str) -> Path:
+        matching = next(
+            (job for job in self._jobs.values() if job.artifact_id == artifact_id), None
+        )
+        if matching is None or matching.artifact_path is None:
+            raise JobStoreError("artifact not found")
+        path = matching.artifact_path
+        if not path.is_relative_to(self._artifacts_dir):
+            raise JobStoreError("artifact path is invalid")
+        return path
 
     def _record_lk888_task_id(self, job_id: str, task_id: str) -> None:
         _require_safe_id(task_id, "task id")
@@ -829,9 +896,12 @@ class JobStore:
             raise JobStoreError("invalid artifact hash")
         normalized = relative.replace("\\", "/")
         parts = normalized.split("/")
-        if len(parts) != 2 or parts[0] != "artifacts" or not parts[1].endswith(".png"):
+        if len(parts) != 2 or parts[0] != "artifacts":
             raise JobStoreError("artifact path is invalid")
-        artifact_id = parts[1][:-4]
+        suffix = Path(parts[1]).suffix.lower()
+        if suffix not in _ARTIFACT_TYPES:
+            raise JobStoreError("artifact path is invalid")
+        artifact_id = parts[1][: -len(suffix)]
         _require_safe_id(artifact_id, "artifact id")
         path = (self.state_dir / Path(*parts)).resolve()
         if not path.is_relative_to(self._artifacts_dir):

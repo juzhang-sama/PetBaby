@@ -1,10 +1,12 @@
 from __future__ import annotations
 
 import base64
+from dataclasses import replace
 import hashlib
 import struct
 import sys
 from time import monotonic, sleep
+from urllib.parse import urlparse
 import zlib
 from pathlib import Path
 from threading import Event, Lock
@@ -18,6 +20,7 @@ from photo_avatar_backend.audit import AuditContextV1  # noqa: E402
 from photo_avatar_backend.app import PipelineRunner, create_app  # noqa: E402
 from photo_avatar_backend.config import BackendConfig  # noqa: E402
 from photo_avatar_backend.contracts import ContractError, StepRequest  # noqa: E402
+from photo_avatar_backend.frame_pipeline import FrameSequenceArtifact  # noqa: E402
 from photo_avatar_backend.job_store import JobStore  # noqa: E402
 from photo_avatar_backend.pipelines import TextureArtifact  # noqa: E402
 from photo_avatar_backend.pixel_avatar import PixelAvatarArtifact  # noqa: E402
@@ -505,3 +508,148 @@ def test_unknown_route_uses_safe_existing_error_contract(tmp_path: Path):
 
     assert response.status_code == 404
     assert response.json() == {"code": "invalidInput", "message": "request rejected"}
+
+
+# ---------------------------------------------------------------- 写实风（frame-video-v1）
+
+
+class FrameSequenceRunner:
+    """写实风 `packFrameSequence` 的替身：返回一支 zip。这步不调 provider。"""
+
+    def __init__(self, payload: bytes = b"PK\x03\x04frame-sequence-zip") -> None:
+        self.payload = payload
+        self.calls = 0
+
+    def run(self, request):
+        self.calls += 1
+        return FrameSequenceArtifact(
+            payload=self.payload,
+            sha256=hashlib.sha256(self.payload).hexdigest(),
+            frame_count=288,
+            frame_duration_ms=42,
+            frame_format="webp",
+            overall_passed=True,
+            failed_criteria=(),
+        )
+
+    def audit_context(self, request):
+        return AuditContextV1(provider_model="seedance-2.0-guanfang")
+
+
+def _frame_request(**overrides: object) -> dict[str, object]:
+    payload: dict[str, object] = {
+        "route": "frame-video-v1",
+        "sessionId": "desktop-session-1",
+        "revision": 0,
+        "providerSessionId": "provider-frame-1",
+        "step": "packFrameSequence",
+        "attempt": 1,
+        "consentVersion": "photo-avatar-third-party-ai-lk888-no-delete-v2",
+        "sourceImages": [],
+        "petId": "09-newcat",
+        "displayName": "我的猫",
+        "species": "cat",
+    }
+    payload.update(overrides)
+    return payload
+
+
+def _job_body(client: TestClient, job_id: str) -> dict[str, object]:
+    body: dict[str, object] = {}
+
+    def settled() -> bool:
+        body.update(client.get(f"/v1/photo-avatar/jobs/{job_id}", headers=AUTH).json())
+        return body["state"] != "running"
+
+    _wait_for(settled)
+    return body
+
+
+def test_frame_sequence_job_returns_a_zip_artifact_served_as_zip(tmp_path: Path):
+    runner = FrameSequenceRunner()
+    with _client(tmp_path, runner) as client:
+        created = client.post("/v1/photo-avatar/steps", json=_frame_request(), headers=AUTH)
+        assert created.status_code == 200
+
+        body = _job_body(client, created.json()["jobId"])
+        assert body["state"] == "succeeded", body
+        result = body["result"]
+
+        # artifact 端点以前硬编码 image/png —— 写实风交付的是 zip，必须按扩展名给。
+        # 必须在**同一个 client** 里取：`_client` 会新建 JobStore，而重启后
+        # artifact 会按设计被删（job 结果不跨重启）。
+        fetched = client.get(urlparse(str(result["artifactUrl"])).path, headers=AUTH)
+
+    assert result["resultType"] == "frameSequence"
+    assert result["sha256"] == hashlib.sha256(runner.payload).hexdigest()
+    assert result["frameCount"] == 288
+    assert result["frameDurationMs"] == 42
+    assert result["frameFormat"] == "webp"
+    assert result["overallPassed"] is True
+    assert result["failedCriteria"] == []
+    assert fetched.status_code == 200
+    assert fetched.headers["content-type"] == "application/zip"
+    assert fetched.content == runner.payload
+
+
+def test_frame_sequence_wire_reports_failed_criteria_so_the_client_can_warn(tmp_path: Path):
+    """判据 FAIL 不抛异常，但结论必须到得了客户端 —— 人工确认那步要提示「检测到异常」。"""
+
+    class FailingRunner(FrameSequenceRunner):
+        def run(self, request):
+            artifact = super().run(request)
+            return replace(
+                artifact,
+                overall_passed=False,
+                failed_criteria=("3-帧间不闪烁", "1-尾巴完整"),
+            )
+
+    with _client(tmp_path, FailingRunner()) as client:
+        created = client.post("/v1/photo-avatar/steps", json=_frame_request(), headers=AUTH)
+        body = _job_body(client, created.json()["jobId"])
+
+    assert body["state"] == "succeeded", body
+    assert body["result"]["overallPassed"] is False
+    assert body["result"]["failedCriteria"] == ["3-帧间不闪烁", "1-尾巴完整"]
+
+
+def test_motion_source_step_reports_temporary_unavailable_until_implemented(tmp_path: Path):
+    """`generateMotionSource` 还没实现（提示词契约化是下一片）。
+
+    报 `temporaryUnavailable` 而不是 `invalidInput`：**请求本身没错**，
+    是服务还没这个能力 —— 报 invalidInput 会让用户以为自己的照片有问题。
+    """
+    config = BackendConfig(
+        lk888_api_key="provider-secret",
+        backend_token="desktop-only-token",
+        state_dir=tmp_path / "state",
+    )
+    store = JobStore(config.state_dir, runner=PipelineRunner(config))
+    with TestClient(create_app(config, store)) as client:
+        created = client.post(
+            "/v1/photo-avatar/steps",
+            json=_frame_request(
+                step="generateMotionSource",
+                providerSessionId=None,
+                sourceImages=_request()["sourceImages"],
+            ),
+            headers=AUTH,
+        )
+        assert created.status_code == 200
+        body = _job_body(client, created.json()["jobId"])
+
+    assert body["state"] == "failed", body
+    assert body["error"]["code"] == "temporaryUnavailable"
+
+
+def test_frame_route_rejects_a_photo_on_the_pack_step(tmp_path: Path):
+    """契约层就该拒掉，别让它变成实施层一个「悄悄忽略 sourceImages」的分支。"""
+    with _client(tmp_path, FrameSequenceRunner()) as client:
+        response = client.post(
+            "/v1/photo-avatar/steps",
+            json=_frame_request(sourceImages=_request()["sourceImages"]),
+            headers=AUTH,
+        )
+
+    assert response.status_code == 400
+    assert response.json() == {"code": "invalidInput", "message": "invalid request"}

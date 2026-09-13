@@ -20,7 +20,14 @@ from starlette.exceptions import HTTPException as StarletteHTTPException
 import uvicorn
 
 from .config import BackendConfig, ConfigError
-from .contracts import ContractError, PixelStepRequest, StepRequest, parse_step_request
+from .contracts import (
+    ContractError,
+    FrameStepRequest,
+    PixelStepRequest,
+    StepRequest,
+    parse_step_request,
+)
+from .frame_pipeline import generate_motion_source, pack_frame_sequence
 from .job_store import JobState, JobStore, JobStoreError
 from .lk888_client import Lk888Client
 from .pixel_avatar import analyze_pixel_identity, generate_pixel_avatar
@@ -80,6 +87,9 @@ class PipelineRunner:
     def audit_context(self, request: StepRequest | PixelStepRequest) -> AuditContextV1:
         if isinstance(request, PixelStepRequest):
             return AuditContextV1(provider_model=self.config.image_model if request.step == "generatePixelAvatar" else self.config.analysis_model)
+        if isinstance(request, FrameStepRequest):
+            # 两个 frame step 都不直接产图；记 video_model，因为整条链的真正来源是那支视频。
+            return AuditContextV1(provider_model=self.config.video_model)
         model = (
             self.config.image_model
             if request.step == "renderTextureAtlas"
@@ -126,6 +136,14 @@ class PipelineRunner:
                     report_task_id=report_task_id,
                 )
             raise ContractError("unsupported pixel step")
+        if isinstance(request, FrameStepRequest):
+            # 写实风：两个 step 都自己管 scratch（`state_dir/scratch/<providerSessionId>/`），
+            # 中间的 mp4 不上传、不经客户端，重试才能复用。
+            if request.step == "generateMotionSource":
+                return generate_motion_source(request, state_dir=self.config.state_dir)
+            if request.step == "packFrameSequence":
+                return pack_frame_sequence(request, state_dir=self.config.state_dir)
+            raise ContractError("unsupported frame step")
         if request.step == "analyzeIdentity":
             return analyze_identity(request, client=self.client)
         if request.step == "completeAppearance":
@@ -200,7 +218,12 @@ def create_app(config: BackendConfig, store: JobStore) -> FastAPI:
 
     @app.get("/v1/photo-avatar/artifacts/{artifact_id}", dependencies=[Depends(authorize)])
     def artifact(artifact_id: str) -> Response:
-        return Response(store.read_artifact(artifact_id), media_type="image/png")
+        # media type 由 store 按存储路径的扩展名回答 —— 写实风交付的是 `.zip`
+        # （schema 7 运行时包），像素/纹理路线是 `.png`。别再硬编码 image/png。
+        return Response(
+            store.read_artifact(artifact_id),
+            media_type=store.artifact_media_type(artifact_id),
+        )
 
     return app
 
@@ -251,6 +274,21 @@ def _job_wire(state: JobState, origin: str) -> dict[str, object]:
                 "width": width,
                 "height": height,
                 "audit": state.audit,
+            }
+        elif (
+            state.step == "packFrameSequence"
+            and state.artifact_id is not None
+            and state.artifact_sha256 is not None
+            and state.result is not None
+        ):
+            # 交付物是一支 zip（schema 7 运行时包）。`overallPassed` / `failedCriteria`
+            # 让客户端在「人工确认」那步能提示「检测到哪条异常」；证据图留在服务侧。
+            # 形状由 `FrameSequenceArtifact.to_wire` 定，这里原样展开。
+            result = {
+                "resultType": "frameSequence",
+                "artifactUrl": _artifact_url(origin, state.artifact_id),
+                "sha256": state.artifact_sha256,
+                **state.result,
             }
         else:
             return _failed_wire("invalidInput", "job result unavailable")

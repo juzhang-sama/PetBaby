@@ -10,7 +10,8 @@ from threading import Event, Thread
 import pytest
 
 from .audit import AuditContextV1
-from .contracts import ContractError, SourceImage, StepRequest
+from .contracts import ContractError, FrameStepRequest, SourceImage, StepRequest
+from .frame_pipeline import FrameSequenceArtifact
 from .job_store import JobStore, JobStoreError
 from .lk888_client import Lk888Error
 from .pipelines import TextureArtifact
@@ -833,3 +834,141 @@ def test_restart_migrates_failed_job_with_stale_artifact(tmp_path: Path):
     assert not list((tmp_path / "artifacts").glob("*.png"))
     persisted = json.loads(state_path.read_text(encoding="utf-8"))
     assert persisted["artifact"] is None
+
+
+# ------------------------------------------------------- 写实风（zip artifact）
+
+
+def _frame_request(
+    *,
+    provider_session_id: str | None = "provider-frame-1",
+    attempt: int = 1,
+    step: str = "packFrameSequence",
+) -> FrameStepRequest:
+    return FrameStepRequest(
+        session_id="desktop-session-1",
+        revision=1,
+        provider_session_id=provider_session_id,
+        step=step,
+        attempt=attempt,
+        consent_version="photo-avatar-third-party-ai-lk888-no-delete-v2",
+        source_images=(),
+        pet_id="09-newcat",
+        display_name="我的猫",
+        species="cat",
+    )
+
+
+def _frame_artifact(payload: bytes = b"PK\x03\x04fake-zip-payload") -> FrameSequenceArtifact:
+    return FrameSequenceArtifact(
+        payload=payload,
+        sha256=hashlib.sha256(payload).hexdigest(),
+        frame_count=288,
+        frame_duration_ms=42,
+        frame_format="webp",
+        overall_passed=False,
+        failed_criteria=("3-帧间不闪烁",),
+    )
+
+
+class FrameSequenceRunner:
+    """写实风的 `packFrameSequence`：返回一支 zip。
+
+    这一步**不调 provider**（抠像/验收/打包全在本地），所以没有 lk888 task id。
+    """
+
+    def __init__(self, payload: bytes = b"PK\x03\x04fake-zip-payload") -> None:
+        self.calls = 0
+        self.payload = payload
+
+    def run(self, request: FrameStepRequest) -> FrameSequenceArtifact:
+        self.calls += 1
+        return _frame_artifact(self.payload)
+
+    def audit_context(self, request: FrameStepRequest) -> AuditContextV1:
+        return AuditContextV1(provider_model="seedance-2.0-guanfang")
+
+
+def test_frame_sequence_step_stores_a_zip_artifact(tmp_path: Path):
+    runner = FrameSequenceRunner()
+    store = JobStore(tmp_path, runner=runner)
+
+    submitted = store.submit(_frame_request())
+    state = store.status(submitted.job_id)
+
+    assert state.status == "succeeded"
+    assert runner.calls == 1
+    artifact_id = state.artifact_id or ""
+    assert artifact_id
+    assert state.artifact_sha256 == hashlib.sha256(runner.payload).hexdigest()
+    assert store.read_artifact(artifact_id) == runner.payload
+    assert store.artifact_media_type(artifact_id) == "application/zip"
+    # 落盘必须是 .zip：`_decode_artifact` 只认白名单里的扩展名
+    assert (tmp_path / "artifacts" / f"{artifact_id}.zip").is_file()
+    assert not list((tmp_path / "artifacts").glob("*.png"))
+    # 元数据回给客户端 —— 判据 FAIL 也要能说出是哪一条
+    assert state.result == {
+        "frameCount": 288,
+        "frameDurationMs": 42,
+        "frameFormat": "webp",
+        "overallPassed": False,
+        "failedCriteria": ["3-帧间不闪烁"],
+    }
+    # 这步不调 provider，`lk888TaskId` 必须保持 None。别塞占位值：
+    # 这个字段是「上游删除」用的，塞假的会让 tombstone 指向不存在的任务。
+    persisted = json.loads((tmp_path / "jobs" / f"{submitted.job_id}.json").read_text(encoding="utf-8"))
+    assert persisted["lk888TaskId"] is None
+
+
+def test_frame_sequence_artifact_does_not_survive_a_restart(tmp_path: Path):
+    """按设计：**artifact 不跨重启** —— 兜底的是 scratch 里的 mp4，不是 artifact。
+
+    `_load_state` 里 `job.status == "succeeded" and step != "renderTextureAtlas"` 会
+    把 artifact 删掉、job 标 failed（`renderTextureAtlas` 是唯一例外，它的 wire
+    不需要内存里的 result）。
+
+    对写实风这条链代价可接受，而且是**有意选的**：用户重试时 `packFrameSequence`
+    0 算力重跑，mp4 还在 `scratch/<providerSessionId>/` 里，不会重付视频那 5.69。
+    """
+    store = JobStore(tmp_path, runner=FrameSequenceRunner())
+    submitted = store.submit(_frame_request())
+    artifact_id = store.status(submitted.job_id).artifact_id or ""
+    assert artifact_id, "同一个进程里必须能拿到 artifact"
+    assert (tmp_path / "artifacts" / f"{artifact_id}.zip").is_file()
+
+    restarted = JobStore(tmp_path, runner=FrameSequenceRunner())
+    recovered = restarted.status(submitted.job_id)
+
+    assert recovered.status == "failed"
+    assert recovered.error == {
+        "code": "temporaryUnavailable",
+        "message": "job result unavailable after restart",
+    }
+    assert recovered.artifact_id is None
+    # 别留孤儿文件 —— 删不掉的 zip 会一直占着 state 目录
+    assert not list((tmp_path / "artifacts").glob("*"))
+
+
+def test_restart_rejects_an_artifact_suffix_outside_the_whitelist(tmp_path: Path):
+    store = JobStore(tmp_path, runner=FrameSequenceRunner())
+    store.submit(_frame_request())
+    state_path = next((tmp_path / "jobs").glob("*.json"))
+    state = json.loads(state_path.read_text(encoding="utf-8"))
+    state["artifact"]["path"] = state["artifact"]["path"].replace(".zip", ".exe")
+    state_path.write_text(json.dumps(state), encoding="utf-8")
+
+    with pytest.raises(JobStoreError, match="artifact"):
+        JobStore(tmp_path, runner=FrameSequenceRunner())
+
+
+def test_frame_sequence_rejects_a_tampered_artifact_hash(tmp_path: Path):
+    class TamperingRunner(FrameSequenceRunner):
+        def run(self, request: FrameStepRequest) -> FrameSequenceArtifact:
+            return replace(super().run(request), sha256="0" * 64)
+
+    store = JobStore(tmp_path, runner=TamperingRunner())
+    state = store.status(store.submit(_frame_request()).job_id)
+
+    assert state.status == "failed"
+    assert state.artifact_id is None
+    assert not list((tmp_path / "artifacts").glob("*"))

@@ -38,6 +38,27 @@ _STEP_FIELDS = frozenset(
 _SOURCE_IMAGE_FIELDS = frozenset({"sourceId", "pngBase64", "sha256", "width", "height"})
 _STEPS = frozenset({"analyzeIdentity", "completeAppearance", "renderTextureAtlas"})
 _PIXEL_STEPS = frozenset({"analyzeIdentity", "generatePixelAvatar"})
+# 写实风（frame-video-v1）：两个 step 按「钱」切 —— 前一个要花算力（母版+视频），
+# 后一个 0 算力。切两刀是因为视频失败要重付 5.69，粒度不能太粗。
+_FRAME_STEPS = frozenset({"generateMotionSource", "packFrameSequence"})
+_FRAME_ROUTE = "frame-video-v1"
+_FRAME_SPECIES = frozenset({"cat", "dog"})
+_FRAME_FIELDS = frozenset(
+    {
+        "route",
+        "sessionId",
+        "revision",
+        "providerSessionId",
+        "step",
+        "attempt",
+        "consentVersion",
+        "sourceImages",
+        "petId",
+        "displayName",
+        "species",
+    }
+)
+_MAX_DISPLAY_NAME = 64
 _PIXEL_TRAIT_KEYS = frozenset(
     {
         "faceShape",
@@ -287,10 +308,89 @@ class PixelStepRequest:
         )
 
 
-def parse_step_request(payload: Mapping[str, Any]) -> StepRequest | PixelStepRequest:
+@dataclass(frozen=True)
+class FrameStepRequest:
+    """写实风（`route = frame-video-v1`）的一步请求。
+
+    与 `StepRequest` / `PixelStepRequest` 并列的**第三种请求形状**：写实风不需要像素那套
+    trait 档案，需要的是「这只宠物是谁」（petId / displayName / species）。
+
+    两个 step 的输入不一样，但共用一份字段（`_require_exact_fields` 要求精确匹配），
+    差别落在 `sourceImages` 上：
+
+    - `generateMotionSource`：`sourceImages` 是**照片**（1..8 张），母版从它生成。
+    - `packFrameSequence`：`sourceImages` **必须为空** —— 它的输入是上一 step 落在
+      服务侧 scratch 里的 mp4，靠 `providerSessionId` 找到。**视频不上传、也不经客户端**。
+    """
+
+    session_id: str
+    revision: int
+    provider_session_id: str | None
+    step: str
+    attempt: int
+    consent_version: str
+    source_images: tuple[SourceImage, ...]
+    pet_id: str
+    display_name: str
+    species: str
+
+    @classmethod
+    def parse(cls, payload: Mapping[str, Any]) -> "FrameStepRequest":
+        if not isinstance(payload, Mapping):
+            raise ContractError("frame request must be an object")
+        _require_exact_fields(payload, _FRAME_FIELDS)
+        if payload["route"] != _FRAME_ROUTE:
+            raise ContractError(f"frame request route must be {_FRAME_ROUTE}")
+        step = _require_string(payload, "step")
+        if step not in _FRAME_STEPS:
+            raise ContractError(f"unsupported frame step: {step}")
+        revision = _require_int(payload, "revision", minimum=0)
+        attempt = _require_int(payload, "attempt", minimum=1, maximum=3)
+        session_id = _require_string(payload, "sessionId")
+        consent_version = _require_string(payload, "consentVersion")
+        provider_session_id = _optional_string(payload, "providerSessionId")
+        pet_id = _require_safe_id(payload.get("petId"), "petId")
+        display_name = _require_display_name(payload.get("displayName"))
+        species = payload["species"]
+        if species not in _FRAME_SPECIES:
+            raise ContractError(f"unsupported species: {species!r}")
+
+        raw_images = payload["sourceImages"]
+        if not isinstance(raw_images, list):
+            raise ContractError("sourceImages must be an array")
+        if step == "generateMotionSource":
+            if not 1 <= len(raw_images) <= 8:
+                raise ContractError("generateMotionSource sourceImages count must be 1..8")
+        elif raw_images:
+            # packFrameSequence 吃的是服务侧 scratch 里的 mp4。让它接受照片，
+            # 只会在实施层变成一个「悄悄忽略」的分支 —— 干脆在契约层就堵住。
+            raise ContractError("packFrameSequence sourceImages must be empty")
+        if step == "packFrameSequence" and provider_session_id is None:
+            # 没有 providerSessionId 就找不到 scratch 里的 mp4。
+            raise ContractError("packFrameSequence providerSessionId is required")
+
+        return cls(
+            session_id=session_id,
+            revision=revision,
+            provider_session_id=provider_session_id,
+            step=step,
+            attempt=attempt,
+            consent_version=consent_version,
+            source_images=tuple(_parse_source_image(image) for image in raw_images),
+            pet_id=pet_id,
+            display_name=display_name,
+            species=species,
+        )
+
+
+def parse_step_request(
+    payload: Mapping[str, Any],
+) -> StepRequest | PixelStepRequest | FrameStepRequest:
     route = payload.get("route") if isinstance(payload, Mapping) else None
     if route == "pixel-v1":
         return PixelStepRequest.parse(payload)
+    if route == _FRAME_ROUTE:
+        return FrameStepRequest.parse(payload)
     return StepRequest.parse(payload)
 
 
@@ -316,6 +416,38 @@ def _require_exact_fields(payload: Mapping[str, Any], expected: frozenset[str]) 
     for name in expected:
         if name not in payload:
             raise ContractError(f"missing field: {name}")
+
+
+def _require_safe_id(value: Any, label: str) -> str:
+    """`petId` 之类的安全标识：会变成资产目录名，不能带路径分隔符。
+
+    与 `frames.packing._require_safe_id` 同规则，但**不 import 它** ——
+    契约层比 `frames` 低，不该反向依赖业务模块。
+    """
+    if not isinstance(value, str):
+        raise ContractError(f"{label} must be a string")
+    normalized = value.strip()
+    if (
+        not normalized
+        or len(normalized) > 128
+        or normalized in {".", ".."}
+        or "/" in normalized
+        or "\\" in normalized
+    ):
+        raise ContractError(f"invalid {label}: {value!r}")
+    return normalized
+
+
+def _require_display_name(value: Any) -> str:
+    """宠物显示名：会写进 manifest 并显示在桌面上，允许中文但要去掉首尾空白。"""
+    if not isinstance(value, str):
+        raise ContractError("displayName must be a string")
+    normalized = value.strip()
+    if not normalized:
+        raise ContractError("displayName must be non-empty")
+    if len(normalized) > _MAX_DISPLAY_NAME:
+        raise ContractError(f"displayName must be at most {_MAX_DISPLAY_NAME} characters")
+    return normalized
 
 
 def _require_supported_pixel_style(value: Any) -> str:
