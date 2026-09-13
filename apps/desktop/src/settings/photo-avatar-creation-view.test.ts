@@ -98,6 +98,9 @@ function viewHarness(options: {
     preview: new FakeElement(), live2d: new FakeElement(), completions: new FakeElement(), name: new FakeElement(),
     accept: new FakeElement(), regenerate: new FakeElement(), revision: new FakeElement(), revise: new FakeElement(),
     cancel: new FakeElement(), status: new FakeElement(), complete: new FakeElement(), done: new FakeElement(),
+    // 画风选择：默认像素风（与 Rust 侧「不给 route = 现役产线」同一个口径）。
+    style: Object.assign(new FakeElement(), { value: "pixel-v1" }),
+    revisionGroup: new FakeElement(),
   };
   const snapshots = [...(options.status ?? [options.snapshot ?? avatarSnapshot()])];
   const api = {
@@ -227,6 +230,8 @@ describe("PhotoAvatarCreationView", () => {
       "session-1", "photo-avatar-third-party-ai-lk888-no-delete-v2", expect.arrayContaining([
         expect.objectContaining({ bytesB64: "AQID" }), expect.objectContaining({ bytesB64: "AQID" }),
       ]),
+      // 第 4 个参数是画风（route）。默认选项就是现役的像素风。
+      "pixel-v1",
     );
   });
 
@@ -397,7 +402,8 @@ describe("PhotoAvatarCreationView", () => {
 
     expect(h.preview.show).toHaveBeenCalledOnce();
     expect(h.elements.accept.hidden).toBe(false);
-    expect(h.elements.status.textContent).toBe("像素宠物预览已通过运行时检查，请确认后安装。");
+    // 这句文案现在**与画风无关**（两条产线都走同一个闸口），所以不再写「像素」。
+    expect(h.elements.status.textContent).toBe("照片分身预览已通过运行时检查，请确认后安装。");
   });
 
   it("keeps one runtime-check renderer while repeated pending polls overlap", async () => {
@@ -560,5 +566,44 @@ describe("PhotoAvatarCreationView", () => {
     expect(h.api.photoAvatarCancel).not.toHaveBeenCalled();
     expect(h.ports.clearInterval).toHaveBeenCalledWith(1);
     expect(h.preview.show).not.toHaveBeenCalled();
+  });
+
+  it("passes the chosen画风 to begin so the backend picks the right pipeline", async () => {
+    const h = viewHarness();
+    await h.view.enter();
+    h.elements.style.value = "frame-video-v1";
+    h.selectFiles([photo("face.jpg", "image/jpeg")]);
+    h.clickGenerate();
+    await vi.waitFor(() => expect(h.api.photoAvatarBegin).toHaveBeenCalledOnce());
+
+    // mock 的参数元组在这里被推断成空的，和本文件其它断言一样显式转型。
+    const call = h.api.photoAvatarBegin.mock.calls[0] as unknown as
+      [string, string, PhotoAvatarUpload[], string | undefined];
+    expect(call[3]).toBe("frame-video-v1");
+  });
+
+  it("shows frame-route progress copy and hides revision controls that do not apply", async () => {
+    const h = viewHarness({
+      status: [avatarSnapshot({ route: "frame-video-v1", step: "generateMotionSource" })],
+    });
+    await h.view.enter("session-1");
+    await h.flush();
+
+    // 写实风要一两分钟且要花钱，文案得说清楚，别让人以为卡住了。
+    expect(h.elements.status.textContent).toBe(
+      "正在根据照片生成动态片段，这一步需要一两分钟，请不要关闭窗口。",
+    );
+    // 写实风没有 trait 档案：整组「局部修改要求」都不该出现。
+    expect(h.elements.revisionGroup.hidden).toBe(true);
+    expect(h.elements.revise.hidden).toBe(true);
+  });
+
+  it("keeps revision controls for the pixel route", async () => {
+    const h = viewHarness({ status: [previewReadyPixelSnapshot("pixel-style-v2-animation-ready")] });
+    await h.view.enter("session-1");
+    await h.flush();
+
+    expect(h.elements.revisionGroup.hidden).toBe(false);
+    expect(h.elements.revise.hidden).toBe(false);
   });
 });

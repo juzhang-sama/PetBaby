@@ -48,8 +48,15 @@ export interface PhotoAvatarUpload {
   sha256: string;
 }
 
+/**
+ * 两条产线的 route 取值。
+ *
+ * 与 Rust 侧 `PhotoAvatarRoute` / DB 里 `photo_avatar_runs.route` 的取值域**逐字一致**。
+ */
+export type PhotoAvatarRoute = "pixel-v1" | "frame-video-v1";
+
 export interface PhotoAvatarSnapshot {
-  route?: "pixel-v1";
+  route?: PhotoAvatarRoute;
   sessionId: string;
   revision: number;
   step: string;
@@ -106,11 +113,15 @@ export function createCreationApi(invoke: InvokePort) {
       sessionId: string,
       consentVersion: string,
       photos: PhotoAvatarUpload[],
+      route?: PhotoAvatarRoute,
     ) =>
       invoke<PhotoAvatarSnapshot>("creation_photo_avatar_begin", {
         sessionId,
         consentVersion,
         photos,
+        // 不给 route = 走现役产线（Rust 侧同一个口径）。给了就必须是认得的取值，
+        // 由 Rust 侧 `PhotoAvatarRoute::parse` 挡。
+        ...(route === undefined ? {} : { route }),
       }),
     photoAvatarStatus: (sessionId: string) =>
       invoke<PhotoAvatarSnapshot | null>("creation_photo_avatar_status", { sessionId }),

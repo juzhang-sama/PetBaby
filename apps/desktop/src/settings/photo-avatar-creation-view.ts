@@ -1,9 +1,9 @@
-import type { PhotoAvatarSnapshot, PhotoAvatarUpload } from "../creation/api";
+import type { PhotoAvatarRoute, PhotoAvatarSnapshot, PhotoAvatarUpload } from "../creation/api";
 import type { CreationSnapshot } from "../creation/contracts";
 import type { PetSwitchResult } from "../runtime/pet-switch-protocol";
 import type { PhotoAvatarPreviewHandle } from "./photo-avatar-pixel-preview";
 import { mountPhotoAvatarPreview } from "./photo-avatar-pixel-preview";
-import { photoAvatarStyleCopy } from "./photo-avatar-style-copy";
+import { photoAvatarProgressCopy, photoAvatarStyleCopy } from "./photo-avatar-style-copy";
 
 export type PhotoAvatarCreationStep =
   | "collecting"
@@ -24,7 +24,7 @@ export interface PhotoAvatarCreationPorts {
     start(method: "upload"): Promise<{ sessionId: string }>;
     abandon(sessionId: string): Promise<void>;
     photoAvatarConsent(accept: boolean): Promise<boolean>;
-    photoAvatarBegin(sessionId: string, consentVersion: string, photos: PhotoAvatarUpload[]): Promise<PhotoAvatarSnapshot>;
+    photoAvatarBegin(sessionId: string, consentVersion: string, photos: PhotoAvatarUpload[], route?: PhotoAvatarRoute): Promise<PhotoAvatarSnapshot>;
     photoAvatarStatus(sessionId: string): Promise<PhotoAvatarSnapshot | null>;
     photoAvatarCancel(sessionId: string): Promise<PhotoAvatarSnapshot>;
     photoAvatarRegenerate(sessionId: string): Promise<PhotoAvatarSnapshot>;
@@ -37,6 +37,7 @@ export interface PhotoAvatarCreationPorts {
 export interface PhotoAvatarCreationElements {
   root: HTMLElement;
   files: HTMLInputElement;
+  style: HTMLSelectElement;
   generate: HTMLButtonElement;
   generating: HTMLElement;
   preview: HTMLElement;
@@ -51,6 +52,13 @@ export interface PhotoAvatarCreationElements {
   status: HTMLElement;
   complete: HTMLElement;
   done: HTMLButtonElement;
+  /**
+   * 「局部修改要求」那一组的容器（标签 + 输入框 + 按钮）。
+   *
+   * 单独给一个 id 而不是用 `closest("label")`：**假 DOM 里没有 `closest`**，
+   * 为了一个隐藏动作让测试夹具去实现半个 DOM API 不值当。
+   */
+  revisionGroup: HTMLElement;
 }
 
 export function queryPhotoAvatarCreationElements(root: Document): PhotoAvatarCreationElements {
@@ -62,6 +70,7 @@ export function queryPhotoAvatarCreationElements(root: Document): PhotoAvatarCre
   return {
     root: get("photo-avatar-workspace"),
     files: get("photo-avatar-files"),
+    style: get("photo-avatar-style"),
     generate: get("photo-avatar-generate"),
     generating: get("photo-avatar-generating"),
     preview: get("photo-avatar-preview"),
@@ -76,6 +85,7 @@ export function queryPhotoAvatarCreationElements(root: Document): PhotoAvatarCre
     status: get("photo-avatar-status"),
     complete: get("photo-avatar-complete"),
     done: get("photo-avatar-done"),
+    revisionGroup: get("photo-avatar-revision-group"),
   };
 }
 
@@ -200,6 +210,15 @@ export class PhotoAvatarCreationView {
     return this.state;
   }
 
+  /**
+   * 现在选的画风。认不出来就返回 `undefined` —— 让 Rust 侧走**默认产线**，
+   * 而不是在这边猜一个（两边各猜一次就是两个口径）。
+   */
+  private selectedRoute(): PhotoAvatarRoute | undefined {
+    const value = this.dom.elements.style.value;
+    return value === "frame-video-v1" || value === "pixel-v1" ? value : undefined;
+  }
+
   private async generate(): Promise<void> {
     if (this.selectionError || this.selected.length === 0 || this.state.sessionId === null || this.state.step !== "collecting") return;
     const visit = this.visit;
@@ -212,6 +231,7 @@ export class PhotoAvatarCreationView {
         this.state.sessionId,
         CONSENT_VERSION,
         await Promise.all(this.selected.map(toUpload)),
+        this.selectedRoute(),
       );
       this.apply(snapshot, visit);
       if (this.current(visit) && stepFor(snapshot) === "generating") this.startPolling(visit);
@@ -413,17 +433,23 @@ export class PhotoAvatarCreationView {
     elements.preview.hidden = !preview;
     elements.accept.hidden = !preview;
     elements.regenerate.hidden = !canRegenerate;
-    elements.revise.hidden = !preview;
+    // 写实风没有 trait 档案，「改指令」这条路不适用（Rust 侧也会明确报错）——
+    // 所以整组（标签 + 输入框 + 按钮）一起收起来，别让用户填了再被拒。
+    const canRevise = preview && this.state.snapshot?.route !== "frame-video-v1";
+    elements.revise.hidden = !canRevise;
+    elements.revisionGroup.hidden = !canRevise;
     elements.complete.hidden = this.state.step !== "complete";
     elements.done.hidden = this.state.step !== "complete";
     elements.cancel.hidden = this.state.step === "collecting" || this.state.step === "complete";
     if (this.state.snapshot?.profile) {
-      elements.completions.textContent = completionText(this.state.snapshot.profile);
+      elements.completions.textContent = completionText(this.state.snapshot.profile, this.state.snapshot.route);
     }
     if (this.state.step === "preview" && this.state.snapshot?.step === "previewReady") {
-      this.setStatus("像素宠物预览已通过运行时检查，请确认后安装。");
+      this.setStatus("照片分身预览已通过运行时检查，请确认后安装。");
     }
-    if (this.state.step === "generating") this.setStatus("正在生成完整像素宠物，请稍候。");
+    if (this.state.step === "generating") {
+      this.setStatus(photoAvatarProgressCopy(this.state.snapshot?.step ?? "", this.state.snapshot?.route));
+    }
     if (this.state.step === "finalizing") this.setStatus("正在安装照片分身。");
     if (this.state.snapshot?.step === "failed") {
       this.setStatus(failureMessage(
@@ -488,11 +514,14 @@ async function sha256Hex(bytes: Uint8Array): Promise<string> {
   return Array.from(new Uint8Array(digest), (value) => value.toString(16).padStart(2, "0")).join("");
 }
 
-function completionText(profile: unknown): string {
-  if (!profile || typeof profile !== "object") return "";
+function completionText(profile: unknown, route?: PhotoAvatarRoute): string {
+  if (!profile || typeof profile !== "object") {
+    // 写实风没有 profile（画风挂在 route 上）—— 别让它变成一片空白。
+    return photoAvatarStyleCopy(undefined, route);
+  }
   const value = profile as { completionSummary?: unknown; styleProfileId?: unknown };
   const completions = Array.isArray(value.completionSummary) ? value.completionSummary.join("、") : "";
-  const style = photoAvatarStyleCopy(value.styleProfileId);
+  const style = photoAvatarStyleCopy(value.styleProfileId, route);
   return [completions && `AI 补全：${completions}`, style].filter(Boolean).join("；");
 }
 

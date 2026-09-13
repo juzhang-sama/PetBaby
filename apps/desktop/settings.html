@@ -166,6 +166,12 @@
           <label class="field-group" for="photo-avatar-files">猫咪照片
             <input id="photo-avatar-files" type="file" accept="image/png,image/jpeg" multiple />
           </label>
+          <label class="field-group" for="photo-avatar-style">画风
+            <select id="photo-avatar-style">
+              <option value="pixel-v1">动画优先简约像素形象</option>
+              <option value="frame-video-v1">写实照片分身（逐帧循环）</option>
+            </select>
+          </label>
           <button id="photo-avatar-generate" class="primary" type="button" disabled>生成我的猫</button>
         </div>
         <div id="photo-avatar-generating" class="wizard-step" aria-live="polite" hidden></div>
@@ -178,10 +184,12 @@
           <div class="wizard-actions">
             <button id="photo-avatar-accept" class="primary" type="button">接受并安装</button>
           </div>
-          <label class="field-group" for="photo-avatar-revision">局部修改要求
-            <input id="photo-avatar-revision" maxlength="120" aria-label="局部修改要求" />
-          </label>
-          <button id="photo-avatar-revise" type="button">修改这一处</button>
+          <div id="photo-avatar-revision-group">
+            <label class="field-group" for="photo-avatar-revision">局部修改要求
+              <input id="photo-avatar-revision" maxlength="120" aria-label="局部修改要求" />
+            </label>
+            <button id="photo-avatar-revise" type="button">修改这一处</button>
+          </div>
         </div>
         <div id="photo-avatar-complete" class="wizard-step" hidden>
           <p class="wizard-success">照片分身已安装。</p>
