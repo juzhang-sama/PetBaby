@@ -26,7 +26,7 @@ const LEGACY_PARTIAL_CREATED_AT_PREFIX: &str = "legacy-partial-migration:";
 /// 散出去之后改一处忘一处，报错就会一半一个腔调。
 const PIXEL_ROUTE: &str = "pixel-v1";
 const PIXEL_LABEL: &str = "pixel avatar";
-const FRAME_ROUTE: &str = "frame-video-v1";
+pub(crate) const FRAME_ROUTE: &str = "frame-video-v1";
 const FRAME_LABEL: &str = "frame video";
 
 #[cfg(test)]
@@ -99,6 +99,14 @@ pub struct PhotoAvatarStore {
     storage: Arc<Mutex<Storage>>,
 }
 
+/// 一只宠物在创作会话里的身份三件套。见 `PhotoAvatarStore::pet_identity`。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct PetIdentity {
+    pub pet_id: String,
+    pub display_name: String,
+    pub species: String,
+}
+
 /// `photo_avatar_runs` 一行的**原始字符串形态**（route 通用层读出来的东西）。
 ///
 /// 刻意不带路线类型：同一个 SELECT 服务像素与写实风两条产线，各自在自己的
@@ -164,6 +172,40 @@ impl PhotoAvatarStore {
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())
+    }
+
+    /// 写实风要发给后端的三样身份：`petId` / `displayName` / `species`。
+    ///
+    /// ⚠️ **必须从库里读，不能让调用方（前端）传**：服务侧会把这三样写进 schema 7 的
+    /// `manifest.json`，而安装时 `install_preview` 要拿 `petId` 跟 manifest **逐字比** ——
+    /// 传错的话要到「用户点了确认安装」那一刻才炸，太晚。
+    ///
+    /// `display_name` 在库里是可空的（草稿宠物可能还没起名）。空的时候**退回 `pet_id`**：
+    /// 它只是 manifest 里给人看的名字，**不参与任何身份比对**（比对的是 `petId`），
+    /// 为一个装饰字段挡住整条生成链路不值得。
+    pub fn pet_identity(&self, session_id: &str) -> Result<PetIdentity, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let (pet_id, name, species): (String, Option<String>, String) = storage
+            .db
+            .query_row(
+                "SELECT pets.pet_id, pets.display_name, pets.species
+                 FROM creation_sessions JOIN pets ON pets.pet_id = creation_sessions.pet_id
+                 WHERE creation_sessions.session_id=?1",
+                [session_id],
+                |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?
+            .ok_or_else(|| "photo avatar session does not exist".to_string())?;
+        let display_name = name
+            .map(|value| value.trim().to_string())
+            .filter(|value| !value.is_empty())
+            .unwrap_or_else(|| pet_id.clone());
+        Ok(PetIdentity {
+            pet_id,
+            display_name,
+            species,
+        })
     }
 
     pub fn pet_id(&self, session_id: &str) -> Result<String, String> {

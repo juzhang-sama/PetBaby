@@ -1,4 +1,7 @@
 pub mod domain;
+pub mod frame_manager;
+mod frame_manager_ports;
+mod frame_remote;
 pub mod manager;
 pub mod pixel_contract;
 mod pixel_contract_facade;
@@ -10,5 +13,6 @@ mod pixel_manager_ports;
 mod pixel_remote;
 pub mod profile;
 pub mod provider;
+mod remote_common;
 pub mod source;
 pub mod store;

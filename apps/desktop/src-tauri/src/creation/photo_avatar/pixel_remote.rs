@@ -1,172 +1,57 @@
-use super::domain::PhotoAvatarErrorCode;
+use super::domain::PixelRemoteStep;
 use super::provider::{
-    ControlledBackendProvider, PhotoAvatarProvider, PixelProviderStepRequest, ProviderSourceImage,
-    RemoteJobState,
+    ControlledBackendProvider, PixelProviderStepRequest, ProviderSourceImage, RemoteJobState,
 };
-use super::store::{NormalizedPhoto, PhotoAvatarStore, RemoteJob};
-use base64::{engine::general_purpose::STANDARD, Engine as _};
-use std::time::{Duration, Instant};
+use super::remote_common::{run_remote_step_with, RemotePolling, RemoteStepFailure};
+use super::store::{PhotoAvatarStore, RemoteJob};
 
-pub(super) fn provider_images(sources: &[NormalizedPhoto]) -> Vec<ProviderSourceImage> {
-    sources
-        .iter()
-        .map(|source| ProviderSourceImage {
-            source_id: source.source_id.clone(),
-            png_base64: STANDARD.encode(&source.normalized_png),
-            sha256: source.sha256.clone(),
-            width: source.width,
-            height: source.height,
-        })
-        .collect()
-}
+/// 失败态的类型没变（就是 `RemoteStepFailure`），保留这个别名，
+/// `pixel_manager.rs` 与测试一行都不用动。
+pub(super) use super::remote_common::RemoteStepFailure as PixelRemoteFailure;
+/// wire 形态转换也是两条产线共用的，放在 `remote_common`。
+pub(super) use super::remote_common::provider_images;
 
 pub(super) fn run_remote_step(
     store: &PhotoAvatarStore,
     provider: &ControlledBackendProvider,
     session_id: &str,
     revision: u32,
-    mut request: PixelProviderStepRequest,
+    request: PixelProviderStepRequest,
 ) -> Result<(RemoteJob, RemoteJobState, u8), PixelRemoteFailure> {
-    loop {
-        let attempt = request.attempt;
-        let job = match provider.submit_pixel_step(request.clone()) {
-            Ok(job) => job,
-            Err(error) if error.retryable && attempt < 3 => {
-                request.attempt =
-                    store.reserve_pixel_attempt(session_id, revision, request.step)?;
-                continue;
-            }
-            Err(error) => {
-                return Err(PixelRemoteFailure {
-                    code: error.code,
-                    retryable: error.retryable,
-                    message: error.message,
-                })
-            }
-        };
-        store.set_pixel_provider_job(
-            session_id,
-            revision,
-            job.provider_session_id.as_deref(),
-            Some(&job.provider_job_id),
-        )?;
-        match poll(provider, &job.provider_job_id) {
-            Ok(state) => return Ok((job, state, attempt)),
-            Err(error) if error.retryable && attempt < 3 => {
-                request.attempt =
-                    store.reserve_pixel_attempt(session_id, revision, request.step)?;
-            }
-            Err(error) => return Err(error),
-        }
-    }
-}
-
-#[derive(Debug)]
-pub(super) struct PixelRemoteFailure {
-    pub code: PhotoAvatarErrorCode,
-    pub retryable: bool,
-    pub message: String,
-}
-
-impl From<PixelRemoteFailure> for String {
-    fn from(failure: PixelRemoteFailure) -> Self {
-        failure.message
-    }
-}
-
-impl From<String> for PixelRemoteFailure {
-    fn from(message: String) -> Self {
-        Self {
-            code: PhotoAvatarErrorCode::TemporaryUnavailable,
-            retryable: false,
-            message,
-        }
-    }
-}
-
-fn poll(
-    provider: &ControlledBackendProvider,
-    job_id: &str,
-) -> Result<RemoteJobState, PixelRemoteFailure> {
-    let deadline = Instant::now() + Duration::from_secs(300);
-    loop {
-        let state = provider
-            .poll_job(job_id)
-            .map_err(|error| PixelRemoteFailure {
-                code: error.code,
-                retryable: error.retryable,
-                message: error.message,
-            })?;
-        match state.state.as_str() {
-            "succeeded" => return Ok(state),
-            "failed" => {
-                let (code, retryable, message) = state.error.as_ref().map_or_else(
-                    || {
-                        (
-                            PhotoAvatarErrorCode::TemporaryUnavailable,
-                            false,
-                            "photo avatar provider failed".into(),
-                        )
-                    },
-                    |error| {
-                        (
-                            remote_error_code(&error.code),
-                            matches!(
-                                error.code.as_str(),
-                                "network" | "timeout" | "provider5xx" | "temporaryUnavailable"
-                            ),
-                            error.message.clone(),
-                        )
-                    },
-                );
-                return Err(PixelRemoteFailure {
-                    code,
-                    retryable,
-                    message,
-                });
-            }
-            "running" if Instant::now() < deadline => {
-                std::thread::sleep(Duration::from_millis(250))
-            }
-            "running" => {
-                return Err(PixelRemoteFailure {
-                    code: PhotoAvatarErrorCode::Timeout,
-                    retryable: true,
-                    message: "photo avatar provider timed out".into(),
-                })
-            }
-            _ => {
-                return Err(PixelRemoteFailure {
-                    code: PhotoAvatarErrorCode::InvalidInput,
-                    retryable: false,
-                    message: "photo avatar provider state is invalid".into(),
-                })
-            }
-        }
-    }
-}
-
-fn remote_error_code(code: &str) -> PhotoAvatarErrorCode {
-    match code {
-        "invalidInput" => PhotoAvatarErrorCode::InvalidInput,
-        "auth" => PhotoAvatarErrorCode::Auth,
-        "quota" => PhotoAvatarErrorCode::Quota,
-        "contentPolicy" => PhotoAvatarErrorCode::ContentPolicy,
-        "unsupported" => PhotoAvatarErrorCode::Unsupported,
-        "network" => PhotoAvatarErrorCode::Network,
-        "timeout" => PhotoAvatarErrorCode::Timeout,
-        "provider5xx" => PhotoAvatarErrorCode::Provider5xx,
-        "temporaryUnavailable" => PhotoAvatarErrorCode::TemporaryUnavailable,
-        "localStorage" => PhotoAvatarErrorCode::LocalStorage,
-        _ => PhotoAvatarErrorCode::InvalidInput,
-    }
+    let attempt = request.attempt;
+    let step = request.step;
+    let mut outgoing = request;
+    run_remote_step_with(
+        provider,
+        attempt,
+        |attempt| {
+            outgoing.attempt = attempt;
+            provider.submit_pixel_step(outgoing.clone())
+        },
+        || {
+            store
+                .reserve_pixel_attempt(session_id, revision, step)
+                .map_err(RemoteStepFailure::from)
+        },
+        |job| {
+            store
+                .set_pixel_provider_job(
+                    session_id,
+                    revision,
+                    job.provider_session_id.as_deref(),
+                    Some(&job.provider_job_id),
+                )
+                .map_err(RemoteStepFailure::from)
+        },
+        RemotePolling::PIXEL,
+    )
 }
 
 #[cfg(test)]
 mod tests {
     use super::*;
     use crate::creation::photo_avatar::domain::{
-        PixelRemoteStep, PixelStyleProfileId, PHOTO_AVATAR_CONSENT_VERSION,
+        PhotoAvatarErrorCode, PixelRemoteStep, PixelStyleProfileId, PHOTO_AVATAR_CONSENT_VERSION,
     };
     use crate::storage::Storage;
     use serde_json::json;
