@@ -464,15 +464,39 @@ def test_poll_normalizes_empty_result_url_while_media_is_running():
     assert state.error is None
 
 
+def test_poll_rejects_empty_result_url_for_success_state():
+    """success 态给出空串 result_url = 声称成功却没有产物，仍是畸形。"""
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "task_id": "task-17",
+                "state": "success",
+                "is_final": True,
+                "result_url": "",
+                "error": None,
+            },
+            request=request,
+        )
+
+    with pytest.raises(Lk888Error):
+        client_with(handler).poll_image("task-17")
+
+
 @pytest.mark.parametrize(
-    ("state", "raw_error"),
+    ("state", "raw_error", "code"),
     [
-        ("success", None),
-        ("failed", {"code": "temporary"}),
-        ("cancelled", None),
+        ("failed", {"code": "temporary"}, "temporaryUnavailable"),
+        ("cancelled", None, None),
     ],
 )
-def test_poll_rejects_empty_result_url_for_final_states(state, raw_error):
+def test_poll_accepts_empty_result_url_on_non_success_final_states(state, raw_error, code):
+    """平台用**空串**表示「没有 result_url」（实测 failed 态就是 ""，不是 null）。
+
+    空串按缺省处理；有真 URL 的 failed 仍然拒绝（见下面的反常 payload 参数表）。
+    """
+
     def handler(request: httpx.Request) -> httpx.Response:
         return httpx.Response(
             200,
@@ -486,8 +510,11 @@ def test_poll_rejects_empty_result_url_for_final_states(state, raw_error):
             request=request,
         )
 
-    with pytest.raises(Lk888Error):
-        client_with(handler).poll_image("task-17")
+    parsed = client_with(handler).poll_image("task-17")
+
+    assert parsed.state == state
+    assert parsed.result_url is None
+    assert (parsed.error.code if parsed.error else None) == code
 
 
 def test_poll_rejects_whitespace_result_url_while_media_is_running():
@@ -553,6 +580,41 @@ def test_poll_maps_failed_media_error_without_echoing_untrusted_content(
     assert str(state.error) == message
     assert "data:image" not in str(state.error)
     assert "pet.png" not in str(state.error)
+
+
+def test_poll_parses_real_content_policy_failure_payload():
+    """实测 payload（seedance-2.0-guanfang-anmiao 被内容审核拒，task 135106434）。
+
+    failed 态的 ``result_url`` 是**空串**而不是 null，``error`` 只有一句中文。
+    修复前这里抛 "media status failure requires only an error"（误导性的协议错误），
+    就算解开也会被 default 分支归成「可重试的临时故障」—— 重试同一份提示词必然再被拒。
+    """
+
+    def handler(request: httpx.Request) -> httpx.Response:
+        return httpx.Response(
+            200,
+            json={
+                "task_id": 135106434,
+                "state": "failed",
+                "is_final": True,
+                "result_url": "",
+                "result_urls": [],
+                "error": "输入文本可能包含敏感信息，请调整提示词后重试。（已退款）",
+                "refunded": True,
+                "refunded_amount": 2.368,
+                "status": "Error",
+            },
+            request=request,
+        )
+
+    state = client_with(handler).poll_image("135106434")
+
+    assert state.state == "failed"
+    assert state.is_final is True
+    assert state.result_url is None
+    assert state.error.code == "contentPolicy"
+    assert state.error.retryable is False
+    assert "敏感" not in str(state.error)
 
 
 @pytest.mark.parametrize(

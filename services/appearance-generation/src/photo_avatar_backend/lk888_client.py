@@ -33,6 +33,11 @@ _PROVIDER_DIAGNOSTIC_TAGS = (
 _MEDIA_STATES = frozenset(
     {"pending", "queued", "running", "success", "failed", "cancelled"}
 )
+# 平台内容审核拒绝时 error 只给一句中文，**没有任何英文 code 可匹配**（实测：
+# 「输入文本可能包含敏感信息，请调整提示词后重试。（已退款）」）。不兜这一层，
+# 它会被 default 分支误判成可重试的临时故障 —— 重试同一份提示词必然再被拒、白烧算力。
+# 这里按平台实际文案匹配，与上面那批英文 aliases 是同一类启发式。
+_CONTENT_POLICY_TOKENS = ("敏感", "内容审核", "违规", "审核不通过", "content_policy")
 _MEDIA_REQUIRED_STATE_FIELDS = frozenset(
     {"task_id", "state", "is_final", "result_url", "error"}
 )
@@ -86,7 +91,10 @@ class MediaState:
             raise _protocol_error("media status final flag contradicts state")
         if result_url is not None and not isinstance(result_url, str):
             raise _protocol_error("media status result URL is invalid")
-        if result_url == "" and not is_final:
+        # 平台在 failed 态把 result_url 发成**空串**（实测 seedance-2.0-guanfang-anmiao
+        # 被内容审核拒：result_url="" / error="输入文本…（已退款）" / refunded=true）。
+        # 空串 == 「没有结果」，与 None 同义；非空 URL 仍走原来的严格校验。
+        if result_url == "":
             result_url = None
         if state == "success":
             if not _is_https_url(result_url) or raw_error is not None:
@@ -567,7 +575,9 @@ def _media_error(value: Any) -> Lk888Error:
         raise _protocol_error("media status error payload is invalid")
 
     normalized = provider_code.lower()
-    if "content" in normalized and "policy" in normalized:
+    if ("content" in normalized and "policy" in normalized) or any(
+        token in provider_code for token in _CONTENT_POLICY_TOKENS
+    ):
         return Lk888Error(
             "contentPolicy", False, "provider content policy rejected request"
         )

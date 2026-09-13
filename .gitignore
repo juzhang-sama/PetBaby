@@ -3,6 +3,9 @@ dist/
 __pycache__/
 *.py[cod]
 .pytest_cache/
+# pytest --basetemp 的落点。用 D:/petBaby/_pytest-tmp 更好（在仓库外），
+# 但一旦有人把 basetemp 指到仓库内，别让几十个临时 job/audit JSON 混进提交。
+.pytest-tmp/
 .env
 apps/desktop/src-tauri/target/
 apps/desktop/src-tauri/gen/
