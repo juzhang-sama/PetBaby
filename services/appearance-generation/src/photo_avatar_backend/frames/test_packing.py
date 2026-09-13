@@ -11,7 +11,9 @@ import hashlib
 import json
 from pathlib import Path
 
+import numpy as np
 import pytest
+from PIL import Image
 
 from photo_avatar_backend.frames.packing import (
     FRAME_MS,
@@ -173,3 +175,99 @@ def test_species_is_written_through_for_dogs(tmp_path: Path):
     manifest = json.loads(packed.manifest_path.read_text(encoding="utf-8"))
 
     assert manifest["species"] == "dog"
+
+
+# ------------------------------------------------------------------ WebP 路径
+
+def write_real_frames(root: Path, count: int, size: int = 64) -> Path:
+    """写**真**PNG（有渐变、有透明边），让 WebP 编码器有东西可压。"""
+    frames = root / "frames"
+    frames.mkdir(parents=True)
+    yy, xx = np.mgrid[0:size, 0:size]
+    for index in range(count):
+        rgba = np.zeros((size, size, 4), np.uint8)
+        rgba[:, :, 0] = (xx * 3 + index) % 256
+        rgba[:, :, 1] = (yy * 5) % 256
+        rgba[:, :, 2] = ((xx + yy) * 2) % 256
+        rgba[:, :, 3] = np.where((xx > 4) & (xx < size - 4) & (yy > 4) & (yy < size - 4), 255, 0)
+        Image.fromarray(rgba).save(frames / f"f{index:04d}.png")
+    return frames
+
+
+def test_webp_pack_encodes_frames_and_rewrites_the_manifest(tmp_path: Path):
+    frames = write_real_frames(tmp_path, 3)
+
+    packed = pack(frames, tmp_path / "out", frame_format="webp")
+    manifest = json.loads(packed.manifest_path.read_text(encoding="utf-8"))
+
+    assert packed.frame_format == "webp"
+    assert manifest["baseImage"] == "frames/idle-combo/f0000.webp"
+    assert [Path(item).suffix for item in manifest["actions"][0]["frames"]] == [".webp"] * 3
+    assert [Path(entry["relativePath"]).suffix for entry in manifest["files"]] == [".webp"] * 3
+    assert not list(packed.out_dir.rglob("*.png")), "包里不该留 PNG"
+    for entry in manifest["files"]:
+        blob = (packed.out_dir / entry["relativePath"]).read_bytes()
+        assert blob[:4] == b"RIFF" and blob[8:12] == b"WEBP"
+        assert hashlib.sha256(blob).hexdigest() == entry["sha256"]
+
+
+def test_webp_keeps_alpha_exactly(tmp_path: Path):
+    """WebP 的 alpha 通道恒为无损（即便 lossless=False）—— 透明边缘不能退化。"""
+    frames = write_real_frames(tmp_path, 1)
+
+    packed = pack(frames, tmp_path / "out", frame_format="webp")
+    source = np.array(Image.open(frames / "f0000.png").convert("RGBA"))
+    decoded = np.array(
+        Image.open(packed.out_dir / "frames" / "idle-combo" / "f0000.webp").convert("RGBA")
+    )
+
+    assert (decoded[:, :, 3] == source[:, :, 3]).all(), "alpha 必须逐像素相同"
+
+
+def test_webp_is_much_smaller_than_png(tmp_path: Path):
+    """**合成图不能用来断言「WebP 更小」** —— 这条测试存在的意义是把这个坑钉住。
+
+    最初这里写的是 `assert webps * 2 < pngs`，实测直接翻车：
+    规律渐变图的 PNG 只要 2784 字节，同内容 WebP(q90) 却要 7052 ——
+    **lossy 编码器把码率花在人眼关心的细节上，碰上 PNG 的送分题（可预测条纹）自然输**。
+    体积结论只能在**真实帧**上成立：`output/一键出宠-测试-2026-09-13/` 那只
+    614×614 × 288 帧，PNG 源帧 72.6 MB → WebP 包 9.7 MB（约 7.5 倍）。
+    所以这里只验「两种格式都能出合法包」，体积交给真实产物的回归记录。
+    """
+    frames = write_real_frames(tmp_path, 2, size=128)
+
+    png_pack = pack(frames, tmp_path / "out-png")
+    webp_pack = pack(frames, tmp_path / "out-webp", frame_format="webp")
+
+    assert png_pack.frame_count == webp_pack.frame_count == 2
+    assert png_pack.frame_format == "png"
+    assert webp_pack.frame_format == "webp"
+    manifest = json.loads(webp_pack.manifest_path.read_text(encoding="utf-8"))
+    assert all(Path(item).suffix == ".webp" for item in manifest["actions"][0]["frames"])
+
+
+def test_png_pack_uses_source_bytes_verbatim(tmp_path: Path):
+    """PNG 路径**不重新编码** —— 重编码会让黄金基线漂。"""
+    frames = write_real_frames(tmp_path, 2)
+
+    packed = pack(frames, tmp_path / "out")
+
+    for index in range(2):
+        assert (
+            packed.out_dir / "frames" / "idle-combo" / f"f{index:04d}.png"
+        ).read_bytes() == (frames / f"f{index:04d}.png").read_bytes()
+
+
+@pytest.mark.parametrize(
+    ("overrides", "match"),
+    [
+        ({"frame_format": "avif"}, "unsupported frame format"),
+        ({"frame_format": "webp", "webp_quality": 0}, "webpQuality"),
+        ({"frame_format": "webp", "webp_quality": 101}, "webpQuality"),
+    ],
+)
+def test_rejects_invalid_frame_format(tmp_path: Path, overrides, match):
+    frames = write_frames(tmp_path, 1)
+
+    with pytest.raises(ValueError, match=match):
+        pack(frames, tmp_path / "out", **overrides)

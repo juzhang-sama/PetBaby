@@ -32,6 +32,7 @@ from PIL import Image
 from scipy import ndimage
 
 from ._paths import rel_to
+from . import MIN_FRAMING_MARGIN
 
 SIZE = 1024
 GREEN = (0, 255, 0)
@@ -41,11 +42,6 @@ ALPHA_KILL = 16         # alpha <= 16 视为背景噪声，清零
 # 摇尾时尾尖摆幅 / 猫身宽度。由 1:1 那支实测：右边界在 795~959 间摆动，
 # 摆幅 164px，单帧猫宽 699px -> 0.235。换宠物或换动作幅度要重新测。
 TAIL_SWING_RATIO = 0.235
-
-# 两个余量的下限。任一低于它就不许进视频（见模块开头）。
-# 注意：`scripts/一键出宠.py` 里还有一个 `MARGIN_MIN = 0.05`，
-# 等第 4 片 `frames/pipeline.py` 串链时统一到这一处。
-MIN_FRAMING_MARGIN = 0.05
 
 
 class FirstFrameError(ValueError):

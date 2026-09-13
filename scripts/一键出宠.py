@@ -16,7 +16,9 @@
 yawn / lick 这类一次性动作走 skill `petbaby-oneshot-action-integration`，
 它们必须复用 idle 的 crop box，所以要在本脚本跑完之后再做。
 
-会产生 API 费用。12s 标准 480p 按秒版 ≈ 2.1 算力/支，加母版约 3~4 算力/只。
+会产生 API 费用。`seedance-2.0-guanfang-anmiao` + **标准** + 480p + 12s
+**实测 5.69 算力/支**（≈0.474/秒），加母版（0.06）约 5.8 算力/只。
+⚠️ 别拿 Mini 档（0.1728/秒、12s≈2.07）估标准档，同样时长差约 3 倍。
 
 用法：
   D:/DevTools/Python312/python.exe scripts/一键出宠.py \
@@ -46,6 +48,10 @@ ROOT = Path(__file__).resolve().parents[1]
 ENV_FILE = ROOT / "services" / "appearance-generation" / ".env"
 BUILTIN_PETS = ROOT / "apps" / "desktop" / "public" / "builtin-pets"
 
+# 取景余量下限只有一处定义（`frames/__init__.py`，刻意不 import 任何东西）
+sys.path.insert(0, str(ROOT / "services" / "appearance-generation" / "src"))
+from photo_avatar_backend.frames import MIN_FRAMING_MARGIN as MARGIN_MIN  # noqa: E402
+
 # ⚠️ 不同步骤要的解释器**不一样**，别用一个 PY 常量串到底（2026-09-13 踩过）：
 #   后端服务（母版 / 视频）要 httpx，跑在 managed 的 3.13.12.old.24532；
 #   图像步骤（首帧 / 抠像 / 验收 / WebP）要 numpy + PIL + **scipy**，
@@ -65,7 +71,6 @@ PYTHON_CANDIDATES = (
 _python_cache: dict[tuple[str, ...], str] = {}
 
 FRAME_MS = 42
-MARGIN_MIN = 0.05                     # 两个余量的下限（skill：任一 <5% 不许进视频）
 MARGIN_LEFT = 0.06                    # 别低于 0.05：0.02 会让主体贴左边触边
 SCALE_LADDER = (0.90, 0.85, 0.80, 0.75)
 MAX_VIDEO_ATTEMPTS = 3

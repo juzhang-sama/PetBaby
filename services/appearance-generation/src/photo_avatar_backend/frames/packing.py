@@ -6,19 +6,28 @@
 只产**单视频循环**（idle-combo，loop=true）：呼吸/眨眼/摇尾焊死在同一支视频里，
 所以 **没有 idleSchedule**，运行时纯循环播放。一次性动作（yawn/lick）另行接入，
 它们必须复用 idle 的 crop box。
+
+帧格式：`frame_format="png"`（默认，POC/内置基线）或 `"webp"`（产品，见 `encode_frame`）。
 """
 
 from __future__ import annotations
 
 import hashlib
+import io
 import json
 import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
-from ._paths import sha256_of
+from PIL import Image
 
 FRAME_MS = 42
+
+# 产品走 WebP：403MB -> 41MB，且 WebP 的 alpha 通道恒为无损（即使 lossless=False）。
+# method=5 是「质量/耗时」的实测拐点；q90 与内置宠物 04/05 的现有资产一致。
+FRAME_FORMATS = frozenset({"png", "webp"})
+WEBP_QUALITY = 90
+WEBP_METHOD = 5
 
 # 产品会发出的全部动作（唯一真源：apps/desktop/src/runtime/pet-presentation-controller.ts）。
 # schemaVersion-7 校验器要求 semantics 显式声明每一个键：没有专属动作的就显式指向
@@ -47,10 +56,31 @@ class PackedFrameSequence:
     file_count: int
     total_bytes: int
     frame_duration_ms: int
+    frame_format: str = "png"
 
     @property
     def duration_ms(self) -> int:
         return self.frame_duration_ms * self.frame_count
+
+
+def encode_frame(png_bytes: bytes, frame_format: str, webp_quality: int = WEBP_QUALITY) -> bytes:
+    """把源 PNG 的字节编码成目标帧格式。
+
+    `"png"` 原样返回（不重新编码 —— 重编码会让黄金基线漂）。
+    `"webp"` 用 `lossless=False, quality, method=5`：实测 403MB → 41MB，
+    而 **WebP 的 alpha 通道恒为无损**（即便 lossless=False），所以透明边缘不会退化。
+    """
+    if frame_format == "png":
+        return png_bytes
+    if frame_format != "webp":
+        raise ValueError(f"unsupported frame format: {frame_format}")
+    if not 0 < webp_quality <= 100:
+        raise ValueError(f"webpQuality must be in 1..100: {webp_quality}")
+    with Image.open(io.BytesIO(png_bytes)) as image:
+        rgba = image.convert("RGBA")
+    buffer = io.BytesIO()
+    rgba.save(buffer, "WEBP", lossless=False, quality=webp_quality, method=WEBP_METHOD)
+    return buffer.getvalue()
 
 
 def _require_safe_id(value: str, label: str) -> str:
@@ -76,12 +106,17 @@ def pack_frame_sequence(
     species: str = "cat",
     frame_duration_ms: int = FRAME_MS,
     variant_id: str = "combo-loop-v1",
+    frame_format: str = "png",
+    webp_quality: int = WEBP_QUALITY,
     replace_existing: bool = False,
 ) -> PackedFrameSequence:
     """把 `frames_dir` 下的 f*.png 打成一个 schema 7 包。
 
     `replace_existing` 必须显式给：目标目录非空时默认**拒绝**，
     因为原地重打包会先删掉旧帧（数百个文件），而本机的批量删除守卫会拦下来。
+
+    `frame_format` 决定包里的帧用什么编码 + manifest 里写什么扩展名。
+    默认 `"png"` 与搬入前逐字节一致（黄金基线）；产品走 `"webp"`。
     """
 
     frames_dir = Path(frames_dir)
@@ -93,6 +128,8 @@ def pack_frame_sequence(
     _require_safe_id(variant_id, "variantId")
     if species not in SPECIES:
         raise ValueError(f"unsupported species: {species}")
+    if frame_format not in FRAME_FORMATS:
+        raise ValueError(f"unsupported frame format: {frame_format}")
     if not display_name.strip():
         raise ValueError("displayName must be non-empty")
     if frame_duration_ms <= 0:
@@ -110,18 +147,20 @@ def pack_frame_sequence(
         shutil.rmtree(out_dir)
     out_dir.mkdir(parents=True, exist_ok=True)
 
+    suffix = f".{frame_format}"
     files: list[dict[str, object]] = []
     rel_frames: list[str] = []
     for index, source in enumerate(frame_paths):
-        relative = f"frames/{action_id}/f{index:04d}.png"
+        relative = f"frames/{action_id}/f{index:04d}{suffix}"
         destination = out_dir / relative
         destination.parent.mkdir(parents=True, exist_ok=True)
-        shutil.copy2(source, destination)
+        data = encode_frame(source.read_bytes(), frame_format, webp_quality)
+        destination.write_bytes(data)
         files.append(
             {
                 "role": "base" if index == 0 else "frame",
                 "relativePath": relative,
-                "sha256": sha256_of(source),
+                "sha256": hashlib.sha256(data).hexdigest(),
             }
         )
         rel_frames.append(relative)
@@ -133,7 +172,7 @@ def pack_frame_sequence(
         "variantId": variant_id,
         "displayName": display_name,
         "species": species,
-        "baseImage": f"frames/{action_id}/f0000.png",
+        "baseImage": f"frames/{action_id}/f0000{suffix}",
         "defaultAction": action_id,
         "anchorPolicy": "fixed",
         "actions": [
@@ -166,4 +205,5 @@ def pack_frame_sequence(
         file_count=len(files),
         total_bytes=total_bytes,
         frame_duration_ms=frame_duration_ms,
+        frame_format=frame_format,
     )
