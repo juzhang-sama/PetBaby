@@ -153,7 +153,6 @@ impl FramePhotoAvatarManager {
                 revision,
                 FrameRemoteStep::GenerateMotionSource,
                 motion_attempt,
-                None,
                 images,
                 &identity.pet_id,
                 &identity.display_name,
@@ -185,9 +184,8 @@ impl FramePhotoAvatarManager {
                 revision,
                 FrameRemoteStep::PackFrameSequence,
                 pack_attempt,
-                // 这一步吃的是服务侧 scratch 里的 mp4 —— **不带照片**，
-                // 但必须带上第一个 step 给的 providerSessionId。
-                motion_job.provider_session_id,
+                // 吃的是服务侧 scratch 里的 mp4 —— **不带照片**；
+                // providerSessionId 由 step_request 自己算，与第一步同一个。
                 Vec::new(),
                 &identity.pet_id,
                 &identity.display_name,
@@ -238,7 +236,6 @@ impl FramePhotoAvatarManager {
         revision: u32,
         step: FrameRemoteStep,
         attempt: u8,
-        provider_session_id: Option<String>,
         source_images: Vec<super::provider::ProviderSourceImage>,
         pet_id: &str,
         display_name: &str,
@@ -248,7 +245,10 @@ impl FramePhotoAvatarManager {
             route: FRAME_ROUTE.into(),
             session_id: session_id.into(),
             revision,
-            provider_session_id,
+            // 两个 step 必须带**同一个** id（mp4 落在 `scratch/<id>/` 下，第二步靠它找）。
+            // 放在这里算而不是让调用点传，是因为「两个 step 传了不一样的 id」这种错误
+            // 只在真跑时才暴露，且表现为一句无关的 provider 报错。
+            provider_session_id: Some(frame_provider_session_id(session_id, revision)),
             step,
             attempt,
             consent_version: super::domain::PHOTO_AVATAR_CONSENT_VERSION.into(),
@@ -258,6 +258,30 @@ impl FramePhotoAvatarManager {
             species: species.into(),
         }
     }
+}
+
+/// 帧路线的 `providerSessionId`：服务侧 scratch 目录的 key。
+///
+/// 后端**要求第一个 step 就带上**它（mp4 落在 `scratch/<id>/motion-source.mp4`，
+/// 第二个 step 靠它找），但后端自己不生成 —— 只能调用方给。POC `一键出宠.py`
+/// 就是这么干的（`local-provider-<uuid>`，两个 step 带同一个）。
+///
+/// 两条硬要求：
+///
+/// - **稳定**：同一 `(session_id, revision)` 必须算出同一个值。step 重试时要命中服务侧
+///   已有的 mp4 —— 那是「重试不重付算力」的全部依据；用随机 id 会让每次重试都重跑一遍。
+/// - **安全**：它会变成服务侧的**目录名**，而 `session_id` 是前端传来的
+///   （契约层对它只要求「非空字符串」）。直接拼进路径等于把目录穿越的口子开在前端，
+///   所以哈希成 hex，一个字符也不透传。
+fn frame_provider_session_id(session_id: &str, revision: u32) -> String {
+    use sha2::{Digest, Sha256};
+    let mut hasher = Sha256::new();
+    hasher.update(b"frame-video-v1|");
+    hasher.update(session_id.as_bytes());
+    hasher.update(b"|");
+    hasher.update(revision.to_string().as_bytes());
+    // `fr` 前缀：在后端日志与 scratch 目录里一眼能认出这条产线。
+    format!("fr{:x}", hasher.finalize())
 }
 
 enum RunRevisionFailure {
@@ -570,6 +594,39 @@ mod tests {
         assert_eq!(
             settled.attempts.get(&FrameRemoteStep::PackFrameSequence),
             Some(&1)
+        );
+
+        // 🔴 两个 step 必须带**同一个** providerSessionId —— 它是服务侧 scratch 的 key
+        // （mp4 落在 `scratch/<id>/` 下，第二步靠它找），而后端自己不生成。
+        // 第一步传 None 时后端回 `generateMotionSource requires a providerSessionId`，
+        // 前端只看得到一句「服务暂时不可用」—— 光看 UI 完全查不出是这儿。
+        // 之前这个用例没抓到它，是因为 mock 不校验请求体：只回了个成功的 job。
+        let posted: Vec<serde_json::Value> = server
+            .received_requests()
+            .await
+            .unwrap_or_default()
+            .iter()
+            .filter(|request| {
+                request.method.to_string() == "POST"
+                    && request.url.path() == "/v1/photo-avatar/steps"
+            })
+            .filter_map(|request| serde_json::from_slice(&request.body).ok())
+            .collect();
+        assert_eq!(posted.len(), 2, "应当恰好提交了两个 step：{posted:?}");
+        let ids: Vec<&str> = posted
+            .iter()
+            .map(|body| body["providerSessionId"].as_str().unwrap_or_default())
+            .collect();
+        assert_eq!(
+            ids[0], ids[1],
+            "两个 step 的 providerSessionId 必须一致，否则第二步找不到 mp4：{ids:?}"
+        );
+        assert!(
+            ids[0].starts_with("fr")
+                && ids[0].len() > 32
+                && ids[0].chars().all(|character| character.is_ascii_alphanumeric()),
+            "providerSessionId 要能当目录名用（不含分隔符、够长）：{:?}",
+            ids[0]
         );
 
         // 预览目录真的躺在磁盘上，而且是 zip 里那份内容。
