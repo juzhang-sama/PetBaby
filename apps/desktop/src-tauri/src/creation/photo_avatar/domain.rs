@@ -289,6 +289,45 @@ impl FrameRemoteStep {
     }
 }
 
+/// 三条产线的 route 取值。**唯一真源**（`store.rs` / 命令层 / 迁移都从这里取）。
+///
+/// 与 DB 里 `photo_avatar_runs.route` 的 CHECK 逐字一致；
+/// `live2d-v5` 是已冻结的历史路线，仍要能读出来（老会话的 run 行还在）。
+pub const LIVE2D_ROUTE: &str = "live2d-v5";
+pub const PIXEL_ROUTE: &str = "pixel-v1";
+pub const FRAME_ROUTE: &str = "frame-video-v1";
+
+/// 一条创建会话走的是哪条产线。
+///
+/// 存在的理由：命令层与 finalization port **都只拿到一个 `session_id`**，
+/// 得先问「这条会话在哪条路上」才知道该找哪个 manager。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum PhotoAvatarRoute {
+    Live2d,
+    Pixel,
+    Frame,
+}
+
+impl PhotoAvatarRoute {
+    pub fn as_str(self) -> &'static str {
+        match self {
+            Self::Live2d => LIVE2D_ROUTE,
+            Self::Pixel => PIXEL_ROUTE,
+            Self::Frame => FRAME_ROUTE,
+        }
+    }
+
+    pub fn parse(value: &str) -> Result<Self, String> {
+        match value {
+            LIVE2D_ROUTE => Ok(Self::Live2d),
+            PIXEL_ROUTE => Ok(Self::Pixel),
+            FRAME_ROUTE => Ok(Self::Frame),
+            other => Err(format!("unsupported photo avatar route: {other}")),
+        }
+    }
+}
+
 /// 写实风（`frame-video-v1`）的状态机。
 ///
 /// 与 `PixelPhotoAvatarStep` 的差别只有两处，都是刻意的：

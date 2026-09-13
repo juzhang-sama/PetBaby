@@ -8,6 +8,17 @@ use sha2::{Digest, Sha256};
 use std::path::Path;
 
 impl PixelPhotoAvatarManager {
+    /// 这条会话的 run 走的是哪条产线（`None` = 还没有 run）。
+    ///
+    /// 挂在**像素 manager** 上是因为命令层与 `RoutePhotoAvatarPorts` 都必然持有它
+    /// （它是默认路线），所以「问路」这件事不需要每个 manager 各来一份。
+    pub fn session_route(
+        &self,
+        session_id: &str,
+    ) -> Result<Option<super::domain::PhotoAvatarRoute>, String> {
+        self.store.session_route(session_id)
+    }
+
     pub fn save_consent(&self, accepted: bool) -> Result<bool, String> {
         if accepted {
             self.store

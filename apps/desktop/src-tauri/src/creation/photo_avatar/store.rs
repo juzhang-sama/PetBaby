@@ -1,10 +1,11 @@
 use super::domain::{
     parse_appearance_profile_v1, parse_pixel_appearance_profile_v1, AppearanceProfileV1,
     FramePhotoAvatarRun, FramePhotoAvatarSnapshot, FramePhotoAvatarStep, FrameRemoteStep,
-    IdentityTraitKey, PhotoAvatarAttemptStep, PhotoAvatarErrorCode, PhotoAvatarSnapshot,
-    PhotoAvatarStep, PixelAppearanceProfileV1, PixelIdentityTraitKey, PixelPhotoAvatarSnapshot,
-    PixelPhotoAvatarStep, PixelRemoteStep, PixelStyleProfileId, DEFAULT_PIXEL_STYLE_ID,
-    PHOTO_AVATAR_CONSENT_VERSION, PHOTO_AVATAR_DISCLOSURE_SHA256,
+    IdentityTraitKey, PhotoAvatarAttemptStep, PhotoAvatarErrorCode, PhotoAvatarRoute,
+    PhotoAvatarSnapshot, PhotoAvatarStep, PixelAppearanceProfileV1, PixelIdentityTraitKey,
+    PixelPhotoAvatarSnapshot, PixelPhotoAvatarStep, PixelRemoteStep, PixelStyleProfileId,
+    DEFAULT_PIXEL_STYLE_ID, FRAME_ROUTE, PHOTO_AVATAR_CONSENT_VERSION,
+    PHOTO_AVATAR_DISCLOSURE_SHA256, PIXEL_ROUTE,
 };
 use super::provider::{CleanupState, UpstreamCleanupState};
 use crate::runtime_assets::manifest::{
@@ -19,14 +20,13 @@ pub type SharedPhotoAvatarStore = Arc<Mutex<PhotoAvatarStore>>;
 pub(crate) const ACTIVE_ATTEMPT_ERROR: &str = "photo avatar attempt already active";
 const LEGACY_PARTIAL_CREATED_AT_PREFIX: &str = "legacy-partial-migration:";
 
-/// 两条产线的 route 名与错误串前缀，供 route 通用层使用。
+/// 两条产线的错误串前缀，供 route 通用层使用。
 ///
 /// `label` 只影响**报错的说法**（`"pixel avatar run is not current"`）。
 /// 放成常量是为了别把同一个字符串散落到六处 SQL 调用点上 ——
 /// 散出去之后改一处忘一处，报错就会一半一个腔调。
-const PIXEL_ROUTE: &str = "pixel-v1";
+/// route 取值本身在 `domain`（唯一真源，命令层也要用）。
 const PIXEL_LABEL: &str = "pixel avatar";
-pub(crate) const FRAME_ROUTE: &str = "frame-video-v1";
 const FRAME_LABEL: &str = "frame video";
 
 #[cfg(test)]
@@ -172,6 +172,28 @@ impl PhotoAvatarStore {
                 |row| row.get(0),
             )
             .map_err(|error| error.to_string())
+    }
+
+    /// 这条会话的 run 走的是哪条产线。
+    ///
+    /// 命令层与 finalization port 都只拿到 `session_id`，靠这个才知道该找哪个 manager。
+    /// `Ok(None)` = 还没有 run（会话刚建、或 `analyzeIdentity` 之前）——
+    /// **不是错误**，调用方自己决定默认走哪条路。
+    pub fn session_route(&self, session_id: &str) -> Result<Option<PhotoAvatarRoute>, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let route: Option<String> = storage
+            .db
+            .query_row(
+                "SELECT route FROM photo_avatar_runs WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        route
+            .as_deref()
+            .map(PhotoAvatarRoute::parse)
+            .transpose()
     }
 
     /// 写实风要发给后端的三样身份：`petId` / `displayName` / `species`。
@@ -2867,6 +2889,48 @@ mod tests {
                 .unwrap();
         }
         (PhotoAvatarStore::new(storage), root)
+    }
+
+    /// 命令层与 finalization port 的分派**全靠这一条**：它们只拿到 `session_id`，
+    /// 得先问「这条会话在哪条路上」。所以四种情形都要钉死。
+    #[test]
+    fn session_route_answers_which_pipeline_a_session_is_on() {
+        let (store, root) = test_store();
+
+        // 还没有 run → None（不是错误），由调用方按默认产线处理。
+        assert_eq!(store.session_route("session-a").unwrap(), None);
+        // 会话不存在也是 None（同一个语义：没得可问）。
+        assert_eq!(store.session_route("session-missing").unwrap(), None);
+
+        store
+            .begin_pixel_revision(
+                "session-a",
+                PixelStyleProfileId::V2AnimationReady,
+                None,
+                &[],
+            )
+            .unwrap();
+        assert_eq!(
+            store.session_route("session-a").unwrap(),
+            Some(PhotoAvatarRoute::Pixel)
+        );
+
+        // 换到写实风 → 同一条行被覆盖，分派依据也跟着换。
+        store.begin_frame_revision("session-a").unwrap();
+        assert_eq!(
+            store.session_route("session-a").unwrap(),
+            Some(PhotoAvatarRoute::Frame)
+        );
+
+        // 取值域与 DB 的 CHECK 一致：三个值认得，别的报错而不是悄悄当成默认。
+        assert_eq!(PhotoAvatarRoute::parse("live2d-v5").unwrap(), PhotoAvatarRoute::Live2d);
+        assert_eq!(
+            PhotoAvatarRoute::parse("frame-video-v1").unwrap().as_str(),
+            "frame-video-v1"
+        );
+        assert!(PhotoAvatarRoute::parse("pixel-v2").is_err());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     /// 写实风与像素风**共用同一张 `photo_avatar_runs`**（v14 的决定）。

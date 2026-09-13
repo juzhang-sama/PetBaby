@@ -11,14 +11,14 @@
 //! 3. **跑完停在 `RuntimeCheckPending`**：等用户人工确认（老王三定第 1 条
 //!    「跑完弹预览，用户确认才安装」）。与像素风同一个闸口。
 
-use super::domain::{FramePhotoAvatarSnapshot, FramePhotoAvatarStep, FrameRemoteStep};
+use super::domain::{FramePhotoAvatarSnapshot, FramePhotoAvatarStep, FrameRemoteStep, FRAME_ROUTE};
 use super::frame_remote::{run_frame_step, FrameRemoteFailure};
 use super::provider::{
     ControlledBackendProvider, FrameProviderStepRequest, PhotoAvatarProvider, ProviderStepResult,
 };
 use super::remote_common::provider_images;
 use super::source::{normalize_photo_sources, RawPhotoSource};
-use super::store::{NormalizedPhoto, PhotoAvatarStore, FRAME_ROUTE};
+use super::store::{NormalizedPhoto, PhotoAvatarStore};
 use crate::runtime_assets::frame_sequence_builder::{
     BuildFrameSequenceRequest, FrameSequenceBuilder, FRAME_SEQUENCE_VARIANT_ID,
 };

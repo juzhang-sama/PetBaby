@@ -1067,6 +1067,37 @@ struct PhotoAvatarUpload {
     sha256: String,
 }
 
+type SharedPixelAvatarManager<'a> = tauri::State<
+    'a,
+    creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager,
+>;
+type SharedFrameAvatarManager<'a> = tauri::State<
+    'a,
+    creation::photo_avatar::frame_manager::SharedFramePhotoAvatarManager,
+>;
+
+/// 这条会话该走哪条产线。没有 run 时按**默认产线**（像素风）——
+/// 与 `begin` 不给 route 时的默认保持同一个口径。
+///
+/// 分派只在命令层做一次：九个命令共用这一处，别在每个命令里各写一遍 match。
+fn photo_avatar_session_route(
+    pixel: &creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager,
+    session_id: &str,
+) -> Result<creation::photo_avatar::domain::PhotoAvatarRoute, String> {
+    Ok(pixel
+        .session_route(session_id)?
+        .unwrap_or(creation::photo_avatar::domain::PhotoAvatarRoute::Pixel))
+}
+
+/// 命令的返回统一成 `serde_json::Value`。
+///
+/// 两条产线的 snapshot 是两个类型，但**像素风序列化出来的 JSON 与以前逐字相同**
+/// （以前 Tauri 也是把这个结构体序列化成同样的形状），所以前端不受影响；
+/// 帧路线多出的 `route` 取值由第 7 片的 TS 类型去收。
+fn photo_avatar_wire<T: serde::Serialize>(snapshot: T) -> Result<serde_json::Value, String> {
+    serde_json::to_value(snapshot).map_err(|error| error.to_string())
+}
+
 #[tauri::command]
 fn creation_photo_avatar_consent(
     manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
@@ -1077,11 +1108,14 @@ fn creation_photo_avatar_consent(
 
 #[tauri::command]
 fn creation_photo_avatar_begin(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
     consent_version: String,
     photos: Vec<PhotoAvatarUpload>,
-) -> Result<creation::photo_avatar::domain::PixelPhotoAvatarSnapshot, String> {
+    route: Option<String>,
+) -> Result<serde_json::Value, String> {
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
     let raw = photos
         .into_iter()
         .map(|photo| {
@@ -1091,15 +1125,41 @@ fn creation_photo_avatar_begin(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    manager.inner().begin(&session_id, &consent_version, raw)
+    // 不给 route = 走现役产线（像素风）。显式给了就必须是认得的取值。
+    let route = match route.as_deref() {
+        None => PhotoAvatarRoute::Pixel,
+        Some(value) => PhotoAvatarRoute::parse(value)?,
+    };
+    match route {
+        PhotoAvatarRoute::Frame => {
+            photo_avatar_wire(frame.inner().begin(&session_id, &consent_version, raw)?)
+        }
+        PhotoAvatarRoute::Pixel => {
+            photo_avatar_wire(pixel.inner().begin(&session_id, &consent_version, raw)?)
+        }
+        PhotoAvatarRoute::Live2d => {
+            Err("legacy photo avatar route cannot start a new revision".into())
+        }
+    }
 }
 
 #[tauri::command]
 fn creation_photo_avatar_status(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
-) -> Result<Option<creation::photo_avatar::domain::PixelPhotoAvatarSnapshot>, String> {
-    manager.status(&session_id)
+) -> Result<Option<serde_json::Value>, String> {
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    match photo_avatar_session_route(pixel.inner(), &session_id)? {
+        PhotoAvatarRoute::Frame => Ok(frame
+            .status(&session_id)?
+            .map(photo_avatar_wire)
+            .transpose()?),
+        _ => Ok(pixel
+            .status(&session_id)?
+            .map(photo_avatar_wire)
+            .transpose()?),
+    }
 }
 
 fn run_photo_avatar_status_command(
@@ -1111,18 +1171,28 @@ fn run_photo_avatar_status_command(
 
 #[tauri::command]
 fn creation_photo_avatar_cancel(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
-) -> Result<creation::photo_avatar::domain::PixelPhotoAvatarSnapshot, String> {
-    manager.cancel(&session_id)
+) -> Result<serde_json::Value, String> {
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    match photo_avatar_session_route(pixel.inner(), &session_id)? {
+        PhotoAvatarRoute::Frame => photo_avatar_wire(frame.cancel(&session_id)?),
+        _ => photo_avatar_wire(pixel.cancel(&session_id)?),
+    }
 }
 
 #[tauri::command]
 fn creation_photo_avatar_regenerate(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
-) -> Result<creation::photo_avatar::domain::PixelPhotoAvatarSnapshot, String> {
-    manager.inner().regenerate(&session_id)
+) -> Result<serde_json::Value, String> {
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    match photo_avatar_session_route(pixel.inner(), &session_id)? {
+        PhotoAvatarRoute::Frame => photo_avatar_wire(frame.inner().regenerate(&session_id)?),
+        _ => photo_avatar_wire(pixel.inner().regenerate(&session_id)?),
+    }
 }
 
 fn run_photo_avatar_regenerate_command(
@@ -1134,11 +1204,21 @@ fn run_photo_avatar_regenerate_command(
 
 #[tauri::command]
 fn creation_photo_avatar_revise(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
     instruction: String,
-) -> Result<creation::photo_avatar::domain::PixelPhotoAvatarSnapshot, String> {
-    manager.inner().revise(&session_id, &instruction)
+) -> Result<serde_json::Value, String> {
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    match photo_avatar_session_route(pixel.inner(), &session_id)? {
+        // 写实风没有 trait 档案，「改指令」这条路不适用 —— 明确回一句，
+        // 别让前端拿到一个看起来像临时故障的错。
+        PhotoAvatarRoute::Frame => {
+            let _ = frame;
+            Err("frame video does not support revision instructions".into())
+        }
+        _ => photo_avatar_wire(pixel.inner().revise(&session_id, &instruction)?),
+    }
 }
 
 fn run_photo_avatar_revise_command(
@@ -1151,31 +1231,52 @@ fn run_photo_avatar_revise_command(
 
 #[tauri::command]
 fn creation_photo_avatar_runtime_check_passed(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
     revision: u32,
     manifest_sha256: String,
-) -> Result<creation::photo_avatar::domain::PixelPhotoAvatarSnapshot, String> {
-    manager.runtime_check_passed(&session_id, revision, &manifest_sha256)
+) -> Result<serde_json::Value, String> {
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    match photo_avatar_session_route(pixel.inner(), &session_id)? {
+        PhotoAvatarRoute::Frame => {
+            photo_avatar_wire(frame.runtime_check_passed(&session_id, revision, &manifest_sha256)?)
+        }
+        _ => photo_avatar_wire(pixel.runtime_check_passed(
+            &session_id,
+            revision,
+            &manifest_sha256,
+        )?),
+    }
 }
 
 #[tauri::command]
 fn creation_photo_avatar_preview_manifest(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
     revision: u32,
 ) -> Result<serde_json::Value, String> {
-    manager.preview_manifest(&session_id, revision)
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    match photo_avatar_session_route(pixel.inner(), &session_id)? {
+        PhotoAvatarRoute::Frame => frame.preview_manifest(&session_id, revision),
+        _ => pixel.preview_manifest(&session_id, revision),
+    }
 }
 
 #[tauri::command]
 fn creation_photo_avatar_preview_file_b64(
-    manager: tauri::State<'_, creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager>,
+    pixel: SharedPixelAvatarManager<'_>,
+    frame: SharedFrameAvatarManager<'_>,
     session_id: String,
     revision: u32,
     relative_path: String,
 ) -> Result<String, String> {
-    manager.preview_file_b64(&session_id, revision, &relative_path)
+    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    match photo_avatar_session_route(pixel.inner(), &session_id)? {
+        PhotoAvatarRoute::Frame => frame.preview_file_b64(&session_id, revision, &relative_path),
+        _ => pixel.preview_file_b64(&session_id, revision, &relative_path),
+    }
 }
 
 fn decode_creation_upload_source(encoded: &str) -> Result<Vec<u8>, String> {
@@ -1974,11 +2075,28 @@ pub fn run() {
                 )
                 .with_builder(photo_avatar_builder),
             );
+            // 两条产线共用同一个后端 provider（同一把钥匙、同一个地址），先包一层 Arc 再分发。
+            let controlled_photo_avatar_provider = controlled_photo_avatar_provider.map(Arc::new);
             let pixel_photo_avatar_manager = Arc::new(
                 creation::photo_avatar::pixel_manager::PixelPhotoAvatarManager::new(
                     creation::photo_avatar::store::PhotoAvatarStore::new(storage.clone()),
-                    controlled_photo_avatar_provider.map(Arc::new),
+                    controlled_photo_avatar_provider.clone(),
                     &data_dir.join("photo-avatar-pixel-previews"),
+                ),
+            );
+            let frame_photo_avatar_manager = Arc::new(
+                creation::photo_avatar::frame_manager::FramePhotoAvatarManager::new(
+                    creation::photo_avatar::store::PhotoAvatarStore::new(storage.clone()),
+                    controlled_photo_avatar_provider.clone(),
+                    &data_dir.join("photo-avatar-frame-previews"),
+                ),
+            );
+            // 共享服务只认一个 port，而两条产线的预览目录是分开的 —— 分派落在这一层。
+            let route_photo_avatar_ports = Arc::new(
+                creation::photo_avatar::route_ports::RoutePhotoAvatarPorts::new(
+                    creation::photo_avatar::store::PhotoAvatarStore::new(storage.clone()),
+                    pixel_photo_avatar_manager.clone(),
+                    frame_photo_avatar_manager.clone(),
                 ),
             );
             let creation_service = Arc::new(
@@ -1989,7 +2107,7 @@ pub fn run() {
                     content_root.clone(),
                     mutation_gate.clone(),
                 )
-                .with_photo_avatar_abandon_port(pixel_photo_avatar_manager.clone()),
+                .with_photo_avatar_abandon_port(route_photo_avatar_ports.clone()),
             );
             let finalization = Arc::new(
                 creation::finalization::CreationFinalizationService::new(
@@ -2000,7 +2118,7 @@ pub fn run() {
                     active.switch_transaction(),
                 )
                 .with_deletion(deletion.clone())
-                .with_photo_avatar(pixel_photo_avatar_manager.clone()),
+                .with_photo_avatar(route_photo_avatar_ports.clone()),
             );
             let recovery = run_startup_recovery(
                 || deletion.cleanup_quarantine(),
@@ -2037,6 +2155,8 @@ pub fn run() {
                 as creation::photo_avatar::manager::SharedPhotoAvatarManager);
             app.manage(pixel_photo_avatar_manager.clone()
                 as creation::photo_avatar::pixel_manager::SharedPixelPhotoAvatarManager);
+            app.manage(frame_photo_avatar_manager.clone()
+                as creation::photo_avatar::frame_manager::SharedFramePhotoAvatarManager);
 
             let manager = generation::tasks::GenerationManager::new(
                 creation_store,
