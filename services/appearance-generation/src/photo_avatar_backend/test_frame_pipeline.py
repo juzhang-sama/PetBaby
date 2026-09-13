@@ -37,6 +37,7 @@ from photo_avatar_backend.frame_pipeline import (  # noqa: E402
     motion_source_path,
     pack_frame_sequence,
     scratch_dir,
+    upload_variant_id,
 )
 from photo_avatar_backend.lk888_client import Lk888Error, MediaState  # noqa: E402
 
@@ -579,3 +580,30 @@ def test_retry_uses_a_fresh_attempt_directory(tmp_path: Path):
     base = video.parent / "pack-frame-sequence"
     assert (base / "attempt-1").is_dir()
     assert (base / "attempt-2").is_dir()
+
+
+def test_the_packed_variant_id_is_the_one_finalization_expects(tmp_path: Path):
+    """安装包时 Rust 侧 finalization 拿 manifest 的 `variantId` 与它自己拼的
+    `photo-avatar-<sessionId>-<revision>` 比对 —— 用 `combo-loop-v1`（内置宠物那个
+    默认值）会在**用户点「接受并安装」**时才炸，前面两步全绿，极难定位。
+
+    这条就是钉住「不要沿用默认值」：真跑一次要 5.69 算力，测试里绝不重跑，
+    只断言打包写进 manifest 的那个值。
+    """
+    state_dir = tmp_path / "state"
+    video = motion_source_path(state_dir, "provider-1")
+    video.parent.mkdir(parents=True)
+    _synth_green_video(video, frames=4)
+
+    artifact = pack_frame_sequence(
+        _request(session_id="session-abc", revision=3),
+        state_dir=state_dir,
+        log=lambda _: None,
+    )
+    manifest = json.loads(
+        (video.parent / "pack-frame-sequence" / "attempt-1" / "10-运行时包" / "manifest.json").read_text(
+            encoding="utf-8"
+        )
+    )
+    assert manifest["variantId"] == "photo-avatar-session-abc-3"
+    assert manifest["variantId"] == upload_variant_id("session-abc", 3)

@@ -366,6 +366,21 @@ def generate_motion_source(
     )
 
 
+def upload_variant_id(session_id: str, revision: int) -> str:
+    """上传生成的宠物包用的 `variantId`。
+
+    ⚠️ 这个拼法必须与 Rust 侧 `finalization.rs::photo_avatar_record` 里的
+    `variant_id` **逐字一致**：安装时 finalization 拿它与 manifest 里的 `variantId`
+    比对，不一致就报 `... preview identity does not match finalization`
+    （第一次真跑到「接受并安装」时才炸，前面全绿）。
+
+    `frames.packing` 的默认值 `combo-loop-v1` 是**内置宠物**那条路的常量：内置包
+    不经过 finalization，variantId 只是「一个变体」的名字。上传生成的包要走
+    finalization，它按「哪次会话的第几版」标识变体 —— 所以这里不能沿用默认值。
+    """
+    return f"photo-avatar-{session_id}-{revision}"
+
+
 def pack_frame_sequence(
     request: FrameStepRequest,
     *,
@@ -400,6 +415,7 @@ def pack_frame_sequence(
         pet_id=request.pet_id,
         display_name=request.display_name,
         species=request.species,
+        variant_id=upload_variant_id(request.session_id, request.revision),
         path_base=state_dir,
         log=log,
     )
