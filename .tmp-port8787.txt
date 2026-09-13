@@ -1,0 +1,2 @@
+﻿8787 not listening
+port 8787 free
