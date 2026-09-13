@@ -1,6 +1,9 @@
 httpx>=0.28
 pillow>=11.3,<11.4
 numpy>=2.4
+# 帧序列抠像（frames/matting.py）用 ndimage.label/sum/binary_closing/binary_opening/
+# gaussian_filter。不加就得重写这几个调用 —— 会改数值行为，不值得。
+scipy>=1.14
 python-dotenv>=1.0
 pytest>=8
 rembg>=2.0

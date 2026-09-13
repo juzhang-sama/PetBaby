@@ -58,11 +58,14 @@ $resolved = Get-Command python -ErrorAction SilentlyContinue
 if ($resolved) { $candidates += $resolved.Source }
 foreach ($candidate in $candidates) {
     if (-not (Test-Path -LiteralPath $candidate -PathType Leaf)) { continue }
-    & $candidate -c "import fastapi, uvicorn, httpx, PIL, numpy" 2>$null
+    # scipy 是帧序列抠像（frames/matting.py 用 ndimage）的依赖。加进探测串之前
+    # 必须先把 scipy 装进「已经有 fastapi 的那个解释器」——否则探测串会跳过它，
+    # 落到没有 fastapi 的 Python312 上，后端直接起不来。
+    & $candidate -c "import fastapi, uvicorn, httpx, PIL, numpy, scipy" 2>$null
     if ($LASTEXITCODE -eq 0) { $pythonExe = $candidate; break }
 }
 if (-not $pythonExe) {
-    Write-Error "未找到已安装后端依赖的 Python 解释器（需要 fastapi/uvicorn/httpx/pillow/numpy，见 services/appearance-generation/requirements.txt）。" -ErrorAction Continue
+    Write-Error "未找到已安装后端依赖的 Python 解释器（需要 fastapi/uvicorn/httpx/pillow/numpy/scipy，见 services/appearance-generation/requirements.txt）。" -ErrorAction Continue
     exit 15
 }
 Write-Output "使用 Python 解释器：$pythonExe"
