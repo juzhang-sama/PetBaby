@@ -20,7 +20,11 @@ from photo_avatar_backend.audit import AuditContextV1  # noqa: E402
 from photo_avatar_backend.app import PipelineRunner, create_app  # noqa: E402
 from photo_avatar_backend.config import BackendConfig  # noqa: E402
 from photo_avatar_backend.contracts import ContractError, StepRequest  # noqa: E402
-from photo_avatar_backend.frame_pipeline import FrameSequenceArtifact  # noqa: E402
+from photo_avatar_backend.frame_pipeline import (  # noqa: E402
+    FramePipelineError,
+    FrameSequenceArtifact,
+    MotionSource,
+)
 from photo_avatar_backend.job_store import JobStore  # noqa: E402
 from photo_avatar_backend.pipelines import TextureArtifact  # noqa: E402
 from photo_avatar_backend.pixel_avatar import PixelAvatarArtifact  # noqa: E402
@@ -613,29 +617,92 @@ def test_frame_sequence_wire_reports_failed_criteria_so_the_client_can_warn(tmp_
     assert body["result"]["failedCriteria"] == ["3-帧间不闪烁", "1-尾巴完整"]
 
 
-def test_motion_source_step_reports_temporary_unavailable_until_implemented(tmp_path: Path):
-    """`generateMotionSource` 还没实现（提示词契约化是下一片）。
+def test_motion_source_step_reports_its_result_without_an_artifact(tmp_path: Path):
+    """`generateMotionSource` **不交付字节**：mp4 留在服务侧 scratch。
 
-    报 `temporaryUnavailable` 而不是 `invalidInput`：**请求本身没错**，
-    是服务还没这个能力 —— 报 invalidInput 会让用户以为自己的照片有问题。
+    客户端要的只是「成了没有 / 是复用还是新跑」。这条 wire 形状就是客户端的全部输入 ——
+    它没有 artifactUrl，所以任何「一个 job 一个 artifact」的假设在这里都不成立。
     """
-    config = BackendConfig(
-        lk888_api_key="provider-secret",
-        backend_token="desktop-only-token",
-        state_dir=tmp_path / "state",
-    )
-    store = JobStore(config.state_dir, runner=PipelineRunner(config))
-    with TestClient(create_app(config, store)) as client:
+
+    class MotionSourceRunner:
+        def run(self, request):
+            return MotionSource(
+                out_dir=tmp_path / "scratch" / "provider-frame-1",
+                video_path=tmp_path / "scratch" / "provider-frame-1" / "motion-source.mp4",
+                master_path=None,
+                first_frame_path=None,
+                master_task_id=None,
+                video_task_id=None,
+                first_frame_scale=None,
+                first_frame_left_margin=None,
+                first_frame_right_margin=None,
+                video_bytes=9_600_000,
+                reused=True,
+            )
+
+        def audit_context(self, request):
+            return AuditContextV1(provider_model="seedance-2.0-guanfang")
+
+    with _client(tmp_path, MotionSourceRunner()) as client:
         created = client.post(
             "/v1/photo-avatar/steps",
-            json=_frame_request(
-                step="generateMotionSource",
-                providerSessionId=None,
-                sourceImages=_request()["sourceImages"],
-            ),
+            json=_frame_request(step="generateMotionSource", providerSessionId=None,
+                                sourceImages=_request()["sourceImages"]),
             headers=AUTH,
         )
         assert created.status_code == 200
+        body = _job_body(client, created.json()["jobId"])
+
+    assert body["state"] == "succeeded", body
+    result = body["result"]
+    assert result["resultType"] == "motionSource"
+    assert result["reused"] is True
+    assert result["videoBytes"] == 9_600_000
+    assert "artifactUrl" not in result
+
+
+def test_motion_source_framing_failure_reaches_the_client_as_invalid_input(tmp_path: Path):
+    """取景收敛全挂 = **照片的问题** → `invalidInput`（重试同一张只会再失败一次）。
+
+    服务故障才是 `temporaryUnavailable`。两者混起来会让客户端要么白重试、
+    要么把好照片劝退。
+    """
+
+    class UnfittableRunner:
+        def run(self, request):
+            raise FramePipelineError("取景收敛失败：请换一张正面坐姿、尾巴收拢的照片。",
+                                     code="invalidInput")
+
+        def audit_context(self, request):
+            return AuditContextV1(provider_model="seedance-2.0-guanfang")
+
+    with _client(tmp_path, UnfittableRunner()) as client:
+        created = client.post(
+            "/v1/photo-avatar/steps",
+            json=_frame_request(step="generateMotionSource", providerSessionId=None,
+                                sourceImages=_request()["sourceImages"]),
+            headers=AUTH,
+        )
+        body = _job_body(client, created.json()["jobId"])
+
+    assert body["state"] == "failed", body
+    assert body["error"]["code"] == "invalidInput"
+
+
+def test_motion_source_internal_failure_stays_retryable(tmp_path: Path):
+    """默认码是 `temporaryUnavailable` —— 没指明原因时保守地当成可重试。"""
+
+    class BrokenRunner:
+        def run(self, request):
+            raise FramePipelineError("上游对象存储 502")
+
+    with _client(tmp_path, BrokenRunner()) as client:
+        created = client.post(
+            "/v1/photo-avatar/steps",
+            json=_frame_request(step="generateMotionSource", providerSessionId=None,
+                                sourceImages=_request()["sourceImages"]),
+            headers=AUTH,
+        )
         body = _job_body(client, created.json()["jobId"])
 
     assert body["state"] == "failed", body

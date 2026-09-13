@@ -25,7 +25,7 @@ from .audit import (
     SemanticAtlasAuditV1,
 )
 from .contracts import ContractError, FrameStepRequest, PixelStepRequest, StepRequest
-from .frame_pipeline import FramePipelineError, FrameSequenceArtifact
+from .frame_pipeline import FramePipelineError, FrameSequenceArtifact, MotionSource
 from .lk888_client import Lk888Error
 from .pixel_audit import PixelAuditError, parse_pixel_avatar_audit
 from .pixel_avatar import PixelAvatarArtifact
@@ -309,6 +309,10 @@ class JobStore:
                     self._persist(job)
                     self._write_terminal_audit(job)
                     return
+            elif isinstance(result, MotionSource):
+                # 这一步不交付字节：mp4 留在服务侧 scratch（不进客户端、不进 artifact），
+                # 状态里只记「成了没有 / 复用还是新跑 / 花了哪两次」。
+                job.result = result.to_wire()
             elif isinstance(result, dict) and job.step in {
                 "analyzeIdentity",
                 "completeAppearance",
@@ -963,6 +967,11 @@ def _safe_error(exc: Exception) -> dict[str, str]:
         return {"code": "invalidInput", "message": _PIXEL_CONTRACT_MESSAGE}
     if isinstance(exc, Lk888Error):
         return {"code": exc.code, "message": "provider failed"}
+    if isinstance(exc, FramePipelineError):
+        # 写实风自己带的码：取景收敛失败是**照片的问题**（`invalidInput`，重试同一张
+        # 只会再失败一次），其余才是服务侧的毛病（`temporaryUnavailable`，可重试）。
+        # 客户端文案（「换一张正面坐姿、尾巴收拢的照片」）是 TS 的事，不在这里编。
+        return {"code": exc.code, "message": "frame pipeline failed"}
     if isinstance(exc, OSError):
         # 落盘失败（写 job 文件被拒/文件句柄失效）是本地存储故障，不是 provider 故障。
         # 单独用 localStorage 错误码，避免误导用户以为是 lk888 服务不可用。

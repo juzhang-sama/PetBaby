@@ -1,0 +1,11 @@
+Use the uploaded photo only as the identity reference for this exact {{COAT_LEN}} {{SPECIES}}. Do not copy the original room, table, lighting, crop, or pose.
+
+Create one full-body desktop-pet character master image in a clearly stylized contemporary 2D illustration style, not a photograph. The style must be visibly different from photorealism: use a clean dark contour line around the silhouette, flat graphic color shapes, simple painted fur masses instead of individual hair strands, and a small number of broad cel-shaded color groups. Use restrained texture and smooth controlled shapes. No photographic pores, no realistic fur strands, no lens rendering, no studio-photo look.
+
+Match the photographed animal's real coat color, pattern, marking layout, and fur length exactly. The overall body must read as the same color and pattern as the photo, neither lightened nor darkened, not washed out and not desaturated. Preserve the exact eye color from the photo; do not invent or change it. Do not add or remove any marking that is not in the photo.
+
+Keep the animal's recognizable identity: the face shape, eye shape and position, ear shape, nose and muzzle shape, tail shape and length, and any distinctive markings from the photo. Preserve the natural anatomy and adult body proportions; do not make it chibi, plush, round, oversized-headed, or cute mascot-like.
+
+Stable compact seated pose, front-facing with a very slight three-quarter angle. Entire head, chest, all four paws, tail root, and tail tip visible. Tail extends naturally to the right and remains clearly connected. Centered in a 1024x1024 square composition with about 8 percent transparent margin.
+
+Output one genuine 1024x1024 RGBA PNG with a fully transparent background. No floor, cast shadow, room, furniture, text, watermark, collar, accessory, glow, gradients, blur, extra limbs, extra tail, crop, or background color. Do not use pixel art.

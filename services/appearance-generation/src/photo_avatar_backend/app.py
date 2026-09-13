@@ -140,7 +140,14 @@ class PipelineRunner:
             # 写实风：两个 step 都自己管 scratch（`state_dir/scratch/<providerSessionId>/`），
             # 中间的 mp4 不上传、不经客户端，重试才能复用。
             if request.step == "generateMotionSource":
-                return generate_motion_source(request, state_dir=self.config.state_dir)
+                return generate_motion_source(
+                    request,
+                    client=self.client,
+                    state_dir=self.config.state_dir,
+                    # 只有那个花钱的视频要上报（一个 job 的 lk888_task_id 是单选，
+                    # 上游删除要用它）。母版 task id 随结果回客户端，追溯够用。
+                    report_task_id=report_task_id,
+                )
             if request.step == "packFrameSequence":
                 return pack_frame_sequence(request, state_dir=self.config.state_dir)
             raise ContractError("unsupported frame step")
@@ -274,6 +281,13 @@ def _job_wire(state: JobState, origin: str) -> dict[str, object]:
                 "width": width,
                 "height": height,
                 "audit": state.audit,
+            }
+        elif state.step == "generateMotionSource" and state.result is not None:
+            # 这一步**没有 artifact**：产物是一支留在服务侧 scratch 里的 mp4，
+            # 一个字节都不往客户端送。客户端要的只是「成了没有 / 是复用还是新跑」。
+            result = {
+                "resultType": "motionSource",
+                **state.result,
             }
         elif (
             state.step == "packFrameSequence"

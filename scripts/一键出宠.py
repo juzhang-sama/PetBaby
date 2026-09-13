@@ -36,7 +36,6 @@ from __future__ import annotations
 import argparse
 import json
 import os
-import re
 import shutil
 import subprocess
 import sys
@@ -51,6 +50,10 @@ BUILTIN_PETS = ROOT / "apps" / "desktop" / "public" / "builtin-pets"
 # 取景余量下限只有一处定义（`frames/__init__.py`，刻意不 import 任何东西）
 sys.path.insert(0, str(ROOT / "services" / "appearance-generation" / "src"))
 from photo_avatar_backend.frames import MIN_FRAMING_MARGIN as MARGIN_MIN  # noqa: E402
+from photo_avatar_backend.frames.prompts import (  # noqa: E402
+    render_loop_prompt,
+    render_master_prompt,
+)
 
 # ⚠️ 不同步骤要的解释器**不一样**，别用一个 PY 常量串到底（2026-09-13 踩过）：
 #   后端服务（母版 / 视频）要 httpx，跑在 managed 的 3.13.12.old.24532；
@@ -77,22 +80,9 @@ MAX_VIDEO_ATTEMPTS = 3
 RETRYABLE_CODES = {"network", "timeout", "provider5xx", "temporaryUnavailable"}
 DEFAULT_VIDEO_MODEL = "seedance-2.0-guanfang-anmiao"   # 按秒计费，总价可预估
 
-COAT_TEXT = {"short": "short-haired", "long": "long-haired"}
-
 
 def log(message: str) -> None:
     print(message, flush=True)
-
-
-# 只认「全大写标识符」形式的占位符（{{SPECIES}}）。模板开头有说明文字写着
-# 「把 {{...}} 替换后整段复制」，那个省略号形式不是占位符，不能当残留报错。
-_PLACEHOLDER = re.compile(r"\{\{[A-Z][A-Z0-9_]*\}\}")
-
-
-def assert_no_placeholder(text: str, path: Path, label: str) -> None:
-    left = sorted(set(_PLACEHOLDER.findall(text)))
-    if left:
-        raise SystemExit(f"[中断] {label}还有未替换的占位符 {left}：{path}")
 
 
 def pick_python(requirements: tuple[str, ...]) -> str:
@@ -174,21 +164,16 @@ def run(cmd: list, label: str, *, ok_codes: tuple[int, ...] = (0,)) -> int:
     return rc
 
 
-def render_master_prompt(species: str, coat: str, template: Path, out: Path) -> Path:
-    text = template.read_text(encoding="utf-8")
-    text = text.replace("{{SPECIES}}", species).replace("{{COAT_LEN}}", COAT_TEXT[coat])
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text, encoding="utf-8")
-    assert_no_placeholder(text, template, "母版提示词")
-    return out
+def write_prompt(path: Path, text: str) -> Path:
+    """把**真正会发出去**的提示词写到产物目录留档。
 
-
-def render_loop_prompt(label: str, template: Path, out: Path) -> Path:
-    text = template.read_text(encoding="utf-8").replace("{{LABEL}}", label)
-    out.parent.mkdir(parents=True, exist_ok=True)
-    out.write_text(text, encoding="utf-8")
-    assert_no_placeholder(text, template, "组合循环提示词")
-    return out
+    渲染交给服务的 `frames.prompts`（唯一真源，`assets/motion-prompts/`）——
+    脚本不再自己切分模板。存档的是渲染结果而不是模板，因为只有结果才是
+    「这次到底发了什么」的证据。
+    """
+    path.parent.mkdir(parents=True, exist_ok=True)
+    path.write_text(text, encoding="utf-8")
+    return path
 
 
 def step_master(photo: Path, prompt_file: Path, out_dir: Path) -> Path:
@@ -342,8 +327,6 @@ def main() -> int:
     parser.add_argument("--coat", default="short", choices=["short", "long"],
                         help="毛长档位，只影响母版提示词")
     parser.add_argument("--outdir", required=True, help="本次出宠的产物根目录")
-    parser.add_argument("--master-prompt", default="output/_通用母版提示词-2026-09-12.txt")
-    parser.add_argument("--loop-prompt", default="output/_通用组合循环提示词-2026-09-12.txt")
     parser.add_argument("--video-model", default=DEFAULT_VIDEO_MODEL,
                         help="按秒版默认值；换 seedance-2.0-guanfang 会变按 token 计费、总价不可预估")
     parser.add_argument("--version", default="标准", choices=["Mini", "快速", "标准"])
@@ -370,13 +353,6 @@ def main() -> int:
     out_root = (ROOT / args.outdir).resolve() if not Path(args.outdir).is_absolute() \
         else Path(args.outdir)
     out_root.mkdir(parents=True, exist_ok=True)
-
-    master_template = (ROOT / args.master_prompt).resolve()
-    loop_template = (ROOT / args.loop_prompt).resolve()
-    if not args.reuse_video:
-        for template in (master_template, loop_template):
-            if not template.is_file():
-                raise SystemExit(f"[缺输入] 提示词模板不存在：{template}")
 
     if not args.yes:
         log("[确认] 本流程会产生 lk888 API 费用：")
@@ -427,20 +403,23 @@ def main() -> int:
         log(f"[续跑] 跳过 母版/首帧/视频，直接用已有视频：{video}")
         summary["stages"]["video"] = str(video.relative_to(ROOT))
     else:
-        master_prompt = render_master_prompt(
-            args.species, args.coat, master_template,
+        master_prompt_file = write_prompt(
             out_root / "02-提示词" / "母版提示词.txt",
+            render_master_prompt(args.species, args.coat),
         )
-        master = step_master(photo, master_prompt, out_root / "00-母版")
+        master = step_master(photo, master_prompt_file, out_root / "00-母版")
         enforce_budget("母版")
         summary["stages"]["master"] = str(master.relative_to(ROOT))
 
         frame = converge_framing(master, out_root / "01-首帧")
         summary["stages"]["firstFrame"] = str(frame.relative_to(ROOT))
 
-        loop_prompt = render_loop_prompt(
-            args.name, loop_template,
+        # 这里写的是**最终提示词**（负向词已经拼在末尾）。`poc_生成绿幕视频.py`
+        # 的 `build_prompt` 找不到 `【主提示词】` 标题时按「整份直接用」处理 ——
+        # 正是我们要的：提示词只由服务渲染一处，脚本不再二次切分。
+        loop_prompt = write_prompt(
             out_root / "02-提示词" / "Seedance提示词-01-组合循环.txt",
+            render_loop_prompt(),
         )
 
         video = step_video(frame, loop_prompt, out_root / "03-视频", args)
