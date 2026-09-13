@@ -16,7 +16,6 @@
 """
 from __future__ import annotations
 
-import hashlib
 import json
 import shutil
 import subprocess
@@ -28,6 +27,8 @@ from typing import Callable
 import numpy as np
 from PIL import Image
 from scipy import ndimage
+
+from ._paths import rel_to, sha256_of
 
 FFMPEG = shutil.which("ffmpeg") or "ffmpeg"
 FFPROBE = shutil.which("ffprobe") or "ffprobe"
@@ -361,28 +362,6 @@ def rvm_alpha(frames: list[np.ndarray]) -> list[np.ndarray]:
 
 def sam2_alpha(frames: list[np.ndarray]) -> list[np.ndarray]:
     method_not_supported("sam2")
-
-
-def rel_to(path: Path, base: Path | None) -> str:
-    """`base` 给了就输出相对它的路径，否则输出绝对路径。
-
-    服务层不该知道仓库布局，所以基准目录由调用方传（CLI 传仓库根，保持旧输出不变）。
-    """
-    resolved = Path(path).resolve()
-    if base is None:
-        return str(resolved)
-    try:
-        return str(resolved.relative_to(Path(base).resolve()))
-    except ValueError:
-        return str(resolved)
-
-
-def sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 @dataclass(frozen=True)

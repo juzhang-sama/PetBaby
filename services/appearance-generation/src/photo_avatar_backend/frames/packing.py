@@ -16,6 +16,8 @@ import shutil
 from dataclasses import dataclass
 from pathlib import Path
 
+from ._paths import sha256_of
+
 FRAME_MS = 42
 
 # 产品会发出的全部动作（唯一真源：apps/desktop/src/runtime/pet-presentation-controller.ts）。
@@ -49,14 +51,6 @@ class PackedFrameSequence:
     @property
     def duration_ms(self) -> int:
         return self.frame_duration_ms * self.frame_count
-
-
-def sha256_of(path: Path) -> str:
-    digest = hashlib.sha256()
-    with path.open("rb") as handle:
-        for chunk in iter(lambda: handle.read(1 << 20), b""):
-            digest.update(chunk)
-    return digest.hexdigest()
 
 
 def _require_safe_id(value: str, label: str) -> str:
