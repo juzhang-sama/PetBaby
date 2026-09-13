@@ -289,6 +289,56 @@ impl FrameRemoteStep {
     }
 }
 
+/// 写实风（`frame-video-v1`）的状态机。
+///
+/// 与 `PixelPhotoAvatarStep` 的差别只有两处，都是刻意的：
+/// - 两个远端 step 换成 `GenerateMotionSource` / `PackFrameSequence`；
+/// - **没有 `QualityCheckPending`** —— 四项验收是 `packFrameSequence` **自己**做的
+///   （结论随 artifact 一起回来），不需要再插一个本地等待态。
+///
+/// 后半段（`RuntimeCheckPending` → `PreviewReady` → `CleanupPending` → `Completed`）
+/// 与像素风**逐字相同**：那是「人工确认 + 安装」这条共享流程的词汇表，
+/// 两边不一样的话 `CreationFinalizationService` 就得为每条产线写一套。
+#[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase")]
+pub enum FramePhotoAvatarStep {
+    GenerateMotionSource,
+    PackFrameSequence,
+    RuntimeCheckPending,
+    PreviewReady,
+    CleanupPending,
+    Completed,
+    Failed,
+    Cancelled,
+}
+
+/// 写实风的进度快照（回给客户端的那份）。
+///
+/// ⚠️ **刻意不带四项验收的结论**（`overallPassed` / `failedCriteria`）——
+/// 那两项目前只活在这次 `packFrameSequence` 的 result 里，客户端要「检测到哪条异常」
+/// 的时候再加（那时才知道 UI 到底怎么用）。`FrameSequence` 那个 result 已经带着了。
+#[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct FramePhotoAvatarSnapshot {
+    pub route: String,
+    pub session_id: String,
+    pub revision: u32,
+    pub step: FramePhotoAvatarStep,
+    pub provider_job_id: Option<String>,
+    pub attempts: BTreeMap<FrameRemoteStep, u32>,
+    pub error_code: Option<PhotoAvatarErrorCode>,
+    pub error_message: Option<String>,
+}
+
+/// 帧路线刚开出来的一次 run（`begin_frame_revision` 的返回值）。
+#[derive(Debug, Clone, PartialEq, Eq)]
+pub struct FramePhotoAvatarRun {
+    pub session_id: String,
+    pub revision: u32,
+    pub step: FramePhotoAvatarStep,
+    pub generation_token: String,
+}
+
 #[derive(Debug, Clone, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase", deny_unknown_fields)]
 pub struct PixelPhotoAvatarSnapshot {

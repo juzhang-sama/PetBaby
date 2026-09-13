@@ -1,5 +1,6 @@
 use super::domain::{
     parse_appearance_profile_v1, parse_pixel_appearance_profile_v1, AppearanceProfileV1,
+    FramePhotoAvatarRun, FramePhotoAvatarSnapshot, FramePhotoAvatarStep, FrameRemoteStep,
     IdentityTraitKey, PhotoAvatarAttemptStep, PhotoAvatarErrorCode, PhotoAvatarSnapshot,
     PhotoAvatarStep, PixelAppearanceProfileV1, PixelIdentityTraitKey, PixelPhotoAvatarSnapshot,
     PixelPhotoAvatarStep, PixelRemoteStep, PixelStyleProfileId, DEFAULT_PIXEL_STYLE_ID,
@@ -17,6 +18,16 @@ use std::sync::{Arc, Mutex};
 pub type SharedPhotoAvatarStore = Arc<Mutex<PhotoAvatarStore>>;
 pub(crate) const ACTIVE_ATTEMPT_ERROR: &str = "photo avatar attempt already active";
 const LEGACY_PARTIAL_CREATED_AT_PREFIX: &str = "legacy-partial-migration:";
+
+/// 两条产线的 route 名与错误串前缀，供 route 通用层使用。
+///
+/// `label` 只影响**报错的说法**（`"pixel avatar run is not current"`）。
+/// 放成常量是为了别把同一个字符串散落到六处 SQL 调用点上 ——
+/// 散出去之后改一处忘一处，报错就会一半一个腔调。
+const PIXEL_ROUTE: &str = "pixel-v1";
+const PIXEL_LABEL: &str = "pixel avatar";
+const FRAME_ROUTE: &str = "frame-video-v1";
+const FRAME_LABEL: &str = "frame video";
 
 #[cfg(test)]
 struct AfterPreviewManifestReadHook {
@@ -86,6 +97,21 @@ pub struct PixelPhotoAvatarRun {
 #[derive(Clone)]
 pub struct PhotoAvatarStore {
     storage: Arc<Mutex<Storage>>,
+}
+
+/// `photo_avatar_runs` 一行的**原始字符串形态**（route 通用层读出来的东西）。
+///
+/// 刻意不带路线类型：同一个 SELECT 服务像素与写实风两条产线，各自在自己的
+/// `*_snapshot` 里把它翻成自己的枚举。`style_profile_id` 是 `Option` ——
+/// 写实风没有画风档位，那一列是 NULL。
+#[derive(Debug, Clone, PartialEq, Eq)]
+struct PhotoAvatarRunRow {
+    revision: u32,
+    step: String,
+    style_profile_id: Option<String>,
+    provider_job_id: Option<String>,
+    error_code: Option<String>,
+    error_message: Option<String>,
 }
 
 #[derive(Debug, Clone, PartialEq, Eq)]
@@ -328,6 +354,276 @@ impl PhotoAvatarStore {
         })
     }
 
+    // ---------------------------------------------------------- route 通用层
+    //
+    // `pixel_*` 与 `frame_*` 两套方法都是下面这几个的薄壳。
+    //
+    // 为什么不各写一份 SQL：**状态机漂移是必然的** —— 哪天在一边加了
+    // 「有活跃 attempt 就拒」这类规则，另一边不会有，而两边代码读起来一模一样，
+    // review 时根本看不出来。共用一份 I/O，各自的**类型化**留在自己的重载里。
+    //
+    // `label` 是错误串前缀（`"pixel avatar"` / `"frame video"`）：让每条产线
+    // 保留自己的说法，又不至于把字符串拆到两处维护。
+    //
+    // ⚠️ `step` 一律以**字符串**进出：合法取值由表上的 CHECK 看着，
+    // Rust 侧不再抄一份白名单 —— 抄一份就是第二个会漂移的地方。
+
+    fn set_route_provider_job(
+        &self,
+        session_id: &str,
+        revision: u32,
+        route: &str,
+        provider_session_id: Option<&str>,
+        provider_job_id: Option<&str>,
+        label: &str,
+    ) -> Result<(), String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let updated = storage
+            .db
+            .execute(
+                "UPDATE photo_avatar_runs
+                 SET provider_session_id=COALESCE(?3, provider_session_id), provider_job_id=?4,
+                     updated_at=?5
+                 WHERE session_id=?1 AND revision=?2 AND route=?6",
+                params![
+                    session_id,
+                    revision,
+                    provider_session_id,
+                    provider_job_id,
+                    now_iso(),
+                    route
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        if updated != 1 {
+            return Err(format!("{label} run is not current"));
+        }
+        Ok(())
+    }
+
+    fn set_route_step(
+        &self,
+        session_id: &str,
+        revision: u32,
+        route: &str,
+        step: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let updated = storage
+            .db
+            .execute(
+                "UPDATE photo_avatar_runs SET step=?3, provider_job_id=NULL, updated_at=?4
+                 WHERE session_id=?1 AND revision=?2 AND route=?5",
+                params![session_id, revision, step, now_iso(), route],
+            )
+            .map_err(|error| error.to_string())?;
+        if updated != 1 {
+            return Err(format!("{label} run is not current"));
+        }
+        Ok(())
+    }
+
+    fn fail_route_if_active(
+        &self,
+        session_id: &str,
+        revision: u32,
+        route: &str,
+    ) -> Result<bool, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let updated = storage
+            .db
+            .execute(
+                "UPDATE photo_avatar_runs SET step='failed', provider_job_id=NULL, updated_at=?3
+                 WHERE session_id=?1 AND revision=?2 AND route=?4
+                   AND step NOT IN ('cancelled','completed','failed')",
+                params![session_id, revision, now_iso(), route],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(updated == 1)
+    }
+
+    fn fail_route_with_error_if_active(
+        &self,
+        session_id: &str,
+        revision: u32,
+        route: &str,
+        code: PhotoAvatarErrorCode,
+        message: &str,
+        label: &str,
+    ) -> Result<bool, String> {
+        let message = message.trim();
+        if message.is_empty() || message.len() > 256 || message.contains(['\r', '\n']) {
+            return Err(format!("{label} failure message is invalid"));
+        }
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let updated = storage
+            .db
+            .execute(
+                "UPDATE photo_avatar_runs
+                 SET step='failed', provider_job_id=NULL, error_code=?3, error_message=?4,
+                     updated_at=?5
+                 WHERE session_id=?1 AND revision=?2 AND route=?6
+                   AND step NOT IN ('cancelled','completed','failed')",
+                params![
+                    session_id,
+                    revision,
+                    error_code_as_str(code),
+                    message,
+                    now_iso(),
+                    route
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(updated == 1)
+    }
+
+    fn commit_route_artifact(
+        &self,
+        session_id: &str,
+        revision: u32,
+        route: &str,
+        kind: &str,
+        relative_path: &str,
+        sha256: &str,
+        label: &str,
+    ) -> Result<(), String> {
+        if relative_path.trim().is_empty() || !is_lower_hex(sha256) {
+            return Err(format!("invalid {label} artifact"));
+        }
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        storage
+            .db
+            .execute(
+                "INSERT INTO photo_avatar_artifacts
+                 (session_id, revision, route, kind, relative_path, sha256, created_at)
+                 VALUES (?1, ?2, ?3, ?4, ?5, ?6, ?7)
+                 ON CONFLICT(session_id, revision, route, kind) DO UPDATE SET
+                   relative_path=excluded.relative_path, sha256=excluded.sha256,
+                   created_at=excluded.created_at",
+                params![
+                    session_id,
+                    revision,
+                    route,
+                    kind,
+                    relative_path,
+                    sha256,
+                    now_iso()
+                ],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
+    /// 占一个 attempt 名额并返回它的序号（1..=3）。
+    ///
+    /// 「当前 step 必须等于要占的 step」这条闸口也在这里 —— 走错步骤 = 状态机坏了，
+    /// 不能让它悄悄写进 attempts 表。
+    fn reserve_route_attempt(
+        &self,
+        session_id: &str,
+        revision: u32,
+        route: &str,
+        step: &str,
+        label: &str,
+    ) -> Result<u8, String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let active: Option<String> = tx
+            .query_row(
+                "SELECT step FROM photo_avatar_runs
+                 WHERE session_id=?1 AND revision=?2 AND route=?3",
+                params![session_id, revision, route],
+                |row| row.get(0),
+            )
+            .optional()
+            .map_err(|error| error.to_string())?;
+        if active.as_deref() != Some(step) {
+            return Err(format!("{label} run is not current"));
+        }
+        let count: i64 = tx
+            .query_row(
+                "SELECT COUNT(*) FROM photo_avatar_step_attempts
+                 WHERE session_id=?1 AND revision=?2 AND route=?3 AND step=?4",
+                params![session_id, revision, route, step],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if count >= 3 {
+            return Err(format!("{label} remote step already has three attempts"));
+        }
+        let attempt = count as u8 + 1;
+        tx.execute(
+            "INSERT INTO photo_avatar_step_attempts
+             (session_id, revision, route, step, attempt_no, status, retryable, started_at)
+             VALUES (?1, ?2, ?3, ?4, ?5, 'submitted', 1, ?6)",
+            params![session_id, revision, route, step, attempt, now_iso()],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(attempt)
+    }
+
+    /// run 行的**原始字符串形态**。各条路线自己把它转成自己的类型。
+    fn run_row(
+        &self,
+        session_id: &str,
+        route: &str,
+    ) -> Result<Option<PhotoAvatarRunRow>, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        storage
+            .db
+            .query_row(
+                "SELECT revision, step, style_profile_id, provider_job_id, error_code, error_message
+                 FROM photo_avatar_runs WHERE session_id=?1 AND route=?2",
+                params![session_id, route],
+                |row| {
+                    Ok(PhotoAvatarRunRow {
+                        revision: row.get(0)?,
+                        step: row.get(1)?,
+                        style_profile_id: row.get(2)?,
+                        provider_job_id: row.get(3)?,
+                        error_code: row.get(4)?,
+                        error_message: row.get(5)?,
+                    })
+                },
+            )
+            .optional()
+            .map_err(|error| error.to_string())
+    }
+
+    /// 每条 step 已用掉的 attempt 数（取 max attempt_no）。键是 step 的字符串名，
+    /// 由调用方翻成自己的枚举。
+    fn attempt_counts(
+        &self,
+        session_id: &str,
+        revision: u32,
+        route: &str,
+    ) -> Result<std::collections::BTreeMap<String, u32>, String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let mut counts = std::collections::BTreeMap::new();
+        let mut statement = storage
+            .db
+            .prepare(
+                "SELECT step, MAX(attempt_no) FROM photo_avatar_step_attempts
+                 WHERE session_id=?1 AND revision=?2 AND route=?3 GROUP BY step",
+            )
+            .map_err(|error| error.to_string())?;
+        let rows = statement
+            .query_map(params![session_id, revision, route], |attempt| {
+                Ok((attempt.get::<_, String>(0)?, attempt.get::<_, u32>(1)?))
+            })
+            .map_err(|error| error.to_string())?;
+        for attempt in rows {
+            let (step, count) = attempt.map_err(|error| error.to_string())?;
+            counts.insert(step, count);
+        }
+        Ok(counts)
+    }
+
     pub fn begin_pixel_revision(
         &self,
         session_id: &str,
@@ -421,44 +717,7 @@ impl PhotoAvatarStore {
             PixelRemoteStep::AnalyzeIdentity => "analyzeIdentity",
             PixelRemoteStep::GeneratePixelAvatar => "generatePixelAvatar",
         };
-        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let tx = storage
-            .db
-            .transaction()
-            .map_err(|error| error.to_string())?;
-        let active: Option<String> = tx
-            .query_row(
-                "SELECT step FROM photo_avatar_runs WHERE session_id=?1 AND revision=?2
-                 AND route='pixel-v1'",
-                params![session_id, revision],
-                |row| row.get(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
-        if active.as_deref() != Some(step_name) {
-            return Err("pixel avatar run is not current".into());
-        }
-        let count: i64 = tx
-            .query_row(
-                "SELECT COUNT(*) FROM photo_avatar_step_attempts
-                 WHERE session_id=?1 AND revision=?2 AND route='pixel-v1' AND step=?3",
-                params![session_id, revision, step_name],
-                |row| row.get(0),
-            )
-            .map_err(|error| error.to_string())?;
-        if count >= 3 {
-            return Err("pixel avatar remote step already has three attempts".into());
-        }
-        let attempt = count as u8 + 1;
-        tx.execute(
-            "INSERT INTO photo_avatar_step_attempts
-             (session_id, revision, route, step, attempt_no, status, retryable, started_at)
-             VALUES (?1, ?2, 'pixel-v1', ?3, ?4, 'submitted', 1, ?5)",
-            params![session_id, revision, step_name, attempt, now_iso()],
-        )
-        .map_err(|error| error.to_string())?;
-        tx.commit().map_err(|error| error.to_string())?;
-        Ok(attempt)
+        self.reserve_route_attempt(session_id, revision, PIXEL_ROUTE, step_name, PIXEL_LABEL)
     }
 
     pub fn commit_pixel_profile(
@@ -503,23 +762,15 @@ impl PhotoAvatarStore {
         relative_path: &str,
         sha256: &str,
     ) -> Result<(), String> {
-        if relative_path.trim().is_empty() || !is_lower_hex(sha256) {
-            return Err("invalid pixel avatar artifact".into());
-        }
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        storage
-            .db
-            .execute(
-                "INSERT INTO photo_avatar_artifacts
-                 (session_id, revision, route, kind, relative_path, sha256, created_at)
-                 VALUES (?1, ?2, 'pixel-v1', 'pixelAvatar', ?3, ?4, ?5)
-                 ON CONFLICT(session_id, revision, route, kind) DO UPDATE SET
-                   relative_path=excluded.relative_path, sha256=excluded.sha256,
-                   created_at=excluded.created_at",
-                params![session_id, revision, relative_path, sha256, now_iso()],
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(())
+        self.commit_route_artifact(
+            session_id,
+            revision,
+            PIXEL_ROUTE,
+            "pixelAvatar",
+            relative_path,
+            sha256,
+            PIXEL_LABEL,
+        )
     }
 
     pub fn set_pixel_provider_job(
@@ -529,27 +780,14 @@ impl PhotoAvatarStore {
         provider_session_id: Option<&str>,
         provider_job_id: Option<&str>,
     ) -> Result<(), String> {
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let updated = storage
-            .db
-            .execute(
-                "UPDATE photo_avatar_runs
-                 SET provider_session_id=COALESCE(?3, provider_session_id), provider_job_id=?4,
-                     updated_at=?5
-                 WHERE session_id=?1 AND revision=?2 AND route='pixel-v1'",
-                params![
-                    session_id,
-                    revision,
-                    provider_session_id,
-                    provider_job_id,
-                    now_iso()
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        if updated != 1 {
-            return Err("pixel avatar run is not current".into());
-        }
-        Ok(())
+        self.set_route_provider_job(
+            session_id,
+            revision,
+            PIXEL_ROUTE,
+            provider_session_id,
+            provider_job_id,
+            PIXEL_LABEL,
+        )
     }
 
     pub fn set_pixel_step(
@@ -558,20 +796,13 @@ impl PhotoAvatarStore {
         revision: u32,
         step: PixelPhotoAvatarStep,
     ) -> Result<(), String> {
-        let step_name = pixel_step_as_str(step);
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let updated = storage
-            .db
-            .execute(
-                "UPDATE photo_avatar_runs SET step=?3, provider_job_id=NULL, updated_at=?4
-                 WHERE session_id=?1 AND revision=?2 AND route='pixel-v1'",
-                params![session_id, revision, step_name, now_iso()],
-            )
-            .map_err(|error| error.to_string())?;
-        if updated != 1 {
-            return Err("pixel avatar run is not current".into());
-        }
-        Ok(())
+        self.set_route_step(
+            session_id,
+            revision,
+            PIXEL_ROUTE,
+            pixel_step_as_str(step),
+            PIXEL_LABEL,
+        )
     }
 
     pub fn fail_pixel_revision_if_active(
@@ -579,17 +810,7 @@ impl PhotoAvatarStore {
         session_id: &str,
         revision: u32,
     ) -> Result<bool, String> {
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let updated = storage
-            .db
-            .execute(
-                "UPDATE photo_avatar_runs SET step='failed', provider_job_id=NULL, updated_at=?3
-                 WHERE session_id=?1 AND revision=?2 AND route='pixel-v1'
-                   AND step NOT IN ('cancelled','completed','failed')",
-                params![session_id, revision, now_iso()],
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(updated == 1)
+        self.fail_route_if_active(session_id, revision, PIXEL_ROUTE)
     }
 
     pub fn fail_pixel_revision_with_error_if_active(
@@ -599,100 +820,240 @@ impl PhotoAvatarStore {
         code: PhotoAvatarErrorCode,
         message: &str,
     ) -> Result<bool, String> {
-        let message = message.trim();
-        if message.is_empty() || message.len() > 256 || message.contains(['\r', '\n']) {
-            return Err("pixel avatar failure message is invalid".into());
-        }
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let updated = storage
-            .db
-            .execute(
-                "UPDATE photo_avatar_runs
-                 SET step='failed', provider_job_id=NULL, error_code=?3, error_message=?4,
-                     updated_at=?5
-                 WHERE session_id=?1 AND revision=?2 AND route='pixel-v1'
-                   AND step NOT IN ('cancelled','completed','failed')",
-                params![
-                    session_id,
-                    revision,
-                    error_code_as_str(code),
-                    message,
-                    now_iso()
-                ],
-            )
-            .map_err(|error| error.to_string())?;
-        Ok(updated == 1)
+        self.fail_route_with_error_if_active(
+            session_id,
+            revision,
+            PIXEL_ROUTE,
+            code,
+            message,
+            PIXEL_LABEL,
+        )
     }
 
     pub fn pixel_snapshot(&self, session_id: &str) -> Result<PixelPhotoAvatarSnapshot, String> {
-        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
-        let row: (u32, String, String, Option<String>, Option<String>, Option<String>) = storage
-            .db
-            .query_row(
-                "SELECT revision, step, style_profile_id, provider_job_id, error_code, error_message
-                 FROM photo_avatar_runs WHERE session_id=?1 AND route='pixel-v1'",
-                [session_id],
-                |row| {
-                    Ok((
-                        row.get(0)?,
-                        row.get(1)?,
-                        row.get(2)?,
-                        row.get(3)?,
-                        row.get(4)?,
-                        row.get(5)?,
-                    ))
-                },
-            )
-            .optional()
-            .map_err(|error| error.to_string())?
+        let row = self
+            .run_row(session_id, PIXEL_ROUTE)?
             .ok_or("pixel avatar run does not exist")?;
-        let profile_json: Option<String> = storage
-            .db
-            .query_row(
-                "SELECT profile_json FROM photo_avatar_profiles
-                 WHERE session_id=?1 AND revision=?2 AND route='pixel-v1'",
-                params![session_id, row.0],
-                |profile| profile.get(0),
-            )
-            .optional()
-            .map_err(|error| error.to_string())?;
+        let profile_json: Option<String> = {
+            let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+            storage
+                .db
+                .query_row(
+                    "SELECT profile_json FROM photo_avatar_profiles
+                     WHERE session_id=?1 AND revision=?2 AND route=?3",
+                    params![session_id, row.revision, PIXEL_ROUTE],
+                    |profile| profile.get(0),
+                )
+                .optional()
+                .map_err(|error| error.to_string())?
+        };
         let profile = profile_json
             .as_deref()
             .map(parse_pixel_appearance_profile_v1)
             .transpose()?;
         let mut attempts = std::collections::BTreeMap::new();
-        let mut statement = storage
-            .db
-            .prepare(
-                "SELECT step, MAX(attempt_no) FROM photo_avatar_step_attempts
-                 WHERE session_id=?1 AND revision=?2 AND route='pixel-v1' GROUP BY step",
-            )
-            .map_err(|error| error.to_string())?;
-        let rows = statement
-            .query_map(params![session_id, row.0], |attempt| {
-                Ok((attempt.get::<_, String>(0)?, attempt.get::<_, u32>(1)?))
-            })
-            .map_err(|error| error.to_string())?;
-        for attempt in rows {
-            let (step, count) = attempt.map_err(|error| error.to_string())?;
+        for (step, count) in self.attempt_counts(session_id, row.revision, PIXEL_ROUTE)? {
             attempts.insert(pixel_remote_step_from_db(&step)?, count);
         }
         Ok(PixelPhotoAvatarSnapshot {
-            route: "pixel-v1".into(),
-            style_profile_id: PixelStyleProfileId::parse(&row.2)?,
+            route: PIXEL_ROUTE.into(),
+            // `style_profile_id` 现在是可空列（写实风那行是 NULL），但**像素行一律非空**：
+            // 它在 begin_pixel_revision 里必写。真空了就说明数据坏了，说清楚比给默认值好。
+            style_profile_id: PixelStyleProfileId::parse(
+                row.style_profile_id
+                    .as_deref()
+                    .ok_or("pixel avatar run has no style profile")?,
+            )?,
             session_id: session_id.into(),
-            revision: row.0,
-            step: pixel_step_from_db(&row.1)?,
-            provider_job_id: row.3,
+            revision: row.revision,
+            step: pixel_step_from_db(&row.step)?,
+            provider_job_id: row.provider_job_id,
             profile,
             attempts,
             error_code: row
-                .4
+                .error_code
                 .as_deref()
                 .map(photo_avatar_error_code_from_db)
                 .transpose()?,
-            error_message: row.5,
+            error_message: row.error_message,
         })
+    }
+
+    // ------------------------------------------------------------ 写实风
+    //
+    // 与像素风共用同一套表与同一层 route 通用 I/O，差别只在**类型化**与
+    // 「哪些列写、哪些列空着」。
+
+    /// 写实风开一次 revision。
+    ///
+    /// 与 `begin_pixel_revision` 的三处差别，都是**刻意清空**而不是省事：
+    /// - `style_profile_id = NULL`：写实风没有画风档位（NULL 才是诚实的「不适用」）；
+    /// - `modification_instruction` / `locked_trait_keys_json = NULL`：写实风没有
+    ///   trait 档案，「改指令」这条路不适用；
+    /// - 起始 step 是 `generateMotionSource`。
+    ///
+    /// ⚠️ 这些 `= NULL` 写在 `DO UPDATE SET` 里是**必须的**：`runs` 的 PK 是
+    /// `session_id`，同一条 session 从像素风换到写实风时是**覆盖**那一行 ——
+    /// 不清就会把上一次的像素档案留在写实风的行上。
+    pub fn begin_frame_revision(&self, session_id: &str) -> Result<FramePhotoAvatarRun, String> {
+        let mut storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        let tx = storage
+            .db
+            .transaction()
+            .map_err(|error| error.to_string())?;
+        let exists: bool = tx
+            .query_row(
+                "SELECT EXISTS(SELECT 1 FROM creation_sessions WHERE session_id=?1)",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        if !exists {
+            return Err("photo avatar session does not exist".into());
+        }
+        let previous: Option<i64> = tx
+            .query_row(
+                "SELECT MAX(revision) FROM photo_avatar_runs WHERE session_id=?1",
+                [session_id],
+                |row| row.get(0),
+            )
+            .map_err(|error| error.to_string())?;
+        let revision = previous.unwrap_or(0) + 1;
+        let token: String = tx
+            .query_row("SELECT lower(hex(randomblob(32)))", [], |row| row.get(0))
+            .map_err(|error| format!("generate frame video token: {error}"))?;
+        tx.execute(
+            "INSERT INTO photo_avatar_runs
+             (session_id, revision, route, step, generation_token, updated_at)
+             VALUES (?1, ?2, ?3, 'generateMotionSource', ?4, ?5)
+             ON CONFLICT(session_id) DO UPDATE SET
+               revision=excluded.revision, route=excluded.route,
+               style_profile_id=NULL, step=excluded.step,
+               provider_session_id=NULL, provider_job_id=NULL,
+               generation_token=excluded.generation_token,
+               modification_instruction=NULL, locked_trait_keys_json=NULL,
+               error_code=NULL, error_message=NULL, updated_at=excluded.updated_at",
+            params![session_id, revision, FRAME_ROUTE, token, now_iso()],
+        )
+        .map_err(|error| error.to_string())?;
+        tx.commit().map_err(|error| error.to_string())?;
+        Ok(FramePhotoAvatarRun {
+            session_id: session_id.into(),
+            revision: revision as u32,
+            step: FramePhotoAvatarStep::GenerateMotionSource,
+            generation_token: token,
+        })
+    }
+
+    pub fn frame_snapshot(&self, session_id: &str) -> Result<FramePhotoAvatarSnapshot, String> {
+        let row = self
+            .run_row(session_id, FRAME_ROUTE)?
+            .ok_or("frame video run does not exist")?;
+        let mut attempts = std::collections::BTreeMap::new();
+        for (step, count) in self.attempt_counts(session_id, row.revision, FRAME_ROUTE)? {
+            attempts.insert(frame_remote_step_from_db(&step)?, count);
+        }
+        Ok(FramePhotoAvatarSnapshot {
+            route: FRAME_ROUTE.into(),
+            session_id: session_id.into(),
+            revision: row.revision,
+            step: frame_step_from_db(&row.step)?,
+            provider_job_id: row.provider_job_id,
+            attempts,
+            error_code: row
+                .error_code
+                .as_deref()
+                .map(photo_avatar_error_code_from_db)
+                .transpose()?,
+            error_message: row.error_message,
+        })
+    }
+
+    pub fn reserve_frame_attempt(
+        &self,
+        session_id: &str,
+        revision: u32,
+        step: FrameRemoteStep,
+    ) -> Result<u8, String> {
+        self.reserve_route_attempt(session_id, revision, FRAME_ROUTE, step.as_str(), FRAME_LABEL)
+    }
+
+    pub fn set_frame_provider_job(
+        &self,
+        session_id: &str,
+        revision: u32,
+        provider_session_id: Option<&str>,
+        provider_job_id: Option<&str>,
+    ) -> Result<(), String> {
+        self.set_route_provider_job(
+            session_id,
+            revision,
+            FRAME_ROUTE,
+            provider_session_id,
+            provider_job_id,
+            FRAME_LABEL,
+        )
+    }
+
+    pub fn set_frame_step(
+        &self,
+        session_id: &str,
+        revision: u32,
+        step: FramePhotoAvatarStep,
+    ) -> Result<(), String> {
+        self.set_route_step(
+            session_id,
+            revision,
+            FRAME_ROUTE,
+            frame_step_as_str(step),
+            FRAME_LABEL,
+        )
+    }
+
+    /// 记下 `packFrameSequence` 交付的那支 zip。
+    ///
+    /// `kind = 'frameSequence'`（v14 才放进 CHECK 的取值）。
+    pub fn commit_frame_artifact(
+        &self,
+        session_id: &str,
+        revision: u32,
+        relative_path: &str,
+        sha256: &str,
+    ) -> Result<(), String> {
+        self.commit_route_artifact(
+            session_id,
+            revision,
+            FRAME_ROUTE,
+            "frameSequence",
+            relative_path,
+            sha256,
+            FRAME_LABEL,
+        )
+    }
+
+    pub fn fail_frame_revision_if_active(
+        &self,
+        session_id: &str,
+        revision: u32,
+    ) -> Result<bool, String> {
+        self.fail_route_if_active(session_id, revision, FRAME_ROUTE)
+    }
+
+    pub fn fail_frame_revision_with_error_if_active(
+        &self,
+        session_id: &str,
+        revision: u32,
+        code: PhotoAvatarErrorCode,
+        message: &str,
+    ) -> Result<bool, String> {
+        self.fail_route_with_error_if_active(
+            session_id,
+            revision,
+            FRAME_ROUTE,
+            code,
+            message,
+            FRAME_LABEL,
+        )
     }
 
     pub fn reserve_attempt(
@@ -2118,6 +2479,41 @@ fn pixel_remote_step_from_db(value: &str) -> Result<PixelRemoteStep, String> {
     }
 }
 
+fn frame_step_as_str(step: FramePhotoAvatarStep) -> &'static str {
+    match step {
+        FramePhotoAvatarStep::GenerateMotionSource => "generateMotionSource",
+        FramePhotoAvatarStep::PackFrameSequence => "packFrameSequence",
+        FramePhotoAvatarStep::RuntimeCheckPending => "runtimeCheckPending",
+        FramePhotoAvatarStep::PreviewReady => "previewReady",
+        FramePhotoAvatarStep::CleanupPending => "cleanupPending",
+        FramePhotoAvatarStep::Completed => "completed",
+        FramePhotoAvatarStep::Failed => "failed",
+        FramePhotoAvatarStep::Cancelled => "cancelled",
+    }
+}
+
+fn frame_step_from_db(value: &str) -> Result<FramePhotoAvatarStep, String> {
+    match value {
+        "generateMotionSource" => Ok(FramePhotoAvatarStep::GenerateMotionSource),
+        "packFrameSequence" => Ok(FramePhotoAvatarStep::PackFrameSequence),
+        "runtimeCheckPending" => Ok(FramePhotoAvatarStep::RuntimeCheckPending),
+        "previewReady" => Ok(FramePhotoAvatarStep::PreviewReady),
+        "cleanupPending" => Ok(FramePhotoAvatarStep::CleanupPending),
+        "completed" => Ok(FramePhotoAvatarStep::Completed),
+        "failed" => Ok(FramePhotoAvatarStep::Failed),
+        "cancelled" => Ok(FramePhotoAvatarStep::Cancelled),
+        _ => Err(format!("invalid frame video step: {value}")),
+    }
+}
+
+fn frame_remote_step_from_db(value: &str) -> Result<FrameRemoteStep, String> {
+    match value {
+        "generateMotionSource" => Ok(FrameRemoteStep::GenerateMotionSource),
+        "packFrameSequence" => Ok(FrameRemoteStep::PackFrameSequence),
+        _ => Err(format!("invalid frame remote step: {value}")),
+    }
+}
+
 fn cleanup_state_as_str(state: CleanupState) -> &'static str {
     match state {
         CleanupState::Deleted => "deleted",
@@ -2429,6 +2825,214 @@ mod tests {
                 .unwrap();
         }
         (PhotoAvatarStore::new(storage), root)
+    }
+
+    /// 写实风与像素风**共用同一张 `photo_avatar_runs`**（v14 的决定）。
+    ///
+    /// 所以最该钉的是「换路线不会把上一条路线的字段漏下来」——
+    /// `runs` 的 PK 是 `session_id`，换路线走的是 `ON CONFLICT DO UPDATE`，
+    /// 漏清就会让像素风的档案挂在写实风的行上，看着像数据错乱。
+    #[test]
+    fn frame_revision_shares_the_run_row_without_leaking_pixel_fields() {
+        let (store, root) = test_store();
+
+        let pixel = store
+            .begin_pixel_revision(
+                "session-a",
+                PixelStyleProfileId::V2AnimationReady,
+                Some("把耳朵画大一点"),
+                &[],
+            )
+            .unwrap();
+        assert_eq!(pixel.revision, 1);
+
+        let frame = store.begin_frame_revision("session-a").unwrap();
+        assert_eq!(frame.revision, 2, "revision 接着涨，不回头覆盖历史编号");
+        assert_eq!(frame.step, FramePhotoAvatarStep::GenerateMotionSource);
+
+        let snapshot = store.frame_snapshot("session-a").unwrap();
+        assert_eq!(snapshot.route, "frame-video-v1");
+        assert_eq!(snapshot.revision, 2);
+        assert_eq!(snapshot.provider_job_id, None);
+        assert!(snapshot.attempts.is_empty());
+
+        {
+            let storage = store.storage.lock().unwrap();
+            let row: (Option<String>, Option<String>, Option<String>) = storage
+                .db
+                .query_row(
+                    "SELECT style_profile_id, modification_instruction, locked_trait_keys_json
+                     FROM photo_avatar_runs WHERE session_id='session-a'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?, row.get(2)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                row,
+                (None, None, None),
+                "换路线必须把上一条路线的字段清空（画风是 NULL 而不是哨兵值）"
+            );
+        }
+
+        // 两条路线的 snapshot 互不串门。
+        assert_eq!(
+            store.pixel_snapshot("session-a").unwrap_err(),
+            "pixel avatar run does not exist"
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn frame_attempts_are_capped_and_only_the_current_step_can_reserve() {
+        let (store, root) = test_store();
+        let run = store.begin_frame_revision("session-a").unwrap();
+
+        assert_eq!(
+            store
+                .reserve_frame_attempt(
+                    "session-a",
+                    run.revision,
+                    FrameRemoteStep::GenerateMotionSource
+                )
+                .unwrap(),
+            1
+        );
+        // 跳步不行 —— 闸口看的是「run 当前的 step」。
+        assert_eq!(
+            store
+                .reserve_frame_attempt(
+                    "session-a",
+                    run.revision,
+                    FrameRemoteStep::PackFrameSequence
+                )
+                .unwrap_err(),
+            "frame video run is not current"
+        );
+
+        store
+            .set_frame_step("session-a", run.revision, FramePhotoAvatarStep::PackFrameSequence)
+            .unwrap();
+        for expected in 1..=3u8 {
+            assert_eq!(
+                store
+                    .reserve_frame_attempt(
+                        "session-a",
+                        run.revision,
+                        FrameRemoteStep::PackFrameSequence
+                    )
+                    .unwrap(),
+                expected
+            );
+        }
+        assert_eq!(
+            store
+                .reserve_frame_attempt(
+                    "session-a",
+                    run.revision,
+                    FrameRemoteStep::PackFrameSequence
+                )
+                .unwrap_err(),
+            "frame video remote step already has three attempts"
+        );
+
+        // 两个 step 各算各的名额。
+        let snapshot = store.frame_snapshot("session-a").unwrap();
+        assert_eq!(
+            snapshot.attempts.get(&FrameRemoteStep::GenerateMotionSource),
+            Some(&1)
+        );
+        assert_eq!(
+            snapshot.attempts.get(&FrameRemoteStep::PackFrameSequence),
+            Some(&3)
+        );
+
+        let _ = std::fs::remove_dir_all(root);
+    }
+
+    #[test]
+    fn frame_artifact_and_failure_paths_stay_on_the_frame_route() {
+        let (store, root) = test_store();
+        let run = store.begin_frame_revision("session-a").unwrap();
+
+        assert_eq!(
+            store
+                .commit_frame_artifact("session-a", run.revision, "  ", &"a".repeat(64))
+                .unwrap_err(),
+            "invalid frame video artifact"
+        );
+        assert_eq!(
+            store
+                .commit_frame_artifact(
+                    "session-a",
+                    run.revision,
+                    "frame-sequence.zip",
+                    &"A".repeat(64)
+                )
+                .unwrap_err(),
+            "invalid frame video artifact",
+            "大写 hex 不是合法 sha256（与像素风同一条判据）"
+        );
+        store
+            .commit_frame_artifact(
+                "session-a",
+                run.revision,
+                "frame-sequence.zip",
+                &"a".repeat(64),
+            )
+            .unwrap();
+        {
+            let storage = store.storage.lock().unwrap();
+            let row: (String, String) = storage
+                .db
+                .query_row(
+                    "SELECT route, kind FROM photo_avatar_artifacts WHERE session_id='session-a'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap();
+            assert_eq!(
+                row,
+                ("frame-video-v1".to_string(), "frameSequence".to_string())
+            );
+        }
+
+        store
+            .set_frame_step("session-a", run.revision, FramePhotoAvatarStep::RuntimeCheckPending)
+            .unwrap();
+
+        assert_eq!(
+            store
+                .fail_frame_revision_with_error_if_active(
+                    "session-a",
+                    run.revision,
+                    PhotoAvatarErrorCode::InvalidInput,
+                    "第一行\n第二行",
+                )
+                .unwrap_err(),
+            "frame video failure message is invalid"
+        );
+        assert!(store
+            .fail_frame_revision_with_error_if_active(
+                "session-a",
+                run.revision,
+                PhotoAvatarErrorCode::InvalidInput,
+                "换一张正面坐姿的照片",
+            )
+            .unwrap());
+        let snapshot = store.frame_snapshot("session-a").unwrap();
+        assert_eq!(snapshot.step, FramePhotoAvatarStep::Failed);
+        assert_eq!(snapshot.error_code, Some(PhotoAvatarErrorCode::InvalidInput));
+        assert_eq!(
+            snapshot.error_message.as_deref(),
+            Some("换一张正面坐姿的照片")
+        );
+        // 已经是终态，再失败一次不该翻动它。
+        assert!(!store
+            .fail_frame_revision_if_active("session-a", run.revision)
+            .unwrap());
+
+        let _ = std::fs::remove_dir_all(root);
     }
 
     fn source(ordinal: u32, color: u8) -> NormalizedPhoto {
