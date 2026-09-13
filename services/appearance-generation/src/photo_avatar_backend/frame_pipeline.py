@@ -1,11 +1,15 @@
 # -*- coding: utf-8 -*-
 """写实风（`frame-video-v1`）两个 step 的服务侧实现。
 
-    generateMotionSource   照片 → 透明母版 → 绿幕首帧 → Seedance 绿幕视频   （**要花钱**）
-    packFrameSequence      scratch 里的 mp4 → 抠像 → 验收 → WebP → zip      （**0 算力**）
+    generateMotionSource   照片 → 看照片（gpt-4o）→ 透明母版 → 绿幕首帧 → 视频  （**要花钱**）
+    packFrameSequence      scratch 里的 mp4 → 抠像 → 验收 → WebP → zip          （**0 算力**）
 
 两个 step 按「钱」切：视频失败要重付约 5.69 算力，粒度不能太粗；而后面半段
 （抠像/验收/打包）便宜到可以整段重跑。
+
+「看照片」那一步（`analyze_photo_facts`）没有自己的 step 名 —— 它是
+`generateMotionSource` 的**内部第一步**。理由见该函数的 docstring：它失败只意味着
+「母版提示词少一句毛长提示」，不该有能力让整单失败。
 
 ## 产物的边界（这几条是设计决策，不是实现细节）
 
@@ -32,7 +36,7 @@ from __future__ import annotations
 
 import hashlib
 import time
-from collections.abc import Callable
+from collections.abc import Callable, Mapping
 from dataclasses import dataclass
 from pathlib import Path
 from typing import Any
@@ -71,6 +75,32 @@ FIRST_FRAME_MARGIN_LEFT = 0.06
 # 视频是分钟级的任务；轮询间隔与超时对齐老脚本 `poc_生成绿幕视频.py` 的默认值。
 POLL_INTERVAL_SECONDS = 10.0
 MAX_WAIT_SECONDS = 900.0
+
+# ---------------- 看照片（gpt-4o）：只补母版提示词那一句毛长 ----------------
+#
+# 母版提示词里有个 `{{COAT_LEN}}` 位置（short-haired / long-haired）。它**不是必填**：
+# 提示词下一段本来就要求「毛长照照片一模一样」，毛长真正的来源是照片。但这句话对
+# **长毛猫**值钱 —— 没有它，母版容易把围脖和尾巴画短。
+#
+# 产品里问不出毛长（`FrameStepRequest` 没有这个字段），所以让 gpt-4o 看一眼照片。
+# ⚠️ **它是一次「可选」调用**：读不出来就返回 `unknown`，**不猜**（与 `analyzeIdentity`
+# 那条「不得推断缺失 trait」的纪律一致）。见 `PhotoFacts`。
+#
+# 改这段提示词等于改产品产出（所有新宠的母版都从它过），别手滑。
+PHOTO_FACTS_SPECIES = ("cat", "dog")
+PHOTO_FACTS_COAT = ("short", "long")
+# 「看不出来」用哨兵字符串，不用 `["string","null"]` 联合类型：严格模式的 json_schema
+# 对联合类型支持参差，哨兵值在两边都只是普通字符串。
+UNKNOWN_FACT = "unknown"
+
+_PHOTO_FACTS_PROMPT = (
+    "Look only at the supplied pet photos, and report only what is directly visible in them. "
+    'Do not guess, do not use breed knowledge: when something is not observable, answer "unknown". '
+    "species: the animal the photos actually show. "
+    'coat: "short" when the fur lies flat against the body with crisp outlines; '
+    '"long" when the fur is visibly fluffy, or there is a ruff, a plume tail or long ear tufts; '
+    'answer "unknown" when the coat length cannot be judged from these photos.'
+)
 
 
 class FramePipelineError(ValueError):
@@ -130,6 +160,18 @@ class MotionSource:
 
 
 @dataclass(frozen=True)
+class PhotoFacts:
+    """gpt-4o 看一眼照片后能说的那两件事。
+
+    **`None` 一律表示「照片里看不出来」，不表示「失败了」。** 判不出来就不提 ——
+    提示词里少一句是安全的，猜错一句会让母版照着错的那句画。
+    """
+
+    species: str | None
+    coat: str | None
+
+
+@dataclass(frozen=True)
 class FrameSequenceArtifact:
     """一个 job 的交付物：一支打包好的 schema 7 运行时包（zip 字节）。"""
 
@@ -184,6 +226,65 @@ def motion_source_path(state_dir: Path, provider_session_id: str) -> Path:
     return scratch_dir(state_dir, provider_session_id) / MOTION_SOURCE_FILE
 
 
+def analyze_photo_facts(
+    request: FrameStepRequest,
+    *,
+    client: Any,
+    log: Callable[[str], None] = print,
+) -> PhotoFacts:
+    """看一眼照片：判物种与毛长档位。
+
+    **没有自己的 step 名**，是 `generateMotionSource` 的内部第一步。这样就不必动
+    那三处 step 白名单（`contracts._FRAME_STEPS` / `job_store._STEPS` / 客户端），
+    也不会多出一次「能重试的独立进度」。
+
+    两种「不知道」在这里被抹平成同一个结果（`None`），因为它们对下游是同一件事：
+    - 照片里看不出毛长（`unknown`）；
+    - 模型没按 schema 回（例如 `"medium"`）。
+
+    `species` 与请求不一致时**只记日志**，不改行为：物种是产品写进 manifest 的字段，
+    不该被一次模型判断推翻；但两者不一致是「照片传错了」的信号，值得留痕。
+    """
+    response = client.analyze_json(
+        _PHOTO_FACTS_PROMPT, [image.png for image in request.source_images], _photo_facts_schema()
+    )
+    if not isinstance(response, Mapping):
+        raise FramePipelineError("照片分析没有返回对象")
+    coat = _photo_fact(response, "coat", PHOTO_FACTS_COAT, log)
+    species = _photo_fact(response, "species", PHOTO_FACTS_SPECIES, log)
+    if species is not None and species != request.species:
+        log(f"[照片分析] ⚠️ 照片看着像 {species}，请求里写的是 {request.species}（只记日志，不改行为）")
+    log(f"[照片分析] 物种={species or UNKNOWN_FACT}  毛长={coat or UNKNOWN_FACT}")
+    return PhotoFacts(species=species, coat=coat)
+
+
+def _photo_facts_schema() -> dict[str, Any]:
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {
+            "species": {"type": "string", "enum": ["cat", "dog", UNKNOWN_FACT]},
+            "coat": {"type": "string", "enum": ["short", "long", UNKNOWN_FACT]},
+        },
+        "required": ["species", "coat"],
+    }
+
+
+def _photo_fact(
+    response: Mapping[str, Any],
+    key: str,
+    allowed: tuple[str, ...],
+    log: Callable[[str], None],
+) -> str | None:
+    value = response.get(key)
+    if value == UNKNOWN_FACT:
+        return None
+    if value not in allowed:
+        log(f"[照片分析] {key} 是意料之外的值 {value!r}（当成看不出来）")
+        return None
+    return value
+
+
 def generate_motion_source(
     request: FrameStepRequest,
     *,
@@ -192,7 +293,7 @@ def generate_motion_source(
     report_task_id: Callable[[str], None] | None = None,
     log: Callable[[str], None] = print,
 ) -> MotionSource:
-    """`generateMotionSource`：照片 → 母版 → 绿幕首帧 → 绿幕视频。
+    """`generateMotionSource`：照片 → 看照片 → 母版 → 绿幕首帧 → 绿幕视频。
 
     **唯一花钱的 step**（≈5.75 算力/次）。三条防线保证不白花：
 
@@ -204,6 +305,9 @@ def generate_motion_source(
        `scale` 重出，全挂才报错 —— 长毛猫当初没做这一步，白花 4.67 算力。
     3. **上游错误码原样透出**：`contentPolicy` 这类不可重试的错误必须让上层看见，
        否则会自动重试同一份提示词、必然再被拒一次。
+
+    「看照片」那一步**只能降级、不能失败**（见 `_coat_hint`）。复用分支在它之前 ——
+    复用不重跑，也就连这一次 gpt-4o 都不打。
     """
     if request.step != "generateMotionSource":
         raise FramePipelineError(f"generate_motion_source got step {request.step!r}")
@@ -227,15 +331,18 @@ def generate_motion_source(
         f"attempt-{request.attempt}"
     )
 
-    log("[1/3] 生成透明母版（gpt-image-2，约 0.06 算力）")
+    log("[1/4] 看照片（gpt-4o）：判毛长档位，给母版提示词补一句")
+    coat = _coat_hint(request, client=client, log=log)
+
+    log("[2/4] 生成透明母版（gpt-image-2，约 0.06 算力）")
     master_path, master_task_id = _generate_master(
-        client=client, request=request, work_dir=work_dir, log=log
+        client=client, request=request, coat=coat, work_dir=work_dir, log=log
     )
 
-    log("[2/3] 绿幕首帧 + 取景收敛（免费阶梯，不进视频）")
+    log("[3/4] 绿幕首帧 + 取景收敛（免费阶梯，不进视频）")
     fitted = _converge_first_frame(master_path, work_dir=work_dir, state_dir=state_dir, log=log)
 
-    log(f"[3/3] 生成绿幕视频（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s，约 5.69 算力）")
+    log(f"[4/4] 生成绿幕视频（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s，约 5.69 算力）")
     video_task_id = _generate_video(
         client=client,
         first_frame=fitted.frame_png,
@@ -351,23 +458,48 @@ def _wait_for_media(client: Any, task_id: str, *, label: str) -> Any:
     return state
 
 
+def _coat_hint(
+    request: FrameStepRequest,
+    *,
+    client: Any,
+    log: Callable[[str], None],
+) -> str | None:
+    """母版提示词的毛长档位。**这一步只能降级，不能失败。**
+
+    少一句「long-haired」母版照样出得来（提示词下一段本来就要求「毛长照照片一模一样」），
+    但一次失败会带走后面那 5.69 算力的视频 —— 一个纯省钱的可选步骤不该有这个权力。
+    所以上游故障（`Lk888Error`：网络 / 额度 / 审核 / 协议）一律咽掉、只记日志。
+
+    `AttributeError` 之类的**代码错误不在此列**：那是 bug，要炸出来。
+    """
+    try:
+        facts = analyze_photo_facts(request, client=client, log=log)
+    except (Lk888Error, FramePipelineError) as exc:
+        log(f"[照片分析] 跳过毛长档位（照常出母版）：{exc}")
+        return None
+    return facts.coat
+
+
 def _generate_master(
     *,
     client: Any,
     request: FrameStepRequest,
+    coat: str | None,
     work_dir: Path,
     log: Callable[[str], None],
 ) -> tuple[Path, str]:
     """照片 → 透明母版。
 
-    ⚠️ **不带毛长档位**：通用母版提示词里那个 `{{COAT_LEN}}` 位置是「short-haired /
-    long-haired」二选一的**提示**，而 `FrameStepRequest` 里没有毛长字段（产品里也
-    问不出来）。所以走不带提示的那条渲染 —— 提示词下一段本来就要求「毛长照照片一模一样」，
-    真实来源是照片不是这个词。脚本 `一键出宠.py` 仍然可以显式传（人工出宠时知道）。
+    `coat` 来自 `analyze_photo_facts`，可能是 `None`（照片里看不出毛长）——
+    此时渲染不带档位的那一版，安全：`{{COAT_LEN}}` 只是一句提前的提示，
+    毛长真正的来源是照片本身。
+
+    物种**一律用请求里的**，不用分析结果 —— 那是产品写进 manifest 的字段，
+    两者不一致时 `analyze_photo_facts` 会记一条日志，但不改行为。
     """
     from .frames.prompts import render_master_prompt
 
-    prompt = render_master_prompt(request.species)
+    prompt = render_master_prompt(request.species, coat)
     task_id = client.submit_image(prompt, [image.png for image in request.source_images])
     state = _wait_for_media(client, task_id, label="母版")
     png = client.download(state.result_url)

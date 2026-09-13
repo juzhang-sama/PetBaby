@@ -17,6 +17,7 @@ import shutil
 import subprocess
 import sys
 import zipfile
+from collections.abc import Mapping
 from pathlib import Path
 
 import pytest
@@ -31,6 +32,7 @@ from photo_avatar_backend.frame_pipeline import (  # noqa: E402
     FramePipelineError,
     FrameSequenceArtifact,
     MotionSource,
+    analyze_photo_facts,
     generate_motion_source,
     motion_source_path,
     pack_frame_sequence,
@@ -134,9 +136,9 @@ def _master_png(width_ratio: float = 0.82, *, size: int = 1024) -> bytes:
 
 
 class _FakeClient:
-    """只实现 `generate_motion_source` 用到的那五个方法。
+    """只实现 `generate_motion_source` 用到的那六个方法。
 
-    `poll_script` 让每个任务能指定「第几次轮询返回什么」，用来演失败与超时。
+    失败/超时靠 `fail_with` 与 `never_finishes` 演：任务一转终态就带错误，或者永远不转终态。
     """
 
     def __init__(
@@ -146,14 +148,18 @@ class _FakeClient:
         video: bytes = b"fake-mp4-bytes",
         fail_with: Lk888Error | None = None,
         never_finishes: bool = False,
+        facts: Mapping[str, object] | Exception | None = None,
     ) -> None:
         self.master_png = master_png if master_png is not None else _master_png()
         self.video = video
         self.fail_with = fail_with
         self.never_finishes = never_finishes
+        # 照片分析的回包：默认「看不出毛长」，要测毛长档位时显式传。
+        self.facts = {"species": "cat", "coat": "unknown"} if facts is None else facts
         self.calls: list[str] = []
         self.prompts: dict[str, str] = {}
         self.image_batches: list[int] = []
+        self.analysis_image_counts: list[int] = []
         self.video_kwargs: dict[str, object] = {}
 
     def _state(self, task_id: str, url: str) -> MediaState:
@@ -162,6 +168,13 @@ class _FakeClient:
         if self.never_finishes:
             return MediaState(task_id, "running", False, None, None)
         return MediaState(task_id, "success", True, url, None)
+
+    def analyze_json(self, prompt: str, images: object, schema: object) -> object:
+        self.calls.append("analyze_json")
+        self.analysis_image_counts.append(len(images))  # type: ignore[arg-type]
+        if isinstance(self.facts, Exception):
+            raise self.facts
+        return self.facts
 
     def submit_image(self, prompt: str, images: object) -> str:
         self.calls.append("submit_image")
@@ -203,14 +216,16 @@ def _motion_request(**overrides: object) -> FrameStepRequest:
     return _request(**payload)
 
 
-def test_generate_motion_source_walks_master_frame_video(tmp_path: Path):
+def test_generate_motion_source_walks_photos_facts_master_frame_video(tmp_path: Path):
     client = _FakeClient()
 
     result = generate_motion_source(
         _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
     )
 
-    assert client.calls[:6] == [
+    assert client.calls == [
+        # 看照片在母版**之前**：毛长要赶得上进母版提示词
+        "analyze_json",
         "submit_image",
         f"poll_image:{MASTER_TASK}",
         "download",
@@ -218,12 +233,14 @@ def test_generate_motion_source_walks_master_frame_video(tmp_path: Path):
         f"poll_image:{VIDEO_TASK}",
         "download_video",
     ]
-    # 母版吃 1 张照片，视频吃 1 张首帧
+    # 分析看的是原始照片；母版吃 1 张照片，视频吃 1 张首帧
+    assert client.analysis_image_counts == [1]
     assert client.image_batches == [1, 1]
 
-    # 母版提示词：物种来自请求，毛长档位**不提**（请求里没有这个字段）
+    # 母版提示词：物种来自请求；分析说「看不出毛长」→ 不提档位
     assert "this exact cat." in client.prompts["master"]
     assert "short-haired" not in client.prompts["master"]
+    assert "long-haired" not in client.prompts["master"]
     assert client.prompts["loop"].startswith("以首帧图作为这只动物唯一的身份")
 
     # 视频规格是产品定死的，不是默认值
@@ -245,6 +262,101 @@ def test_generate_motion_source_walks_master_frame_video(tmp_path: Path):
     assert result.master_path is not None and result.master_path.is_file()
     assert result.first_frame_path is not None and result.first_frame_path.is_file()
     assert not list(tmp_path.rglob("*.part")), "原子写入不该留下 .part 残骸"
+
+
+# ------------------------------------------------------------------ 看照片
+
+
+def test_photo_analysis_puts_the_coat_hint_into_the_master_prompt(tmp_path: Path):
+    """长毛猫值钱的就是这一句：没有它，母版容易把围脖和尾巴画短。"""
+    client = _FakeClient(facts={"species": "cat", "coat": "long"})
+
+    generate_motion_source(_motion_request(), client=client, state_dir=tmp_path, log=lambda _: None)
+
+    assert "this exact long-haired cat." in client.prompts["master"]
+    assert "short-haired" not in client.prompts["master"]
+
+
+def test_a_failed_photo_analysis_only_costs_the_hint(tmp_path: Path):
+    """分析是**可选**步骤：上游挂了也不许弄死一次要花 5.69 算力的生成。"""
+    client = _FakeClient(facts=Lk888Error("temporaryUnavailable", True, "analyze boom"))
+    lines: list[str] = []
+
+    result = generate_motion_source(
+        _motion_request(), client=client, state_dir=tmp_path, log=lines.append
+    )
+
+    assert result.video_task_id == VIDEO_TASK, "照常出母版、照常出视频"
+    assert "short-haired" not in client.prompts["master"]
+    assert "long-haired" not in client.prompts["master"]
+    assert any("跳过毛长档位" in line for line in lines), "降级必须留痕，否则没人知道它被骗过"
+
+
+def test_a_content_policy_rejection_of_the_analysis_is_also_only_a_hint(tmp_path: Path):
+    """审核拒绝照片时也是降级 —— 真被拒的话母版那一步会自己再报一次，不用这里抢先。"""
+    client = _FakeClient(facts=Lk888Error("contentPolicy", False, "输入图片可能包含敏感信息"))
+
+    result = generate_motion_source(
+        _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
+    )
+
+    assert result.reused is False
+    assert "submit_video" in client.calls
+
+
+@pytest.mark.parametrize(
+    "facts",
+    [
+        {"species": "cat", "coat": "unknown"},  # 照片里看不出来
+        {"species": "cat", "coat": "medium"},  # 模型没按 schema 回
+        {"species": "cat"},  # 少了字段
+        {"species": "cat", "coat": None},
+        "not-an-object",  # 回包不成形
+    ],
+)
+def test_an_unusable_analysis_answer_degrades_to_no_hint(tmp_path: Path, facts: object):
+    """看不出来 / 答非所问 / 回包不成形 —— 都得变成「不提」，不能塞进提示词。"""
+    client = _FakeClient(facts=facts)
+
+    generate_motion_source(_motion_request(), client=client, state_dir=tmp_path, log=lambda _: None)
+
+    assert "short-haired" not in client.prompts["master"]
+    assert "long-haired" not in client.prompts["master"]
+
+
+def test_a_species_mismatch_is_logged_but_changes_nothing(tmp_path: Path):
+    """物种是产品写进 manifest 的字段，不该被一次模型判断推翻 —— 但值得留痕。"""
+    client = _FakeClient(facts={"species": "dog", "coat": "short"})
+    lines: list[str] = []
+
+    generate_motion_source(_motion_request(), client=client, state_dir=tmp_path, log=lines.append)
+
+    assert "this exact short-haired cat." in client.prompts["master"], "物种仍以请求为准"
+    assert any("照片看着像 dog" in line for line in lines)
+
+
+def test_a_species_mismatch_is_not_an_error(tmp_path: Path):
+    """`analyze_photo_facts` 只回事实，不抛错 —— 判错物种不该让照片分析变成「失败」。"""
+    facts = analyze_photo_facts(
+        _motion_request(),
+        client=_FakeClient(facts={"species": "dog", "coat": "long"}),
+        log=lambda _: None,
+    )
+
+    assert (facts.species, facts.coat) == ("dog", "long")
+
+
+def test_photo_analysis_reports_every_photo_it_was_given(tmp_path: Path):
+    """判毛长要看全给的每一张 —— 只喂第一张容易把背面照当成正面。"""
+    photo = SourceImage(source_id="photo-1", png=_master_png(), sha256="0" * 64,
+                        width=1024, height=1024)
+    client = _FakeClient(facts={"species": "cat", "coat": "short"})
+
+    analyze_photo_facts(
+        _motion_request(source_images=(photo, photo, photo)), client=client, log=lambda _: None
+    )
+
+    assert client.analysis_image_counts == [3]
 
 
 def test_generate_motion_source_converges_framing_on_the_free_ladder(tmp_path: Path):

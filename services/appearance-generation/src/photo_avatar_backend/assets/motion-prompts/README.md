@@ -39,17 +39,36 @@
 | `loop-idle-combo.txt` | —— | 无 |
 | `loop-idle-combo.negative.txt` | —— | 无 |
 
-### `{{COAT_LEN}}` 为什么可省
+### `{{COAT_LEN}}` 谁来决定
 
 它是一句**提示**，不是真源：提示词下一段本来就要求「毛长照照片一模一样」，
-毛长的真正来源是照片。
+毛长的真正来源是照片。所以**判不出来就不提**是安全的。
 
-产品路径（服务）**不提这一档** —— `FrameStepRequest` 里没有毛长字段，UI 也问不出来，
-所以渲染出来是 `…for this exact cat.`。人工出宠（`scripts/一键出宠.py --coat short`）
-知道毛长，就走带提示的那条。两者渲染结果只差这两个词。
+三条路径：
 
-> 这条是**待定项**：如果发现长毛猫的母版质量依赖这句提示，
-> 就得把毛长加进请求契约（或先跑一次 gpt-4o 分析照片自动判定）。
+| 路径 | 谁决定 | 渲染结果 |
+|---|---|---|
+| 服务（产品） | `frame_pipeline.analyze_photo_facts` 让 **gpt-4o 看照片**判 | 判得出 → `…this exact long-haired cat.`；判不出/分析失败 → `…this exact cat.` |
+| 人工出宠 | `scripts/一键出宠.py --coat short\|long` | 显式那条 |
+| 都不给 | `coat=None` | `…this exact cat.` |
+
+gpt-4o 那一步**只能降级、不能失败**：它挂了一律退到「不提」，绝不带走后面 5.69 算力的视频。
+
+判据（4 张真照片，真值取自 `docs/验证记录/L1真实照片验收记录-2026-09-11.md` 第 3/5 节）：
+
+```bash
+python scripts/poc_照片分析验收.py     # 真打 API，4 次 ≈ 0.01 算力
+```
+
+| 源图 | 真值 | gpt-4o |
+|---|---|---|
+| `果冻.jpg`（短毛猫） | cat / short | cat / short ✅ |
+| `长毛猫.jpeg`（长毛猫） | cat / long | cat / long ✅ |
+| `短毛犬.jpg`（比格） | dog / short | dog / short ✅ |
+| `金毛.webp`（长毛犬） | dog / long | dog / long ✅ |
+
+**4/4 全对**（2026-09-13）→ 没有「永远说 long」的偏置，所以这一档可以交给模型判。
+改了 `_PHOTO_FACTS_PROMPT` 就重跑这张表。
 
 负向词按老链路的原样拼接（不是新发明的写法）：
 
