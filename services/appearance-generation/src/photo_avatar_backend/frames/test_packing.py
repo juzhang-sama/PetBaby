@@ -18,6 +18,7 @@ from PIL import Image
 from photo_avatar_backend.frames.packing import (
     FRAME_MS,
     PRODUCT_MOTIONS,
+    ExtraAction,
     pack_frame_sequence,
 )
 
@@ -271,3 +272,112 @@ def test_rejects_invalid_frame_format(tmp_path: Path, overrides, match):
 
     with pytest.raises(ValueError, match=match):
         pack(frames, tmp_path / "out", **overrides)
+
+
+# ------------------------------------------------------------------ 多动作包
+#
+# idle 之外的动作各是一支视频、各自抠像，但**并进同一个运行时包**
+# （一个 job 一个 artifact → 最终包必须是一支 zip）。
+
+
+def _extra(tmp_path: Path, action_id: str, count: int = 4, **overrides) -> ExtraAction:
+    frames = write_frames(tmp_path / f"extra-{action_id}", count)
+    kwargs: dict = {"action_id": action_id, "frames_dir": frames}
+    kwargs.update(overrides)
+    return ExtraAction(**kwargs)
+
+
+def test_a_multi_action_package_declares_every_action_and_schedules_the_asked_ones(
+    tmp_path: Path,
+):
+    idle = write_frames(tmp_path, 3)
+    yawn = _extra(tmp_path, "yawn", scheduled=True)
+    lick = _extra(tmp_path, "lick", scheduled=True)
+    grab = _extra(tmp_path, "grab-release", hold_range=(1, 2))
+
+    packed = pack(idle, tmp_path / "out", extra_actions=[yawn, lick, grab])
+    manifest = json.loads(packed.manifest_path.read_text(encoding="utf-8"))
+
+    assert [action["actionId"] for action in manifest["actions"]] == [
+        "idle-combo", "yawn", "lick", "grab-release",
+    ]
+    # 每条动作的帧都进了包，且 files 里逐条登记（Rust 安装时会逐文件校 sha256）
+    declared = {entry["relativePath"] for entry in manifest["files"]}
+    for action in manifest["actions"]:
+        for frame in action["frames"]:
+            assert frame in declared
+    assert len(manifest["files"]) == 3 + 4 * 3
+    # 动作的帧都是 frame；base 只有 idle 的 f0000（静态兜底图）
+    yawn_roles = [
+        entry["role"]
+        for entry in manifest["files"]
+        if entry["relativePath"].startswith("frames/yawn/")
+    ]
+    assert yawn_roles == ["frame"] * 4
+    assert manifest["baseImage"] == "frames/idle-combo/f0000.png"
+
+    # semantics：9 个产品 motion 一个都不能少，且两条产品规则生效
+    assert set(PRODUCT_MOTIONS) <= set(manifest["semantics"])
+    assert manifest["semantics"]["yawn"] == "yawn"
+    assert manifest["semantics"]["lick"] == "lick"
+    assert manifest["semantics"]["react-curious"] == "lick"       # 点身体 = 理毛
+    assert manifest["semantics"]["carried"] == "grab-release"     # 拖拽 = 拎起
+    assert manifest["semantics"]["landed"] == "grab-release"
+    assert manifest["semantics"]["idle"] == "idle-combo"          # 没被动作顶掉
+
+    # idleSchedule 只收 scheduled=True 的那两支；交互动作不进（它由 playMotion 触发）
+    schedule = manifest["idleSchedule"]
+    assert [entry["actionId"] for entry in schedule["entries"]] == ["yawn", "lick"]
+    assert schedule["alignToDefaultLoop"] is True
+    assert all(entry["weight"] == 1 for entry in schedule["entries"])
+
+
+def test_the_interaction_action_carries_its_hold_range(tmp_path: Path):
+    idle = write_frames(tmp_path, 2)
+    grab = _extra(tmp_path, "grab-release", count=10, hold_range=(3, 7))
+
+    manifest = json.loads(
+        pack(idle, tmp_path / "out", extra_actions=[grab]).manifest_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert manifest["actions"][1]["holdRange"] == [3, 7]
+
+
+def test_a_hold_range_outside_the_action_frames_is_rejected(tmp_path: Path):
+    idle = write_frames(tmp_path, 2)
+    grab = _extra(tmp_path, "grab-release", count=4, hold_range=(0, 4))  # hi 越界
+
+    with pytest.raises(ValueError, match="holdRange"):
+        pack(idle, tmp_path / "out", extra_actions=[grab])
+
+
+def test_a_single_action_package_still_has_no_idle_schedule(tmp_path: Path):
+    """多动作支持**不许**改变单动作的输出（黄金基线）。"""
+    manifest = json.loads(
+        pack(write_frames(tmp_path, 3), tmp_path / "out").manifest_path.read_text(
+            encoding="utf-8"
+        )
+    )
+
+    assert "idleSchedule" not in manifest
+    assert len(manifest["actions"]) == 1
+    assert manifest["semantics"] == {
+        motion: "idle-combo" for motion in PRODUCT_MOTIONS
+    }
+
+
+def test_an_action_repeating_another_action_id_is_rejected(tmp_path: Path):
+    idle = write_frames(tmp_path, 2)
+
+    with pytest.raises(ValueError, match="duplicate actionId"):
+        pack(
+            idle,
+            tmp_path / "out",
+            extra_actions=[ExtraAction(action_id="idle-combo", frames_dir=idle)],
+        )
+
+    yawn = _extra(tmp_path, "yawn")
+    with pytest.raises(ValueError, match="duplicate actionId"):
+        pack(idle, tmp_path / "out2", extra_actions=[yawn, yawn])
