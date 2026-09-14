@@ -70,7 +70,11 @@ if (-not $pythonExe) {
 }
 Write-Output "使用 Python 解释器：$pythonExe"
 
-$process = Start-Process -FilePath $pythonExe -ArgumentList @("-m", "photo_avatar_backend.app") -WorkingDirectory $serviceRoot -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
+# ⚠️ `-u` 不能去掉：`-RedirectStandardOutput` 把 stdout 变成**块缓冲(8KB)**，
+# 而写实风这条链的进度日志（`[1/4] [2/4] …`）一次只写几十字节 —— 进程还在跑时
+# 它们**全卡在缓冲区里不落盘**。2026-09-15 就因此误判了失败阶段
+# （stdout 里只看到 `[1/4]`，以为失败在第 1 步，其实卡在提交视频）。
+$process = Start-Process -FilePath $pythonExe -ArgumentList @("-u", "-m", "photo_avatar_backend.app") -WorkingDirectory $serviceRoot -RedirectStandardOutput $stdout -RedirectStandardError $stderr -WindowStyle Hidden -PassThru
 
 $hostValue = $env:PHOTO_AVATAR_BACKEND_HOST
 if (-not $hostValue) { $hostValue = "127.0.0.1" }
