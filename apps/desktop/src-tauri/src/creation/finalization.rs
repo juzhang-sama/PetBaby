@@ -1750,8 +1750,14 @@ fn validate_component(value: &str, label: &str) -> Result<(), String> {
     Ok(())
 }
 
-/// 照片分身资产包允许两种渲染路线，schemaVersion 必须与 renderer 匹配：
-/// 像素路线 animated-image-v1 → 3；Live2D 路线 photo-avatar-live2d-v5 → 5。
+/// 照片分身资产包允许三条渲染路线，schemaVersion 必须与 renderer 匹配：
+/// 像素路线 animated-image-v1 → 3；Live2D 路线 photo-avatar-live2d-v5 → 5；
+/// 写实风（逐帧）路线 frame-sequence-v1 → 7。
+///
+/// ⚠️ 这里是**按 renderer 认版本的白名单**，`_ => None` 会把不认识的路线判成
+/// 「身份不合法」。新增产线时**必须同步加一行**，否则会走过预览与安装、
+/// 只在最后这步身份校验炸出 `installed photo avatar manifest identity is invalid`
+/// （写实风就踩过：第 3 处「只在真跑才暴露」的守卫）。
 fn photo_avatar_expected_schema_version(manifest: &serde_json::Value) -> Option<u64> {
     match manifest
         .get("renderer")
@@ -1759,6 +1765,9 @@ fn photo_avatar_expected_schema_version(manifest: &serde_json::Value) -> Option<
     {
         Some("animated-image-v1") => Some(3),
         Some("photo-avatar-live2d-v5") => Some(5),
+        Some(crate::runtime_assets::frame_sequence::FRAME_SEQUENCE_RENDERER) => Some(
+            crate::runtime_assets::frame_sequence::FRAME_SEQUENCE_SCHEMA_VERSION as u64,
+        ),
         _ => None,
     }
 }
@@ -1777,6 +1786,29 @@ mod tests {
     use std::sync::{Arc, Mutex};
 
     static COUNTER: AtomicU32 = AtomicU32::new(0);
+
+    /// 三条产线的 (renderer, schemaVersion)。**漏一条** → 那条产线会一路走到
+    /// 「接受并安装」的最后一步才报 `installed photo avatar manifest identity is invalid`。
+    /// 数值是契约，故意写死（不要改成读常量，否则常量改了测试跟着变，就钉不住了）。
+    #[test]
+    fn every_photo_avatar_route_is_recognized_with_its_schema_version() {
+        for (renderer, schema) in [
+            ("animated-image-v1", 3u64),
+            ("photo-avatar-live2d-v5", 5),
+            ("frame-sequence-v1", 7),
+        ] {
+            let manifest = serde_json::json!({ "renderer": renderer, "schemaVersion": schema });
+            assert_eq!(
+                photo_avatar_expected_schema_version(&manifest),
+                Some(schema),
+                "renderer {renderer} 不在白名单里 —— 安装会被判成身份不合法"
+            );
+        }
+        assert_eq!(
+            photo_avatar_expected_schema_version(&serde_json::json!({ "renderer": "unknown-v1" })),
+            None
+        );
+    }
 
     struct FinalizationHarness {
         root: PathBuf,
