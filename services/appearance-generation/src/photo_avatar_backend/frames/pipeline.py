@@ -34,6 +34,7 @@ from pathlib import Path
 from . import packing
 from ._paths import rel_to
 from .acceptance import AcceptanceResult, accept_frames
+from .hold_range import inspect_hold_range
 from .matting import MatteResult, matte_video
 from .packing import WEBP_QUALITY
 
@@ -222,6 +223,11 @@ def build_frame_sequence(
             log=log,
         )
         action_acceptances.append((clip.action_id, action_acceptance))
+        if not clip.scheduled:
+            # 只有交互动作（不进 idleSchedule 的那支）需要「悬空保持」。
+            # 体检**只报数字、不写 manifest** —— 那个区间是人定的，理由是
+            # 「三条线索互相矛盾、历史上就是人眼定稿的」，见 `frames/hold_range.py`。
+            inspect_hold_range(action_matte.frames_dir, configured=clip.hold_range, log=log)
         extra_actions.append(
             packing.ExtraAction(
                 action_id=clip.action_id,

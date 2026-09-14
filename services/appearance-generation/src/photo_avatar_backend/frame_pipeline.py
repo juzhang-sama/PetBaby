@@ -49,6 +49,7 @@ from .frames.action_prompts import (
     ACTION_IDS,
     ActionFacts,
     FALLBACK_ACTION_FACTS,
+    action_hold_range,
     load_action,
     render_action_prompt_for,
     uses_end_frame,
@@ -765,6 +766,8 @@ def _action_clips(state_dir: Path, provider_session_id: str) -> tuple[Any, ...]:
                 # 偶发与交互动作都是非循环：播完就回 idle（内置 04/05 的 yawn/lick/
                 # grab-release 全是 loop=false），所以这不是每支配置的字段。
                 loop=False,
+                # **人定的**「悬空保持」区间；配置里没有就是不写这个键（见 action_hold_range）。
+                hold_range=action_hold_range(action),
                 scheduled=joins_idle_schedule(action),
             )
         )

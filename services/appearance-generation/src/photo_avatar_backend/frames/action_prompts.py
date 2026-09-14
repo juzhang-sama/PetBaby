@@ -54,6 +54,7 @@ __all__ = [
     "NEGATIVE_PREFIX",
     "ActionFacts",
     "ActionPromptError",
+    "action_hold_range",
     "joins_idle_schedule",
     "load_action",
     "render_action_prompt",
@@ -230,6 +231,31 @@ def joins_idle_schedule(action: dict) -> bool:
     （老脚本给它的值是 `--no-idle-schedule`）。
     """
     return "--no-idle-schedule" not in str(action.get("pipelineTail", ""))
+
+
+def action_hold_range(action: dict) -> tuple[int, int] | None:
+    """从动作配置里读**人定的** `holdRange`（没有 → `None`）。
+
+    配置形态：`"holdRange": [30, 59]`。**故意没有默认值，也不做自动标定** ——
+    2026-09-14 在 05 的真实资产上把三条线索都试过，互相矛盾（速诊规则会退化出
+    `[0,120]`、设计比例算出来是 `[12,37]`、而「首尾相似」这个直觉判据给出的
+    `IoU(f0030,f0059)` 只有 0.41）。**历史上就是人眼定的**，所以这里只接受人给的值；
+    猜一个区间等于给「悬空保持」填一个随机行为。体检工具见 `frames/hold_range.py`。
+
+    ⚠️ 这个函数刻意放在**无 numpy 依赖**的模块里：`frame_pipeline` 会在模块顶层
+    调它，而那个文件的纪律是「启动时不许硬依赖 numpy/PIL/scipy」。
+    """
+    raw = action.get("holdRange")
+    if raw is None:
+        return None
+    if not isinstance(raw, (list, tuple)) or len(raw) != 2:
+        raise ActionPromptError(f"action holdRange must be a [lo, hi] pair, got {raw!r}")
+    lo, hi = raw
+    if any(isinstance(value, bool) or not isinstance(value, int) for value in (lo, hi)):
+        raise ActionPromptError(f"action holdRange must contain integers, got {raw!r}")
+    if lo < 0 or hi < lo:
+        raise ActionPromptError(f"action holdRange must satisfy 0 <= lo <= hi, got {raw!r}")
+    return lo, hi
 
 
 def _fill(text: str, values: dict[str, str], label: str) -> str:
