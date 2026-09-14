@@ -107,7 +107,7 @@ pub struct RuntimeAssetManifestV7 {
     pub anchor_policy: String,
     pub actions: Vec<FrameSequenceActionV7>,
     pub semantics: BTreeMap<String, String>,
-    /// 🔴 这一整个结构体会经 `asset_manifest` 命令回传给前端，四个可选字段
+    /// 🔴 这一整个结构体会经 `asset_manifest` 命令回传给前端，三个可选项
     /// **缺省时必须整个键消失**。写成 `null` 的话前端会当成「有值」去校验：
     /// `blink`/`idleSchedule`/`hitBounds` 报 `must be an object`，
     /// `alignToDefaultLoop: null` 报 `must be a boolean`。
