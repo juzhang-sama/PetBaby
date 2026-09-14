@@ -1,0 +1,174 @@
+{
+  "schemaVersion": 7,
+  "renderer": "frame-sequence-v1",
+  "petId": "99-contract",
+  "variantId": "photo-avatar-session-contract-1",
+  "displayName": "契约样例（短毛猫）",
+  "species": "cat",
+  "baseImage": "frames/idle-combo/f0000.png",
+  "defaultAction": "idle-combo",
+  "anchorPolicy": "fixed",
+  "actions": [
+    {
+      "actionId": "idle-combo",
+      "loop": true,
+      "frameDurationMs": 42,
+      "frames": [
+        "frames/idle-combo/f0000.png",
+        "frames/idle-combo/f0001.png",
+        "frames/idle-combo/f0002.png",
+        "frames/idle-combo/f0003.png"
+      ]
+    },
+    {
+      "actionId": "yawn",
+      "loop": false,
+      "frameDurationMs": 42,
+      "frames": [
+        "frames/yawn/f0000.png",
+        "frames/yawn/f0001.png",
+        "frames/yawn/f0002.png"
+      ]
+    },
+    {
+      "actionId": "lick",
+      "loop": false,
+      "frameDurationMs": 42,
+      "frames": [
+        "frames/lick/f0000.png",
+        "frames/lick/f0001.png",
+        "frames/lick/f0002.png"
+      ]
+    },
+    {
+      "actionId": "grab-release",
+      "loop": false,
+      "frameDurationMs": 42,
+      "frames": [
+        "frames/grab-release/f0000.png",
+        "frames/grab-release/f0001.png",
+        "frames/grab-release/f0002.png",
+        "frames/grab-release/f0003.png",
+        "frames/grab-release/f0004.png"
+      ],
+      "holdRange": [
+        1,
+        3
+      ]
+    }
+  ],
+  "semantics": {
+    "idle": "idle-combo",
+    "look-left": "idle-combo",
+    "look-right": "idle-combo",
+    "react-happy": "idle-combo",
+    "react-curious": "lick",
+    "carried": "grab-release",
+    "landed": "grab-release",
+    "sleep": "idle-combo",
+    "wake": "idle-combo",
+    "yawn": "yawn",
+    "lick": "lick",
+    "grab-release": "grab-release"
+  },
+  "idleSchedule": {
+    "entries": [
+      {
+        "actionId": "yawn",
+        "weight": 1,
+        "minIntervalMs": 30000,
+        "maxIntervalMs": 60000
+      },
+      {
+        "actionId": "lick",
+        "weight": 1,
+        "minIntervalMs": 30000,
+        "maxIntervalMs": 60000
+      }
+    ],
+    "alignToDefaultLoop": true
+  },
+  "files": [
+    {
+      "role": "base",
+      "relativePath": "frames/idle-combo/f0000.png",
+      "sha256": "d9c9bcbbba3f78d5acb0e0223861c44f79e918c161d4ea7b571f5cc6df50797f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0001.png",
+      "sha256": "f2c007b765efdfde6f0d7772877f6ba35c73e084492cfb685fb7188992528564"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0002.png",
+      "sha256": "7cc9b10ec3bb884c92c27da2be29a3a5d27ab28e89444bcc2808cd412752e4f0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/idle-combo/f0003.png",
+      "sha256": "00ceb97ea699690f1c63fbe8442002df75706fc8f29fc3bb84a9c4dd51d481dc"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/yawn/f0000.png",
+      "sha256": "d9c9bcbbba3f78d5acb0e0223861c44f79e918c161d4ea7b571f5cc6df50797f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/yawn/f0001.png",
+      "sha256": "f2c007b765efdfde6f0d7772877f6ba35c73e084492cfb685fb7188992528564"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/yawn/f0002.png",
+      "sha256": "7cc9b10ec3bb884c92c27da2be29a3a5d27ab28e89444bcc2808cd412752e4f0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/lick/f0000.png",
+      "sha256": "d9c9bcbbba3f78d5acb0e0223861c44f79e918c161d4ea7b571f5cc6df50797f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/lick/f0001.png",
+      "sha256": "f2c007b765efdfde6f0d7772877f6ba35c73e084492cfb685fb7188992528564"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/lick/f0002.png",
+      "sha256": "7cc9b10ec3bb884c92c27da2be29a3a5d27ab28e89444bcc2808cd412752e4f0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/grab-release/f0000.png",
+      "sha256": "d9c9bcbbba3f78d5acb0e0223861c44f79e918c161d4ea7b571f5cc6df50797f"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/grab-release/f0001.png",
+      "sha256": "f2c007b765efdfde6f0d7772877f6ba35c73e084492cfb685fb7188992528564"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/grab-release/f0002.png",
+      "sha256": "7cc9b10ec3bb884c92c27da2be29a3a5d27ab28e89444bcc2808cd412752e4f0"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/grab-release/f0003.png",
+      "sha256": "00ceb97ea699690f1c63fbe8442002df75706fc8f29fc3bb84a9c4dd51d481dc"
+    },
+    {
+      "role": "frame",
+      "relativePath": "frames/grab-release/f0004.png",
+      "sha256": "96d85a60fa229db3dfc9576763e0c838bda60f4fc0d7391d2aeb6dedd16c7e11"
+    }
+  ],
+  "_provenance": {
+    "generator": "photo_avatar_backend.frames.packing",
+    "framesDir": "D:\\petBaby\\desktop-pet\\_fixture-work\\idle\\frames",
+    "durationMs": 168,
+    "note": "多动作包：idle 一支循环 + 3 支动作（动作复用 idle 的 crop box，idleSchedule 只放偶发动作）。"
+  }
+}

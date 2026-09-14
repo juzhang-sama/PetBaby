@@ -673,16 +673,120 @@ mod tests {
         }
     }
 
+    fn contract_fixture_path() -> PathBuf {
+        PathBuf::from(env!("CARGO_MANIFEST_DIR"))
+            .join("tests/fixtures/photo-avatar/frame-sequence-v7-multi-action.json")
+    }
+
+    /// 读那份跨语言契约 fixture。
+    ///
+    /// 它**不是手写的**：由服务侧 `frames.packing.pack_frame_sequence` 真跑一遍产出，
+    /// 所以它同时是「服务的输出形状」与「Rust 必须接受的输入」。
+    fn contract_fixture_value() -> serde_json::Value {
+        let path = contract_fixture_path();
+        let bytes = std::fs::read(&path)
+            .unwrap_or_else(|error| panic!("读不到契约 fixture {}: {error}", path.display()));
+        serde_json::from_slice(&bytes).expect("契约 fixture 必须是合法 JSON")
+    }
+
     #[test]
     fn serializing_a_parsed_manifest_never_emits_null_fields() {
         for value in [
             minimal_manifest(),
             real_manifest("04-warm-brown-tabby"),
             real_manifest("05-silver-tabby"),
+            contract_fixture_value(),
         ] {
             let manifest = parse(value).expect("manifest must parse");
             let wire = serde_json::to_value(&manifest).expect("manifest must serialize");
             assert_no_null(&wire, "manifest");
+        }
+    }
+
+    /// 跨语言契约 fixture：**服务侧（Python `frames.packing`）生成，Rust 侧必须接受**。
+    ///
+    /// 一份文件两边共用：Python 侧断言「现在打出来的就是它」（防打包器悄悄漂移），
+    /// Rust 侧断言「它进得来」（防校验器比前端更严）。多动作包的差异全在这里 ——
+    /// 4 条 actions、`holdRange`、`idleSchedule`，以及比 `PRODUCT_MOTIONS` **多出来的**
+    /// `yawn` / `lick` / `grab-release` 三个 semantics 键。
+    #[test]
+    fn parses_the_shared_multi_action_contract_fixture() {
+        let manifest = parse(contract_fixture_value()).expect("Rust 必须接受多动作包");
+
+        assert_eq!(manifest.schema_version, FRAME_SEQUENCE_SCHEMA_VERSION);
+        assert_eq!(manifest.default_action, "idle-combo");
+        let ids: Vec<&str> = manifest
+            .actions
+            .iter()
+            .map(|action| action.action_id.as_str())
+            .collect();
+        assert_eq!(ids, vec!["idle-combo", "yawn", "lick", "grab-release"]);
+
+        // 只有交互动作带 holdRange（悬空保持区间，人定的）
+        let grab = &manifest.actions[3];
+        assert_eq!(grab.hold_range, Some([1, 3]));
+        assert_eq!(
+            manifest
+                .actions
+                .iter()
+                .filter(|action| action.hold_range.is_some())
+                .count(),
+            1
+        );
+
+        // 两条产品规则：拖拽 → 拎起；点身体 → 理毛
+        assert_eq!(
+            manifest.semantics.get("carried").map(String::as_str),
+            Some("grab-release")
+        );
+        assert_eq!(
+            manifest.semantics.get("landed").map(String::as_str),
+            Some("grab-release")
+        );
+        assert_eq!(
+            manifest.semantics.get("react-curious").map(String::as_str),
+            Some("lick")
+        );
+        // 动作自己各占一个键 —— 前端取法是 `semantics[motion] ?? defaultAction`
+        for motion in ["yawn", "lick", "grab-release"] {
+            assert_eq!(
+                manifest.semantics.get(motion).map(String::as_str),
+                Some(motion),
+                "{motion} 必须指向自己"
+            );
+        }
+
+        let schedule = manifest
+            .idle_schedule
+            .as_ref()
+            .expect("多动作包必须带 idleSchedule");
+        let scheduled: Vec<&str> = schedule
+            .entries
+            .iter()
+            .map(|entry| entry.action_id.as_str())
+            .collect();
+        assert_eq!(
+            scheduled,
+            vec!["yawn", "lick"],
+            "交互动作不进 idleSchedule（它由 playMotion 触发）"
+        );
+        assert_eq!(schedule.align_to_default_loop, Some(true));
+
+        // 每一帧都在 files 里登记（安装时 Rust 会逐文件校 sha256）
+        let declared: HashSet<&str> = manifest
+            .files
+            .iter()
+            .map(|file| file.relative_path.as_str())
+            .collect();
+        for action in &manifest.actions {
+            for frame in &action.frames {
+                assert!(
+                    declared.contains(frame.as_str()),
+                    "{}/{} 没在 files 里登记",
+                    action.action_id,
+                    frame
+                );
+            }
         }
     }
 

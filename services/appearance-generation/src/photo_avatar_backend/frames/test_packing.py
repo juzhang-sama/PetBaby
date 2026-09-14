@@ -381,3 +381,55 @@ def test_an_action_repeating_another_action_id_is_rejected(tmp_path: Path):
     yawn = _extra(tmp_path, "yawn")
     with pytest.raises(ValueError, match="duplicate actionId"):
         pack(idle, tmp_path / "out2", extra_actions=[yawn, yawn])
+
+
+# ------------------------------------------------------------------ 跨语言契约 fixture
+#
+# 一份文件两边共用：这里断言「我们**现在**打出来的就是它」（防打包器悄悄漂移），
+# Rust 侧（frame_sequence.rs）断言「它进得来」（防校验器比前端更严）。
+
+CONTRACT_FIXTURE = (
+    Path(__file__).resolve().parents[5]
+    / "apps/desktop/src-tauri/tests/fixtures/photo-avatar/frame-sequence-v7-multi-action.json"
+)
+
+
+def test_the_shared_contract_fixture_is_still_exactly_what_we_produce(tmp_path: Path):
+    def frames(name: str, count: int) -> Path:
+        out = tmp_path / name / "frames"
+        out.mkdir(parents=True)
+        for index in range(count):
+            (out / f"f{index:04d}.png").write_bytes(
+                b"\x89PNG\r\n\x1a\n" + bytes([index]) * 8
+            )
+        return out
+
+    packed = pack_frame_sequence(
+        frames_dir=frames("idle", 4),
+        out_dir=tmp_path / "package",
+        pet_id="99-contract",
+        display_name="契约样例（短毛猫）",
+        variant_id="photo-avatar-session-contract-1",
+        frame_format="png",
+        extra_actions=[
+            ExtraAction(action_id="yawn", frames_dir=frames("yawn", 3), scheduled=True),
+            ExtraAction(action_id="lick", frames_dir=frames("lick", 3), scheduled=True),
+            ExtraAction(
+                action_id="grab-release",
+                frames_dir=frames("grab-release", 5),
+                hold_range=(1, 3),
+            ),
+        ],
+    )
+
+    produced = json.loads(packed.manifest_path.read_text(encoding="utf-8"))
+    fixture = json.loads(CONTRACT_FIXTURE.read_text(encoding="utf-8"))
+    # _provenance.framesDir 记的是「在哪台机器、哪个临时目录跑的」→ 天然逐机不同。
+    produced.pop("_provenance")
+    fixture.pop("_provenance")
+
+    assert produced == fixture, (
+        "打包器的输出形状变了。这份 fixture 是 Python 与 Rust 共用的契约 —— "
+        "改它之前先看 apps/desktop/src-tauri/src/runtime_assets/frame_sequence.rs "
+        "的 parses_the_shared_multi_action_contract_fixture 还认不认"
+    )
