@@ -51,7 +51,13 @@ pub struct FrameSequenceActionV7 {
     pub frame_duration_ms: f64,
     pub frames: Vec<String>,
     /// 交互保持区间（帧下标闭区间）：拎起类动作的"悬空保持"段。
-    #[serde(default)]
+    ///
+    /// 🔴 `skip_serializing_if` **不能省**。这份结构体经 `asset_manifest` 命令**回传给前端**，
+    /// 前端 `parseFrameSequenceManifest` 用 `action.holdRange !== undefined` 判「有没有」，
+    /// 所以 `"holdRange": null` 会被读成「有，但不是数组」并报
+    /// `actions[0].holdRange must be a [lo, hi] frame-index pair`。
+    /// `#[serde(default)]` 只管**反**序列化，必须配 `skip_serializing_if` 才能真正「没有就不写」。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hold_range: Option<[i64; 2]>,
 }
 
@@ -69,7 +75,9 @@ pub struct FrameSequenceIdleScheduleEntryV7 {
     pub action_id: String,
     pub weight: f64,
     pub min_interval_ms: f64,
-    #[serde(default)]
+    /// 同 `hold_range`：这个结构体会被回传给前端，缺省项必须**整个键不写**，
+    /// 不能写成 `null`（前端 `entry.maxIntervalMs === undefined` 判缺省）。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_interval_ms: Option<f64>,
 }
 
@@ -77,11 +85,11 @@ pub struct FrameSequenceIdleScheduleEntryV7 {
 #[serde(rename_all = "camelCase")]
 pub struct FrameSequenceIdleScheduleV7 {
     pub entries: Vec<FrameSequenceIdleScheduleEntryV7>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub min_interval_ms: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub max_interval_ms: Option<f64>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub align_to_default_loop: Option<bool>,
 }
 
@@ -99,11 +107,15 @@ pub struct RuntimeAssetManifestV7 {
     pub anchor_policy: String,
     pub actions: Vec<FrameSequenceActionV7>,
     pub semantics: BTreeMap<String, String>,
-    #[serde(default)]
+    /// 🔴 这一整个结构体会经 `asset_manifest` 命令回传给前端，四个可选字段
+    /// **缺省时必须整个键消失**。写成 `null` 的话前端会当成「有值」去校验：
+    /// `blink`/`idleSchedule`/`hitBounds` 报 `must be an object`，
+    /// `alignToDefaultLoop: null` 报 `must be a boolean`。
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub idle_schedule: Option<FrameSequenceIdleScheduleV7>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub blink: Option<FrameSequenceBlinkV7>,
-    #[serde(default)]
+    #[serde(default, skip_serializing_if = "Option::is_none")]
     pub hit_bounds: Option<FrameSequenceRectV7>,
     pub files: Vec<ManifestFileEntry>,
 }
@@ -634,6 +646,72 @@ mod tests {
                 assert_eq!(manifest.pet_id, "04-warm-brown-tabby");
             }
             other => panic!("expected V7, got {other:?}"),
+        }
+    }
+
+    /// 序列化回来的 JSON 里**一个 `null` 都不许有**。
+    ///
+    /// 这份结构体走 `asset_manifest` 命令回传给前端（`runtime-pet-loader.ts`），
+    /// 前端 `parseFrameSequenceManifest` 用 `!== undefined` 判「有没有」。所以
+    /// `"holdRange": null` 不是「没有」，而是「有但类型不对」，会当场报
+    /// `actions[0].holdRange must be a [lo, hi] frame-index pair` —— 这正是
+    /// 真机上「内置宠物能跑、刚上传的宠物一装就炸」的原因（内置宠物走 HTTP 拿原始 JSON）。
+    fn assert_no_null(value: &serde_json::Value, path: &str) {
+        match value {
+            serde_json::Value::Null => panic!("{path} 是 null：缺省字段必须整个键消失"),
+            serde_json::Value::Array(items) => {
+                for (index, item) in items.iter().enumerate() {
+                    assert_no_null(item, &format!("{path}[{index}]"));
+                }
+            }
+            serde_json::Value::Object(map) => {
+                for (key, item) in map {
+                    assert_no_null(item, &format!("{path}.{key}"));
+                }
+            }
+            _ => {}
+        }
+    }
+
+    #[test]
+    fn serializing_a_parsed_manifest_never_emits_null_fields() {
+        for value in [
+            minimal_manifest(),
+            real_manifest("04-warm-brown-tabby"),
+            real_manifest("05-silver-tabby"),
+        ] {
+            let manifest = parse(value).expect("manifest must parse");
+            let wire = serde_json::to_value(&manifest).expect("manifest must serialize");
+            assert_no_null(&wire, "manifest");
+        }
+    }
+
+    #[test]
+    fn a_missing_hold_range_leaves_no_hold_range_key_on_the_wire() {
+        let manifest = parse(minimal_manifest()).expect("minimal manifest must parse");
+        let wire = serde_json::to_value(&manifest).expect("manifest must serialize");
+        assert!(
+            wire["actions"][0].get("holdRange").is_none(),
+            "没有 holdRange 的动作在 wire 上必须**没有这个键**，实际：{}",
+            wire["actions"][0]
+        );
+    }
+
+    #[test]
+    fn a_declared_hold_range_survives_the_wire_and_others_stay_absent() {
+        let manifest = parse(real_manifest("05-silver-tabby")).expect("05 must parse");
+        let wire = serde_json::to_value(&manifest).expect("manifest must serialize");
+        let actions = wire["actions"].as_array().expect("actions must be an array");
+        for action in actions {
+            match action["actionId"].as_str() {
+                Some("grab-release") => assert_eq!(action["holdRange"], serde_json::json!([30, 59])),
+                _ => assert!(
+                    action.get("holdRange").is_none(),
+                    "{} 不该带 holdRange，实际：{}",
+                    action["actionId"],
+                    action["holdRange"]
+                ),
+            }
         }
     }
 
