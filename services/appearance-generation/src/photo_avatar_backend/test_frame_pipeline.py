@@ -32,12 +32,18 @@ from photo_avatar_backend.frame_pipeline import (  # noqa: E402
     FramePipelineError,
     FrameSequenceArtifact,
     MotionSource,
+    analyze_action_facts,
     analyze_photo_facts,
     generate_motion_source,
     motion_source_path,
     pack_frame_sequence,
     scratch_dir,
     upload_variant_id,
+)
+from photo_avatar_backend.frames.action_prompts import (  # noqa: E402
+    ACTION_IDS,
+    FALLBACK_ACTION_FACTS,
+    render_action_prompt_for,
 )
 from photo_avatar_backend.lk888_client import Lk888Error, MediaState  # noqa: E402
 
@@ -607,3 +613,87 @@ def test_the_packed_variant_id_is_the_one_finalization_expects(tmp_path: Path):
     )
     assert manifest["variantId"] == "photo-avatar-session-abc-3"
     assert manifest["variantId"] == upload_variant_id("session-abc", 3)
+
+
+# ---------------- 动作提示词的 4 个宠物字段（gpt-4o 看绿幕首帧图） ----------------
+#
+# 服务路径没有 `output/宠物档案/<petId>.json`（那份在 .gitignore 里、而且只有 04/05/06），
+# 所以这 4 项改由模型从**首帧图**判。纪律与毛长那条一致：**只能降级，不能失败**。
+
+_ACTION_FACTS_OK = {
+    "identity": "短毛猫，圆脸、大而圆的眼睛、三角形耳朵",
+    "coat": "浅奶油白底毛（亮部 RGB≈(236,228,220)）+ 深色近黑斑纹",
+    "coat_guard": "不得变灰、不得变黄、不得整体提亮",
+    "coat_negative": "desaturation, grey, yellowing",
+}
+
+
+def test_action_facts_are_taken_from_the_frame_when_the_model_answers() -> None:
+    client = _FakeClient(facts=_ACTION_FACTS_OK)
+
+    facts = analyze_action_facts(client, b"green-screen-frame-png", log=lambda _: None)
+
+    assert facts.detected
+    assert facts.identity == _ACTION_FACTS_OK["identity"]
+    assert facts.coat == _ACTION_FACTS_OK["coat"]
+    assert facts.coat_guard == _ACTION_FACTS_OK["coat_guard"]
+    assert facts.coat_negative == _ACTION_FACTS_OK["coat_negative"]
+    # 判的是**首帧图那一张**，不是原照片那批（首帧图才是整段视频的锚）。
+    assert client.analysis_image_counts == [1]
+
+
+@pytest.mark.parametrize(
+    "response",
+    [
+        # 答了哨兵值
+        {"identity": "unknown", "coat": "c", "coat_guard": "g", "coat_negative": "n"},
+        # 某个字段是空串（答非所问 / 模型偷懒）
+        {"identity": "猫", "coat": "   ", "coat_guard": "g", "coat_negative": "n"},
+        # 缺字段
+        {"identity": "猫", "coat": "c", "coat_guard": "g"},
+        # 回包根本不是对象
+        ["not", "an", "object"],
+    ],
+)
+def test_an_unusable_response_falls_back_as_a_whole(response: object) -> None:
+    """四种「不可用」抹平成同一个结果，而且是**整包**换兜底 ——
+    兜底本身是自洽的一套措辞，混用「真判的 identity + 兜底的 coat」只会自相矛盾。"""
+    client = _FakeClient(facts=response)
+
+    facts = analyze_action_facts(client, b"png", log=lambda _: None)
+
+    assert facts == FALLBACK_ACTION_FACTS
+    assert not facts.detected
+
+
+def test_an_upstream_error_degrades_instead_of_failing() -> None:
+    """一次失败会带走后面 ~5 算力/支的视频，而少这四项母版/视频照样出得来
+    （真正的身份锚是首帧图本身）—— 纯提质项不该有这个权力。"""
+    client = _FakeClient(facts=Lk888Error("temporaryUnavailable", True, "analyze boom"))
+
+    facts = analyze_action_facts(client, b"png", log=lambda _: None)
+
+    assert facts == FALLBACK_ACTION_FACTS
+
+
+def test_a_code_error_is_not_swallowed() -> None:
+    """`AttributeError` 之类的 bug 必须炸出来 —— 吞掉它就永远查不到。"""
+
+    class _Broken:
+        def analyze_json(self, prompt: str, images: object, schema: object) -> object:
+            raise AttributeError("analyze_json 拼错了")
+
+    with pytest.raises(AttributeError):
+        analyze_action_facts(_Broken(), b"png", log=lambda _: None)
+
+
+@pytest.mark.parametrize("action_id", sorted(ACTION_IDS))
+def test_the_fallback_still_renders_a_valid_prompt(action_id: str) -> None:
+    """兜底也得能真的渲染出提示词 —— 否则「降级」等于「这条动作做不出来」。"""
+    text = render_action_prompt_for(action_id, FALLBACK_ACTION_FACTS)
+
+    assert FALLBACK_ACTION_FACTS.identity in text
+    assert FALLBACK_ACTION_FACTS.coat_guard in text
+    assert FALLBACK_ACTION_FACTS.coat_negative in text
+    for token in ("__IDENTITY__", "__COAT__", "__ACTION_", "__TAIL_"):
+        assert token not in text

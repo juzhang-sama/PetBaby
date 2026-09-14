@@ -42,6 +42,9 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import FrameStepRequest
+# `frames.action_prompts` 只依赖 json/re/pathlib（**没有 numpy**），所以可以放在模块顶层；
+# 与 `frames.pipeline` 不同 —— 那个在函数里懒 import，免得后端启动就硬依赖 numpy/PIL/scipy。
+from .frames.action_prompts import ActionFacts, FALLBACK_ACTION_FACTS
 from .lk888_client import Lk888Error
 
 SCRATCH_DIR = "scratch"
@@ -285,6 +288,78 @@ def _photo_fact(
         log(f"[照片分析] {key} 是意料之外的值 {value!r}（当成看不出来）")
         return None
     return value
+
+
+# 动作提示词里那 4 个「因猫而异」的字段的判定提示。
+#
+# 与毛长那条（`_PHOTO_FACTS_PROMPT`）同一个风格：**只描述看得见的**，
+# 看不出来就答 `unknown`。`coat_guard` / `coat_negative` 是**从刚判出的毛色推出来的**
+# （「这种颜色最容易往哪漂」），不是凭空发明的额外知识。
+_ACTION_FACTS_PROMPT = (
+    "You are looking at one green-screen frame of a single pet, taken for a video shoot. "
+    "Describe only what is directly visible in THIS frame; do not guess, do not use breed "
+    'knowledge. Answer "unknown" for any field you cannot judge from the frame. '
+    "identity: one short phrase for the pet's face, head and body shape (shape only, no colour). "
+    "coat: one short phrase for the fur colour and markings — dominant colour first, then the "
+    "accent colour, with approximate RGB values when they are clear. "
+    "coat_guard: for exactly that coat, the colour drifts to forbid (e.g. turning grey, "
+    "yellowing, being washed out or over-brightened, losing the dark markings). "
+    "coat_negative: the same drifts as a comma-separated list of english keywords."
+)
+
+
+def _action_facts_schema() -> dict[str, Any]:
+    fields = ("identity", "coat", "coat_guard", "coat_negative")
+    return {
+        "type": "object",
+        "additionalProperties": False,
+        "properties": {field: {"type": "string"} for field in fields},
+        "required": list(fields),
+    }
+
+
+def analyze_action_facts(
+    client: Any,
+    frame_png: bytes,
+    *,
+    log: Callable[[str], None] = print,
+) -> ActionFacts:
+    """看一眼**绿幕首帧图**，判动作提示词要的那 4 个字段。
+
+    为什么用首帧图而不是原照片：动作视频是从首帧图开始的，**首帧图才是「整段视频
+    长什么样」的锚**；而且它是绿幕版、背景干净，判定比生活照稳。
+
+    形状与纪律照 `analyze_photo_facts`（毛长那条）：
+
+    - **没有自己的 step 名**，是内部一步（片 3 接进 `generateMotionSource`）。
+    - 🔴 **只能降级，不能失败。** 这四项是提示词的**补充强调** —— 真正的身份锚是首帧图
+      本身（骨架第一句就写着「以首帧图作为唯一的身份/造型/配色参考」），少它们照样出得来；
+      而一次失败会带走后面 ~5 算力/支的视频。一个纯提质项不该有这个权力。
+    - 四种「不可用」抹平成同一个结果（**整包兜底**）：答 `unknown`、答非所问、缺字段、
+      回包不成形。**整包**而不是逐字段，因为兜底本身就是自洽的一套措辞，
+      混用「真判的 identity + 兜底的 coat」只会自相矛盾。
+    - `AttributeError` 之类的**代码错误不在吞的范围内**：那是 bug，要炸出来。
+      （所以 `_FakeClient` 必须真的实现 `analyze_json`。）
+    """
+    try:
+        response = client.analyze_json(_ACTION_FACTS_PROMPT, [frame_png], _action_facts_schema())
+    except (Lk888Error, FramePipelineError) as error:
+        log(f"[动作分析] 降级为通用兜底（{type(error).__name__}: {error}）")
+        return FALLBACK_ACTION_FACTS
+    if not isinstance(response, Mapping):
+        log("[动作分析] 回包不是对象 → 降级为通用兜底")
+        return FALLBACK_ACTION_FACTS
+
+    values: dict[str, str] = {}
+    for field in ("identity", "coat", "coat_guard", "coat_negative"):
+        value = response.get(field)
+        text = value.strip() if isinstance(value, str) else ""
+        if not text or text == UNKNOWN_FACT:
+            log(f"[动作分析] {field} 不可用（{value!r}）→ 降级为通用兜底")
+            return FALLBACK_ACTION_FACTS
+        values[field] = text
+    log(f"[动作分析] 判定成功：identity={values['identity'][:40]!r} coat={values['coat'][:40]!r}")
+    return ActionFacts(**values, detected=True)
 
 
 def generate_motion_source(

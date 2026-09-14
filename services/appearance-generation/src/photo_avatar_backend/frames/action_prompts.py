@@ -45,15 +45,19 @@ from __future__ import annotations
 
 import json
 import re
+from dataclasses import dataclass
 from pathlib import Path
 
 __all__ = [
     "ACTION_IDS",
+    "FALLBACK_ACTION_FACTS",
     "NEGATIVE_PREFIX",
+    "ActionFacts",
     "ActionPromptError",
     "joins_idle_schedule",
     "load_action",
     "render_action_prompt",
+    "render_action_prompt_for",
     "uses_end_frame",
 ]
 
@@ -98,6 +102,38 @@ class ActionPromptError(ValueError):
     继承 `ValueError`（不是 `SystemExit`）：后者不是 `Exception`，
     `job_store.run_reserved` 的 `except Exception` 抓不到，会在 worker 线程里静默逃逸。
     """
+
+
+@dataclass(frozen=True)
+class ActionFacts:
+    """动作提示词里那 4 个「因猫而异」的字段。
+
+    来源有两条，**下游看到的是同一个类型**：
+    - 人工出宠（`scripts/poc_生成动作提示词.py`）：手写在 `output/宠物档案/<petId>.json`。
+    - 服务路径（`frame_pipeline.analyze_action_facts`）：gpt-4o 看**绿幕首帧图**自动判。
+
+    `detected=False` 表示**没判出来、这是兜底值**（判不出 / 回包不成形 / 模型乱答）。
+    兜底值本身是一套**自洽的通用措辞**，不依赖任何具体宠物 —— 所以「整包降级」
+    比「四个字段各降各的」更好：混用「真判的 identity + 兜底的 coat」只会自相矛盾。
+    """
+
+    identity: str
+    coat: str
+    coat_guard: str
+    coat_negative: str
+    detected: bool = True
+
+
+# 判不出来时用的通用措辞。刻意**不提任何具体宠物**（不说品种、不说颜色），
+# 因为这时候我们确实什么都不知道 —— 而骨架的第一句本来就把「唯一身份/造型/配色参考」
+# 交给了首帧图，这四项只是**补充强调**。
+FALLBACK_ACTION_FACTS = ActionFacts(
+    identity="这只宠物",
+    coat="与照片完全相同的毛色",
+    coat_guard="不得变灰、不得变黄、不得整体失饱和、不得丢失原有花纹",
+    coat_negative="color shift, desaturation, grey, yellowing, washed out, lost markings",
+    detected=False,
+)
 
 
 def _is_section_header(line: str) -> bool:
@@ -274,4 +310,21 @@ def render_action_prompt(
     return (
         f"{_fill(main, values, '主提示词')}\n\n"
         f"{NEGATIVE_PREFIX}{_fill(negative, values, '负向提示词')}"
+    )
+
+
+def render_action_prompt_for(
+    action_id: str,
+    facts: ActionFacts,
+    *,
+    pet_id: str | None = None,
+) -> str:
+    """`render_action_prompt` 的 `ActionFacts` 版本（省掉四处拆包）。"""
+    return render_action_prompt(
+        action_id,
+        identity=facts.identity,
+        coat=facts.coat,
+        coat_guard=facts.coat_guard,
+        coat_negative=facts.coat_negative,
+        pet_id=pet_id,
     )
