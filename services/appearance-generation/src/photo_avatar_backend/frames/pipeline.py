@@ -27,7 +27,7 @@
 from __future__ import annotations
 
 import zipfile
-from collections.abc import Callable
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -41,10 +41,49 @@ MATTE_DIR = "04-抠像"
 ACCEPTANCE_DIR = "05-验收"
 PACKAGE_DIR = "10-运行时包"
 MANIFEST_NAME = "manifest.json"
+# 抠像输出的第 0 帧（见 `matting`：命名是 `f000.png`，三位数）。
+# 它同时充当**动作的校色锚点** —— 两支视频同源校色，触发时才看不出色差。
+IDLE_ANCHOR_FRAME = "f000.png"
+
+
+def idle_crop_box(matte: MatteResult) -> tuple[int, int, int]:
+    """idle 抠出来用的那个取景框 `(x, y, size)` —— **动作必须复用它**。
+
+    没有框（`matte.crop` 为空）就没法保证动作与 idle 同框，**直接拒**：
+    与其装一个「触发瞬间跳位」的包，不如让这一步失败、让人看见。
+    """
+    crop = matte.crop
+    if not crop:
+        raise ValueError(
+            "idle matting produced no crop box, so the actions cannot reuse it "
+            "(keep autocrop on for the idle video)"
+        )
+    return int(crop["x"]), int(crop["y"]), int(crop["size"])
 
 # zip 条目时间戳固定成常数：**同样的内容必须产同样的字节**。
 # zip 默认把源文件 mtime 写进条目头，那样「重跑一次比对 zip」这种验证根本做不了。
 _ZIP_TIMESTAMP = (1980, 1, 1, 0, 0, 0)
+
+
+@dataclass(frozen=True)
+class ActionClip:
+    """idle 之外的一支动作视频 + 它在包里的规格。
+
+    只描述「这支视频对应哪个动作、要不要进 idleSchedule、悬空保持区间是多少」。
+
+    ⚠️ **取景框不在这里给**：动作必须复用 idle 的 crop box，那件事由
+    `build_frame_sequence` 统一做（它才知道 idle 抠出来的是什么框）。
+    ⚠️ 抠像用的**锚点帧也由它统一给**（idle 的第 0 帧）—— 两支视频同源校色，
+    触发瞬间才不会看出色差。
+    """
+
+    action_id: str
+    video: Path
+    loop: bool = False
+    hold_range: tuple[int, int] | None = None
+    scheduled: bool = False
+    min_interval_ms: int = 30_000
+    max_interval_ms: int = 60_000
 
 
 @dataclass(frozen=True)
@@ -60,14 +99,28 @@ class FrameSequenceBuild:
     frame_format: str
     acceptance: AcceptanceResult
     matte: MatteResult
+    # (actionId, 该支的验收结论)。空 = 单动作包（idle 一支）。
+    action_acceptances: tuple[tuple[str, AcceptanceResult], ...] = ()
 
     @property
     def overall_passed(self) -> bool:
-        return self.acceptance.overall_passed
+        """**整包**的结论：idle 与每一支动作都得过。
+
+        单动作包时它就等于 idle 的结论（与多动作支持之前逐字相同）。
+        """
+        return self.acceptance.overall_passed and all(
+            result.overall_passed for _, result in self.action_acceptances
+        )
 
     @property
     def failed_criteria(self) -> tuple[str, ...]:
-        return self.acceptance.failed_criteria
+        """没过哪些判据，**带动作前缀**（`yawn:尾巴完整`）—— 人要知道是哪一支的哪一条。"""
+        if not self.action_acceptances:
+            return self.acceptance.failed_criteria
+        failed = [f"idle-combo:{item}" for item in self.acceptance.failed_criteria]
+        for action_id, result in self.action_acceptances:
+            failed.extend(f"{action_id}:{item}" for item in result.failed_criteria)
+        return tuple(failed)
 
 
 def zip_package(package_dir: Path, zip_path: Path) -> tuple[Path, int]:
@@ -108,9 +161,14 @@ def build_frame_sequence(
     webp_quality: int = WEBP_QUALITY,
     color_match: Path | None = None,
     path_base: Path | None = None,
+    action_clips: Sequence[ActionClip] = (),
     log: Callable[[str], None] = print,
 ) -> FrameSequenceBuild:
     """跑完 `packFrameSequence` 这一步，返回产物位置与验收结论。
+
+    `action_clips` 为空 → 单动作包（只有 idle），输出与多动作支持之前逐字节相同。
+    非空 → idle 与每支动作并进**同一个**包（一个 job 一个 artifact → 必须一支 zip），
+    每支动作**复用 idle 的 crop box 与锚点帧**抠像，并各自跑四项验收。
 
     只接受空目录（见模块开头的说明）。不抛验收 FAIL —— FAIL 是结论不是异常。
     """
@@ -140,6 +198,42 @@ def build_frame_sequence(
         matte.frames_dir, out_dir / ACCEPTANCE_DIR, path_base=path_base, log=log
     )
 
+    extra_actions: list[packing.ExtraAction] = []
+    action_acceptances: list[tuple[str, AcceptanceResult]] = []
+    for clip in action_clips:
+        log(f"[动作] {clip.action_id}：抠像（复用 idle 的 crop box + 用 idle 第 0 帧校色）")
+        action_matte = matte_video(
+            Path(clip.video),
+            out_dir / f"{MATTE_DIR}-{clip.action_id}",
+            fps=fps,
+            frame_duration_ms=frame_duration_ms,
+            # crop_box 优先于 autocrop（见 matting）：动作各家自裁 = 触发瞬间错位。
+            autocrop=False,
+            crop_box=idle_crop_box(matte),
+            color_match=matte.frames_dir / IDLE_ANCHOR_FRAME,
+            path_base=path_base,
+            log=log,
+        )
+        log(f"[动作] {clip.action_id}：四项验收")
+        action_acceptance = accept_frames(
+            action_matte.frames_dir,
+            out_dir / f"{ACCEPTANCE_DIR}-{clip.action_id}",
+            path_base=path_base,
+            log=log,
+        )
+        action_acceptances.append((clip.action_id, action_acceptance))
+        extra_actions.append(
+            packing.ExtraAction(
+                action_id=clip.action_id,
+                frames_dir=action_matte.frames_dir,
+                loop=clip.loop,
+                hold_range=clip.hold_range,
+                scheduled=clip.scheduled,
+                min_interval_ms=clip.min_interval_ms,
+                max_interval_ms=clip.max_interval_ms,
+            )
+        )
+
     log("[3/4] 打包 schema 7（webp）")
     packed = packing.pack_frame_sequence(
         frames_dir=matte.frames_dir,
@@ -151,6 +245,7 @@ def build_frame_sequence(
         frame_duration_ms=frame_duration_ms,
         frame_format="webp",
         webp_quality=webp_quality,
+        extra_actions=extra_actions,
     )
 
     log("[4/4] 打 zip")
@@ -166,9 +261,10 @@ def build_frame_sequence(
         package_dir=packed.out_dir,
         manifest_path=packed.manifest_path,
         manifest_sha256=packed.manifest_sha256,
-        frame_count=packed.frame_count,
+        frame_count=packed.total_frame_count,
         frame_duration_ms=packed.frame_duration_ms,
         frame_format=packed.frame_format,
         acceptance=acceptance,
         matte=matte,
+        action_acceptances=tuple(action_acceptances),
     )

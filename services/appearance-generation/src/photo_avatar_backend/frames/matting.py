@@ -394,6 +394,7 @@ def matte_video(
     spatial: float = 0.6,
     frame_duration_ms: int = 0,
     autocrop: bool = True,
+    crop_box: tuple[int, int, int] | None = None,
     auto_warmup: bool = True,
     warmup_tol: float = WARMUP_TOL,
     color_match: Path | None = None,
@@ -450,12 +451,41 @@ def matte_video(
 
     # 取景：Seedance 常把方图首帧铺进 16:9 画布，需要按「全部帧前景并集」裁正方形，
     # 否则会切掉甩出原方图范围的尾巴。
-    crop_box = None
-    if autocrop:
+    #
+    # `crop_box` 给了就**优先用它**（跳过 autocrop）：**动作必须复用 idle 的框**，
+    # 两支视频各自 autocrop 会让触发瞬间错位（05 的 yawn 就是这么错位 27px 的）。
+    crop_record = None
+    if crop_box is not None:
+        cx, cy, side = crop_box
+        src_h, src_w = rgbs[0].shape[:2]
+        if side <= 0 or cx < 0 or cy < 0 or cx + side > src_w or cy + side > src_h:
+            raise MattingError(
+                f"crop box ({cx},{cy},{side}) does not fit inside the {src_w}x{src_h} source frames"
+            )
+        # 还是要算一遍前景并集 —— **只为了报「有没有超框」**。
+        # 超框不抛异常：这支视频的钱已经花过了，抛出去等于让用户重付；
+        # 契约里的处置是「改提示词重生成 vs 放宽取景框」，那是**人**的决定
+        # （放宽框 = idle 与所有动作一起重出）。所以这里只把事实大声记下来。
+        _, (fx0, fy0, fx1, fy1) = compute_autocrop(rgbs)
+        clipped = not (cx <= fx0 and cy <= fy0 and cx + side >= fx1 and cy + side >= fy1)
+        rgbs = [r[cy:cy + side, cx:cx + side] for r in rgbs]
+        crop_record = {
+            "x": cx, "y": cy, "size": side, "source": "reused",
+            "unionForegroundBBox": [fx0, fy0, fx1, fy1],
+            "clipsForeground": bool(clipped),
+        }
+        log(f"[取景] 复用调用方给的 crop {side}x{side} @({cx},{cy})"
+            f"（与 idle 同一个框，触发时不跳位）")
+        if clipped:
+            log(f"[警告] 动作前景 bbox=[{fx0},{fy0},{fx1},{fy1}] "
+                f"超出复用的 crop box(={cx},{cy},{side})！"
+                "处置：改提示词加负向词重生成，**不要**悄悄放宽取景框"
+                "（放宽 = idle 与所有动作一起重出）")
+    elif autocrop:
         (cx, cy, side), (fx0, fy0, fx1, fy1) = compute_autocrop(rgbs)
         clipped = not (cx <= fx0 and cy <= fy0 and cx + side >= fx1 and cy + side >= fy1)
         rgbs = [r[cy:cy + side, cx:cx + side] for r in rgbs]
-        crop_box = {
+        crop_record = {
             "x": cx, "y": cy, "size": side,
             "unionForegroundBBox": [fx0, fy0, fx1, fy1],
             "clipsForeground": bool(clipped),
@@ -540,7 +570,7 @@ def matte_video(
         "spatialSigma": spatial,
         "unmixMinAlpha": UNMIX_MIN_ALPHA,
         "sourceSize": [src_w, src_h],
-        "crop": crop_box,
+        "crop": crop_record,
         "warmupFramesSkipped": warmup,
         "backgroundGSeriesHead": [
             round(float(value), 1) for value in bg_series[:12] if np.isfinite(value)
@@ -569,7 +599,7 @@ def matte_video(
         source_size=(src_w, src_h),
         warmup_frames_skipped=warmup,
         measured_background_rgb=tuple(float(value) for value in bg_ref),
-        crop=crop_box,
+        crop=crop_record,
         video_sha256=params["videoSha256"],
         method=method,
     )

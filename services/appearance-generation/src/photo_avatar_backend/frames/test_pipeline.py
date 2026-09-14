@@ -21,6 +21,7 @@ from PIL import Image, ImageDraw
 
 from photo_avatar_backend.frames.pipeline import (
     MANIFEST_NAME,
+    ActionClip,
     build_frame_sequence,
     zip_package,
 )
@@ -206,3 +207,61 @@ def test_build_acceptance_failure_still_produces_the_package(tmp_path: Path):
     assert result.zip_path.is_file()
     if not result.overall_passed:
         assert result.failed_criteria, "FAIL 必须能说出是哪条判据"
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")
+def test_build_bundles_an_action_into_the_same_package_reusing_the_idle_crop_box(
+    tmp_path: Path,
+):
+    """idle + 一支动作 → **同一个**包（一个 job 一个 artifact → 必须一支 zip）。
+
+    动作的抠像**复用 idle 的 crop box**：两支视频同源（同一张首帧），
+    各裁各的会在触发瞬间跳位 —— 05 的 yawn 就是这么错位 27px 的。
+    """
+    idle = synth_green_video(tmp_path / "idle.mp4")
+    yawn = synth_green_video(tmp_path / "yawn.mp4")
+
+    result = build_frame_sequence(
+        idle,
+        tmp_path / "out",
+        pet_id="99-synth",
+        display_name="合成测试（短毛猫）",
+        fps=8.0,
+        frame_duration_ms=42,
+        action_clips=[ActionClip(action_id="yawn", video=yawn, scheduled=True)],
+    )
+
+    manifest = json.loads(result.manifest_path.read_text(encoding="utf-8"))
+    assert [action["actionId"] for action in manifest["actions"]] == ["idle-combo", "yawn"]
+    assert manifest["semantics"]["yawn"] == "yawn"
+    assert [entry["actionId"] for entry in manifest["idleSchedule"]["entries"]] == ["yawn"]
+    assert manifest["idleSchedule"]["alignToDefaultLoop"] is True
+    # wire 上的 frameCount 是**整包**帧数
+    assert result.frame_count == sum(len(action["frames"]) for action in manifest["actions"])
+
+    # 动作的抠像另开一份目录，且**用 idle 那个框**（不是各自 autocrop）
+    idle_params = json.loads(
+        (result.out_dir / "04-抠像" / "抠像参数.json").read_text(encoding="utf-8")
+    )
+    action_params = json.loads(
+        (result.out_dir / "04-抠像-yawn" / "抠像参数.json").read_text(encoding="utf-8")
+    )
+    assert action_params["crop"]["source"] == "reused"
+    assert (
+        action_params["crop"]["x"],
+        action_params["crop"]["y"],
+        action_params["crop"]["size"],
+    ) == (idle_params["crop"]["x"], idle_params["crop"]["y"], idle_params["crop"]["size"])
+    assert action_params["crop"]["clipsForeground"] is False, "两支同源视频不该超框"
+
+    # 交付物仍是**一支** zip，且动作的帧在里面
+    with zipfile.ZipFile(result.zip_path) as archive:
+        names = set(archive.namelist())
+    assert "manifest.json" in names
+    assert any(name.startswith("frames/yawn/") for name in names)
+
+    # 动作各自跑过验收（结论带动作前缀，人要知道是哪一支的哪一条）
+    assert [action_id for action_id, _ in result.action_acceptances] == ["yawn"]
+    assert result.overall_passed == (
+        result.acceptance.overall_passed and result.action_acceptances[0][1].overall_passed
+    )

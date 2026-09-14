@@ -114,6 +114,8 @@ class PackedFrameSequence:
     total_bytes: int
     frame_duration_ms: int
     frame_format: str = "png"
+    # **整包**的帧数（idle + 所有动作）。`frame_count` 保留旧语义 = idle 那一支的帧数。
+    total_frame_count: int = 0
 
     @property
     def duration_ms(self) -> int:
@@ -338,4 +340,5 @@ def pack_frame_sequence(
         total_bytes=total_bytes,
         frame_duration_ms=frame_duration_ms,
         frame_format=frame_format,
+        total_frame_count=sum(len(action["frames"]) for action in actions),
     )

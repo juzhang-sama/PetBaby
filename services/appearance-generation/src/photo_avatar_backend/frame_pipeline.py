@@ -716,6 +716,12 @@ def pack_frame_sequence(
 
     out_dir = scratch_dir(state_dir, provider_session_id) / PACK_SUBDIR / f"attempt-{request.attempt}"
     log(f"[packFrameSequence] mp4={video.name}  输出={out_dir}")
+    clips = _action_clips(state_dir, provider_session_id)
+    if clips:
+        log(
+            f"[packFrameSequence] 另有 {len(clips)} 支动作并进同一个包："
+            f"{'、'.join(clip.action_id for clip in clips)}"
+        )
     build = build_frame_sequence(
         video,
         out_dir,
@@ -724,9 +730,45 @@ def pack_frame_sequence(
         species=request.species,
         variant_id=upload_variant_id(request.session_id, request.revision),
         path_base=state_dir,
+        action_clips=clips,
         log=log,
     )
     return FrameSequenceArtifact.from_build(build)
+
+
+def _action_clips(state_dir: Path, provider_session_id: str) -> tuple[Any, ...]:
+    """scratch 里已生成的动作视频 → 打包用的动作清单。
+
+    **扫目录，不信请求里的清单** —— 与 idle 那支同一个真源：scratch 里有什么就是什么。
+    生成阶段失败的支不会留文件，所以这里天然只拿到成功的那些。
+
+    每支的**打包规格来自它自己的动作配置**（`assets/motion-prompts/actions/*.json`）：
+    进不进 `idleSchedule` 由 `pipelineTail` 决定（交互动作是 `--no-idle-schedule`），
+    不在这里另抄一份规则。
+
+    ⚠️ `holdRange` 是**实测**出来的（见落地清单第 5 片），现在还标不出来 → 不写这个键。
+    少了它 = 拎起来不「悬空保持」，而不是一个错的值。
+    """
+    # 懒 import：`frames.pipeline` 会拉起 numpy/PIL/scipy（理由见上面那段注释）。
+    from .frames.pipeline import ActionClip
+
+    clips: list[ActionClip] = []
+    for action_id in ACTION_IDS:
+        path = action_video_path(state_dir, provider_session_id, action_id)
+        if not _has_video(path):
+            continue
+        action = load_action(action_id)
+        clips.append(
+            ActionClip(
+                action_id=action_id,
+                video=path,
+                # 偶发与交互动作都是非循环：播完就回 idle（内置 04/05 的 yawn/lick/
+                # grab-release 全是 loop=false），所以这不是每支配置的字段。
+                loop=False,
+                scheduled=joins_idle_schedule(action),
+            )
+        )
+    return tuple(clips)
 
 
 # ------------------------------------------------------------------ 内部实现
