@@ -13,7 +13,11 @@ function deferred<T>() {
   return { promise, resolve, reject };
 }
 
-function snapshot(method: "upload" | "composer", sessionId = `session-${method}`): CreationSnapshot {
+function snapshot(
+  method: "upload" | "composer",
+  sessionId = `session-${method}`,
+  candidateId: string | null = null,
+): CreationSnapshot {
   return {
     sessionId,
     petId: `pet-${method}`,
@@ -24,7 +28,7 @@ function snapshot(method: "upload" | "composer", sessionId = `session-${method}`
     displayName: null,
     jobId: null,
     jobStatus: null,
-    candidateId: null,
+    candidateId,
     recipe: null,
     error: null,
   };
@@ -147,6 +151,19 @@ describe("CreationPageRun", () => {
     expect(test.creation.abandon).toHaveBeenCalledWith("photo-avatar-session");
     expect(test.views.upload.open).toHaveBeenCalledWith(null);
     expect(test.dialog.showDraftChoice).not.toHaveBeenCalled();
+    expect(test.onRoute).toHaveBeenLastCalledWith("upload");
+  });
+
+  it("resumes an upload draft that already produced a candidate instead of deleting it", async () => {
+    // 写实风一次生成 ~5 算力，`abandon` 是真删（连已安装资产一起删）——
+    // 有产物就必须恢复成「预览就绪 → 接受并安装」，不能重开空会话。
+    const draft = snapshot("upload", "photo-avatar-session", "photo-avatar-session-1");
+    const test = routerPorts({ draft });
+
+    await test.page.open("upload");
+
+    expect(test.creation.abandon).not.toHaveBeenCalled();
+    expect(test.views.upload.open).toHaveBeenCalledWith("photo-avatar-session");
     expect(test.onRoute).toHaveBeenLastCalledWith("upload");
   });
 

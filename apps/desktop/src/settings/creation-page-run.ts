@@ -146,13 +146,18 @@ export class CreationPageRun {
       if (!this.isCurrent(visit)) return null;
       if (!draft) return await this.openRoute(requestedRoute, null, visit);
       if (draft.method === requestedRoute) {
-        if (requestedRoute === "upload") {
-          // 照片分身：每次进入创建页都从全新会话开始（生成快、进度恢复价值低）。
-          // 若自动恢复旧草稿，会残留上一次的预览/完成界面（用户已明确要求每次全新）。
+        if (requestedRoute === "upload" && draft.candidateId === null) {
+          // 照片分身：**空**草稿（还没产出任何东西）仍从全新会话开始。
+          // 若自动恢复这种草稿，会残留上一次的预览界面（用户已明确要求每次全新）。
           await this.abandonDraft(draft.sessionId, requestedRoute);
           if (!this.isCurrent(visit)) return null;
           return await this.openRoute(requestedRoute, null, visit);
         }
+        // ⚠️ **已有候选产物（candidateId 非空）的草稿绝不能丢**。
+        // `abandon` 是**真删**：删掉已安装的资产整棵目录、会话行、照片与变体登记
+        // （2026-09-14 实测：进一次创建页就把已装好的写实风资产删干净了）。
+        // 而写实风一次生成 ~5 算力 / 3~8 分钟，重来代价极大 ——
+        // 必须让它能恢复成「预览就绪 → 接受并安装」。
         return await this.openRoute(requestedRoute, draft.sessionId, visit);
       }
       if (draft.method === "adoption") {
