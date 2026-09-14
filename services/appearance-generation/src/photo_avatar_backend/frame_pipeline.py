@@ -42,13 +42,27 @@ from pathlib import Path
 from typing import Any
 
 from .contracts import FrameStepRequest
-# `frames.action_prompts` 只依赖 json/re/pathlib（**没有 numpy**），所以可以放在模块顶层；
-# 与 `frames.pipeline` 不同 —— 那个在函数里懒 import，免得后端启动就硬依赖 numpy/PIL/scipy。
-from .frames.action_prompts import ActionFacts, FALLBACK_ACTION_FACTS
+# `frames.action_prompts` / `frames.prompts` 只依赖 json/re/pathlib（**没有 numpy**），
+# 所以可以放在模块顶层；与 `frames.pipeline` 不同 —— 那个在函数里懒 import，
+# 免得后端启动就硬依赖 numpy/PIL/scipy。
+from .frames.action_prompts import (
+    ACTION_IDS,
+    ActionFacts,
+    FALLBACK_ACTION_FACTS,
+    load_action,
+    render_action_prompt_for,
+    uses_end_frame,
+)
+from .frames.prompts import render_loop_prompt
 from .lk888_client import Lk888Error
 
 SCRATCH_DIR = "scratch"
 MOTION_SOURCE_FILE = "motion-source.mp4"
+# 动作视频放 idle 那支旁边的子目录：`scratch/<providerSessionId>/actions/<actionId>.mp4`。
+#
+# ⚠️ **idle 的路径刻意不搬**（仍是 `motion-source.mp4`）：后端重启后重试要命中它，
+# 而且「把旧会话的 mp4 拷到新会话的同一路径」这个省钱手法完全依赖这个固定名字。
+ACTION_VIDEO_SUBDIR = "actions"
 PACK_SUBDIR = "pack-frame-sequence"
 # 母版/首帧的中间产物与 mp4 同级，方便出问题时整目录打包回看
 MOTION_SUBDIR = "motion-source"
@@ -129,14 +143,41 @@ class FramePipelineError(ValueError):
 
 
 @dataclass(frozen=True)
+class ActionVideo:
+    """一条偶发/交互动作的绿幕视频。**留在服务侧，不往客户端送任何字节。**
+
+    动作各是**独立的一支视频**（呼吸+眨眼+摇尾焊死在 idle 那一支里，不动），
+    所以它们各自复用、各自算钱。
+    """
+
+    action_id: str
+    video_path: Path
+    video_task_id: str | None
+    video_bytes: int
+    reused: bool
+
+    def to_wire(self) -> dict[str, object]:
+        return {
+            "actionId": self.action_id,
+            "videoBytes": self.video_bytes,
+            "videoTaskId": self.video_task_id,
+            "reused": self.reused,
+        }
+
+
+@dataclass(frozen=True)
 class MotionSource:
     """`generateMotionSource` 的产物。
 
-    **没有 artifact** —— 这一步的产物是一支留在服务侧的 mp4（`video_path`），
-    不往客户端送任何字节。客户端要的只是「成了没有」+「花了哪一次」。
+    **没有 artifact** —— 这一步的产物是留在服务侧的几支 mp4（idle 一支 + 每个动作一支），
+    不往客户端送任何字节。客户端要的只是「成了没有」+「花了哪几次」。
 
-    `master_path` / `first_frame_path` 在 `reused` 时为 `None`：复用已有 mp4 时
-    不会重跑母版与首帧（那才是「不重付」的意义）。
+    `master_path` / `first_frame_path` 在**整步复用**时为 `None`：idle 与全部动作都已在
+    scratch 里时不会重跑母版与首帧（那才是「不重付」的意义）；只补动作时会去 scratch
+    捡回母版、重算首帧（母版是钱、首帧是免费的）。
+
+    `actions` 只放**真做出来的**那些 —— 某支失败了就被跳过（动作是加分项，
+    拖垮整步会让用户连基础宠物都拿不到），因此「少了哪支」看这个列表就知道。
     """
 
     out_dir: Path
@@ -150,6 +191,7 @@ class MotionSource:
     first_frame_right_margin: float | None
     video_bytes: int
     reused: bool
+    actions: tuple[ActionVideo, ...] = ()
 
     def to_wire(self) -> dict[str, object]:
         """进 job 状态的元数据。client 靠它显示「要不要人工确认」之前的进度。"""
@@ -161,6 +203,7 @@ class MotionSource:
             "firstFrameScale": self.first_frame_scale,
             "firstFrameLeftMargin": self.first_frame_left_margin,
             "firstFrameRightMargin": self.first_frame_right_margin,
+            "actions": [action.to_wire() for action in self.actions],
         }
 
 
@@ -229,6 +272,26 @@ def motion_source_path(state_dir: Path, provider_session_id: str) -> Path:
     """中间 mp4 的位置。**key 是 providerSessionId，不是 jobId** ——
     同一个 providerSession 重试要命中同一个文件，才谈得上「复用不重付」。"""
     return scratch_dir(state_dir, provider_session_id) / MOTION_SOURCE_FILE
+
+
+def action_video_path(state_dir: Path, provider_session_id: str, action_id: str) -> Path:
+    """一支动作视频的位置（与 idle 的 mp4 同一个 scratch 目录）。
+
+    **逐支独立**：`actions/yawn.mp4` 在不在，决定 yawn 要不要重新生成 ——
+    与 idle 那支的复用互不影响。所以「拷一支旧 idle mp4 到新会话」时，
+    idle 白捡、只补动作的钱。
+    """
+    return scratch_dir(state_dir, provider_session_id) / ACTION_VIDEO_SUBDIR / f"{action_id}.mp4"
+
+
+def _has_video(path: Path) -> bool:
+    """「有一支能用的视频」。
+
+    **非空**才算 —— 半支（`.part` 残留、写盘被打断）会被下游当成完整的往下跑，
+    表现是「桌宠卡住不动」或抠像报一句看不懂的错。`_generate_video` 是原子落盘，
+    所以正常不会出现半支；这里是防「上一个人手工拷进来的东西」。
+    """
+    return path.is_file() and path.stat().st_size > 0
 
 
 def analyze_photo_facts(
@@ -399,38 +462,80 @@ def generate_motion_source(
         # 「重试复用」直接失效。
         raise FramePipelineError("generateMotionSource requires a providerSessionId")
 
-    video_path = motion_source_path(state_dir, provider_session_id)
-    if video_path.is_file() and video_path.stat().st_size > 0:
-        log(f"[复用] scratch 里已有 {MOTION_SOURCE_FILE}，跳过母版/首帧/视频（不重付算力）")
-        return _reused_motion_source(video_path)
+    idle_path = motion_source_path(state_dir, provider_session_id)
+    idle_reused = _has_video(idle_path)
+    pending_actions = [
+        action_id
+        for action_id in ACTION_IDS
+        if not _has_video(action_video_path(state_dir, provider_session_id, action_id))
+    ]
+    if idle_reused and not pending_actions:
+        log(
+            f"[复用] scratch 里已有 {MOTION_SOURCE_FILE} + 全部动作视频，整步跳过（不重付算力）"
+        )
+        return _reused_motion_source(
+            idle_path,
+            actions=tuple(
+                _reused_action_video(action_video_path(state_dir, provider_session_id, action_id))
+                for action_id in ACTION_IDS
+            ),
+        )
 
     work_dir = scratch_dir(state_dir, provider_session_id) / MOTION_SUBDIR / (
         f"attempt-{request.attempt}"
     )
+    # 一个 job 的 `lk888_task_id` 是单选，多支视频只能报一支（见 `_report_first`）。
+    report_first = _report_first(report_task_id)
 
-    log("[1/4] 看照片（gpt-4o）：判毛长档位，给母版提示词补一句")
-    coat = _coat_hint(request, client=client, log=log)
-
-    log("[2/4] 生成透明母版（gpt-image-2，约 0.06 算力）")
-    master_path, master_task_id = _generate_master(
-        client=client, request=request, coat=coat, work_dir=work_dir, log=log
-    )
+    # ---- 基座：母版（钱，能复用就复用）+ 首帧（免费阶梯）----
+    master_path = _find_existing_master(state_dir, provider_session_id)
+    if master_path is not None:
+        log(f"[复用] scratch 里已有母版 {master_path.name}，跳过母版（不重付 0.06 算力）")
+        master_task_id: str | None = None
+    else:
+        log("[1/4] 看照片（gpt-4o）：判毛长档位，给母版提示词补一句")
+        coat = _coat_hint(request, client=client, log=log)
+        log("[2/4] 生成透明母版（gpt-image-2，约 0.06 算力）")
+        master_path, master_task_id = _generate_master(
+            client=client, request=request, coat=coat, work_dir=work_dir, log=log
+        )
 
     log("[3/4] 绿幕首帧 + 取景收敛（免费阶梯，不进视频）")
     fitted = _converge_first_frame(master_path, work_dir=work_dir, state_dir=state_dir, log=log)
 
-    log(f"[4/4] 生成绿幕视频（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s，约 5.02 算力）")
-    video_task_id = _generate_video(
+    # ---- idle：基础，必须有。动作全部挂在它上面 ----
+    if idle_reused:
+        video_task_id: str | None = None
+        log(f"[4/4] idle 视频复用 scratch 里的 {MOTION_SOURCE_FILE}")
+    else:
+        log(
+            f"[4/4] 生成 idle 绿幕视频"
+            f"（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s，约 5.02 算力）"
+        )
+        video_task_id = _generate_video(
+            client=client,
+            first_frame=fitted.frame_png,
+            video_path=idle_path,
+            prompt=render_loop_prompt(),
+            report_task_id=report_first,
+            label="idle 视频",
+            log=log,
+        )
+
+    # ---- 动作：加分项，某支失败只跳过那一支 ----
+    actions = _action_videos(
+        request=request,
         client=client,
+        state_dir=state_dir,
+        provider_session_id=provider_session_id,
         first_frame=fitted.frame_png,
-        video_path=video_path,
-        report_task_id=report_task_id,
+        report_task_id=report_first,
         log=log,
     )
 
     return MotionSource(
         out_dir=work_dir,
-        video_path=video_path,
+        video_path=idle_path,
         master_path=master_path,
         first_frame_path=fitted.frame_png,
         master_task_id=master_task_id,
@@ -438,9 +543,134 @@ def generate_motion_source(
         first_frame_scale=fitted.scale,
         first_frame_left_margin=fitted.left_margin,
         first_frame_right_margin=fitted.right_margin_at_full_swing,
-        video_bytes=video_path.stat().st_size,
+        video_bytes=idle_path.stat().st_size,
         reused=False,
+        actions=actions,
     )
+
+
+def _report_first(
+    report: Callable[[str], None] | None,
+) -> Callable[[str], None] | None:
+    """把「第一支提交的视频」报给 `job_store`，后面的丢弃。
+
+    `lk888_task_id` 在 job 上**是单选**（上游删除要用它），报第二个不同 id 会被
+    `job_store` 拒掉并让整个 step 失败。多支视频时这是个妥协：上游删除只能取消一支。
+
+    idle 最先跑，所以正常情况下报出去的就是 idle 那支（**语义与单支时完全一致**）；
+    只有当 idle 被复用、只补动作时，报出去的才是一支动作 —— 那也比什么都不报更诚实。
+    """
+    if report is None:
+        return None
+    state = {"reported": False}
+
+    def report_first(task_id: str) -> None:
+        if state["reported"]:
+            return
+        state["reported"] = True
+        report(task_id)
+
+    return report_first
+
+
+def _reused_action_video(video_path: Path) -> ActionVideo:
+    return ActionVideo(
+        action_id=video_path.stem,
+        video_path=video_path,
+        video_task_id=None,
+        video_bytes=video_path.stat().st_size,
+        reused=True,
+    )
+
+
+def _find_existing_master(state_dir: Path, provider_session_id: str) -> Path | None:
+    """在 scratch 里找**已经算过的母版**（文件名带 task id，所以只能 glob）。
+
+    为什么值得找：idle 那支 mp4 复用掉、但动作还缺时，动作视频仍然需要首帧图，
+    而首帧 = 母版 + **免费的**取景阶梯。留住这个母版 ⇒ 这条路上只有动作要花钱。
+    """
+    root = scratch_dir(state_dir, provider_session_id) / MOTION_SUBDIR
+    if not root.is_dir():
+        return None
+    for candidate in sorted(root.glob(f"attempt-*/{MASTER_DIR}/*.png")):
+        if candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _action_videos(
+    *,
+    request: FrameStepRequest,
+    client: Any,
+    state_dir: Path,
+    provider_session_id: str,
+    first_frame: Path,
+    report_task_id: Callable[[str], None] | None,
+    log: Callable[[str], None],
+) -> tuple[ActionVideo, ...]:
+    """逐支生成/复用偶发与交互动作视频。
+
+    三条规矩：
+
+    1. **逐支复用**：某支已在 scratch 就跳过它（与 idle 那支同一套依据）——
+       「拷一支旧 idle mp4 到新会话」时，idle 白捡、只付动作的钱。
+    2. 🔴 **某支失败只跳过那一支，不拖垮整步**：动作是加分项，一次审核误伤
+       （`contentPolicy` 不可重试）不该让用户连基础宠物都拿不到。
+       缺了哪支看 `MotionSource.actions` 就知道。
+    3. **身份锚是首帧图**：动作视频与 idle 用**同一张首帧图**、同一个画幅 ——
+       这就是「触发动作时不跳变」的前提；取景框的复用是抠像那一步的事
+       （`--no-autocrop` + ref-params），不在视频生成这一步。
+    """
+    pending = [
+        action_id
+        for action_id in ACTION_IDS
+        if not _has_video(action_video_path(state_dir, provider_session_id, action_id))
+    ]
+    if not pending:
+        log(f"[动作] scratch 里已有全部 {len(ACTION_IDS)} 支动作视频，跳过（不重付算力）")
+        return tuple(
+            _reused_action_video(action_video_path(state_dir, provider_session_id, action_id))
+            for action_id in ACTION_IDS
+        )
+
+    # 只在**真要生成**时才判字段（判不出会退到通用兜底，见 `analyze_action_facts`）。
+    facts = analyze_action_facts(client, first_frame.read_bytes(), log=log)
+    log(f"[动作] 待生成 {len(pending)} 支：{'、'.join(pending)}（每支约 5.02 算力）")
+
+    videos: list[ActionVideo] = []
+    for action_id in ACTION_IDS:
+        video_path = action_video_path(state_dir, provider_session_id, action_id)
+        if _has_video(video_path):
+            log(f"[动作] {action_id} 复用 scratch 里的视频")
+            videos.append(_reused_action_video(video_path))
+            continue
+
+        action = load_action(action_id)
+        prompt = render_action_prompt_for(action_id, facts, pet_id=request.pet_id)
+        try:
+            task_id = _generate_video(
+                client=client,
+                first_frame=first_frame,
+                video_path=video_path,
+                prompt=prompt,
+                report_task_id=report_task_id,
+                label=f"动作 {action_id}",
+                end_frame=uses_end_frame(action),
+                log=log,
+            )
+        except (Lk888Error, FramePipelineError) as error:
+            log(f"[动作] {action_id} 没做出来，跳过这一支：{type(error).__name__}: {error}")
+            continue
+        videos.append(
+            ActionVideo(
+                action_id=action_id,
+                video_path=video_path,
+                video_task_id=task_id,
+                video_bytes=video_path.stat().st_size,
+                reused=False,
+            )
+        )
+    return tuple(videos)
 
 
 def upload_variant_id(session_id: str, revision: int) -> str:
@@ -510,7 +740,10 @@ class _FittedFirstFrame:
     right_margin_at_full_swing: float
 
 
-def _reused_motion_source(video_path: Path) -> MotionSource:
+def _reused_motion_source(
+    video_path: Path, *, actions: tuple[ActionVideo, ...] = ()
+) -> MotionSource:
+    """整步复用：idle 与全部动作视频都已在 scratch 里（一次 API 都不打）。"""
     return MotionSource(
         out_dir=video_path.parent,
         video_path=video_path,
@@ -523,6 +756,7 @@ def _reused_motion_source(video_path: Path) -> MotionSource:
         first_frame_right_margin=None,
         video_bytes=video_path.stat().st_size,
         reused=True,
+        actions=actions,
     )
 
 
@@ -670,20 +904,29 @@ def _generate_video(
     client: Any,
     first_frame: Path,
     video_path: Path,
+    prompt: str,
     report_task_id: Callable[[str], None] | None,
     log: Callable[[str], None],
+    label: str = "视频",
+    end_frame: bool = False,
 ) -> str:
-    """首帧 + 组合循环提示词 → 绿幕视频，落盘到约定的 mp4 路径。
+    """首帧（+ 可选尾帧）+ 提示词 → 绿幕视频，原子落盘到约定的 mp4 路径。
 
-    **只上报视频这一个 task id。** 一艘 job 的 `lk888_task_id` 是单选（上游删除要用
-    它），报第二个不同 id 会被 `job_store` 拒掉并让整个 step 失败。母版那一个记在
-    `MotionSource.master_task_id` 里回给客户端，追溯够用。
+    `prompt` 由调用方给：idle 用 `render_loop_prompt()`，动作各自用
+    `render_action_prompt_for()` —— **这一层不认识提示词**，只负责发与收。
+
+    `end_frame=True`（交互动作 `grab-release`）时**同一张图传两次**：
+    它必须首尾回到同一张端坐图，否则拎起来落不回原姿态。
+
+    ⚠️ **只上报一支的 task id**（见 `_report_first`）：job 上的 `lk888_task_id` 是单选，
+    报第二个不同 id 会被 `job_store` 拒掉并让整个 step 失败。母版那一个记在
+    `MotionSource.master_task_id`、动作那几支记在各自的 `ActionVideo` 里，追溯够用。
     """
-    from .frames.prompts import render_loop_prompt
-
+    frame = first_frame.read_bytes()
+    images = [frame, frame] if end_frame else [frame]
     task_id = client.submit_video(
-        render_loop_prompt(),
-        images=[first_frame.read_bytes()],
+        prompt,
+        images=images,
         version=VIDEO_VERSION,
         duration=VIDEO_DURATION,
         resolution=VIDEO_RESOLUTION,
@@ -692,9 +935,9 @@ def _generate_video(
     )
     if report_task_id is not None:
         report_task_id(task_id)
-    log(f"[视频] task={task_id}，开始轮询（最多 {MAX_WAIT_SECONDS:.0f}s）")
+    log(f"[{label}] task={task_id}，开始轮询（最多 {MAX_WAIT_SECONDS:.0f}s）")
 
-    state = _wait_for_media(client, task_id, label="视频")
+    state = _wait_for_media(client, task_id, label=label)
     payload = client.download_video(state.result_url)
 
     # 先写 .part 再原子改名：中途崩了不会留下一支「看起来存在、其实截断」的 mp4 ——
@@ -703,5 +946,5 @@ def _generate_video(
     staging = video_path.with_name(video_path.name + ".part")
     staging.write_bytes(payload)
     staging.replace(video_path)
-    log(f"[视频] {video_path.name}  {len(payload) // 1024} KB")
+    log(f"[{label}] {video_path.name}  {len(payload) // 1024} KB")
     return task_id

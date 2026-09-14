@@ -659,6 +659,8 @@ def test_motion_source_step_reports_its_result_without_an_artifact(tmp_path: Pat
     assert result["reused"] is True
     assert result["videoBytes"] == 9_600_000
     assert "artifactUrl" not in result
+    # 动作也在 wire 上（这支 stub 一支都没做 → 空列表）
+    assert result["actions"] == []
 
 
 def test_motion_source_framing_failure_reaches_the_client_as_invalid_input(tmp_path: Path):

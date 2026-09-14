@@ -35,6 +35,7 @@ from photo_avatar_backend.frame_pipeline import (  # noqa: E402
     analyze_action_facts,
     analyze_photo_facts,
     generate_motion_source,
+    action_video_path,
     motion_source_path,
     pack_frame_sequence,
     scratch_dir,
@@ -124,6 +125,14 @@ def test_artifact_wire_carries_the_acceptance_verdict():
 MASTER_TASK = "task-master-1"
 VIDEO_TASK = "task-video-1"
 
+# 动作字段分析（`analyze_action_facts`）的默认回包：四项都判得出来。
+ACTION_FACTS = {
+    "identity": "圆脸、大而圆的眼睛、三角形耳朵",
+    "coat": "浅奶油白底毛 + 深色近黑斑纹",
+    "coat_guard": "不得变灰、不得变黄",
+    "coat_negative": "desaturation, grey, yellowing",
+}
+
 
 def _master_png(width_ratio: float = 0.82, *, size: int = 1024) -> bytes:
     """造一张「主体横向占 `width_ratio`」的透明母版。
@@ -156,6 +165,8 @@ class _FakeClient:
         fail_with: Lk888Error | None = None,
         never_finishes: bool = False,
         facts: Mapping[str, object] | Exception | None = None,
+        action_facts: Mapping[str, object] | None = None,
+        fail_video_indices: tuple[int, ...] = (),
     ) -> None:
         self.master_png = master_png if master_png is not None else _master_png()
         self.video = video
@@ -163,15 +174,27 @@ class _FakeClient:
         self.never_finishes = never_finishes
         # 照片分析的回包：默认「看不出毛长」，要测毛长档位时显式传。
         self.facts = {"species": "cat", "coat": "unknown"} if facts is None else facts
+        # 动作字段分析的回包：默认判得出来（要测降级就传一份不合用的）。
+        self.action_facts = ACTION_FACTS if action_facts is None else action_facts
+        # 第 n 支视频（1 = idle）失败 —— 用来验「某一支动作失败只跳过那一支」。
+        self.fail_video_indices = fail_video_indices
+        self.failed_video_tasks: set[str] = set()
         self.calls: list[str] = []
         self.prompts: dict[str, str] = {}
+        self.video_prompts: list[str] = []
         self.image_batches: list[int] = []
+        self.video_image_counts: list[int] = []
         self.analysis_image_counts: list[int] = []
         self.video_kwargs: dict[str, object] = {}
 
     def _state(self, task_id: str, url: str) -> MediaState:
         if self.fail_with is not None:
             return MediaState(task_id, "failed", True, None, self.fail_with)
+        if task_id in self.failed_video_tasks:
+            return MediaState(
+                task_id, "failed", True, None,
+                Lk888Error("contentPolicy", False, "输入文本可能包含敏感信息"),
+            )
         if self.never_finishes:
             return MediaState(task_id, "running", False, None, None)
         return MediaState(task_id, "success", True, url, None)
@@ -179,9 +202,12 @@ class _FakeClient:
     def analyze_json(self, prompt: str, images: object, schema: object) -> object:
         self.calls.append("analyze_json")
         self.analysis_image_counts.append(len(images))  # type: ignore[arg-type]
-        if isinstance(self.facts, Exception):
-            raise self.facts
-        return self.facts
+        # 两次分析共用这一个方法：按 schema 分（动作那份有 `identity`），不靠调用顺序。
+        props = schema.get("properties", {}) if isinstance(schema, Mapping) else {}
+        payload = self.action_facts if "identity" in props else self.facts
+        if isinstance(payload, Exception):
+            raise payload
+        return payload
 
     def submit_image(self, prompt: str, images: object) -> str:
         self.calls.append("submit_image")
@@ -199,10 +225,17 @@ class _FakeClient:
 
     def submit_video(self, prompt: str, *, images: object = (), **kwargs: object) -> str:
         self.calls.append("submit_video")
-        self.prompts["loop"] = prompt
+        # 第 1 支 = idle（`prompts["loop"]` 这个键保持旧语义，既有断言不用改）。
+        if not self.video_prompts:
+            self.prompts["loop"] = prompt
+        self.video_prompts.append(prompt)
         self.image_batches.append(len(images))  # type: ignore[arg-type]
+        self.video_image_counts.append(len(images))  # type: ignore[arg-type]
         self.video_kwargs = kwargs
-        return VIDEO_TASK
+        index = len(self.video_prompts)
+        if index in self.fail_video_indices:
+            self.failed_video_tasks.add(VIDEO_TASK if index == 1 else f"{VIDEO_TASK}-{index}")
+        return VIDEO_TASK if index == 1 else f"{VIDEO_TASK}-{index}"
 
     def download_video(self, url: str) -> bytes:
         self.calls.append("download_video")
@@ -223,6 +256,17 @@ def _motion_request(**overrides: object) -> FrameStepRequest:
     return _request(**payload)
 
 
+def _write_every_video(state_dir: Path, provider_session_id: str, payload: bytes) -> None:
+    """把 idle 与**全部动作**视频都当作「已经付过钱」写进 scratch。"""
+    idle = motion_source_path(state_dir, provider_session_id)
+    idle.parent.mkdir(parents=True, exist_ok=True)
+    idle.write_bytes(payload)
+    for action_id in ACTION_IDS:
+        path = action_video_path(state_dir, provider_session_id, action_id)
+        path.parent.mkdir(parents=True, exist_ok=True)
+        path.write_bytes(payload)
+
+
 def test_generate_motion_source_walks_photos_facts_master_frame_video(tmp_path: Path):
     client = _FakeClient()
 
@@ -230,7 +274,8 @@ def test_generate_motion_source_walks_photos_facts_master_frame_video(tmp_path: 
         _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
     )
 
-    assert client.calls == [
+    # idle 那一支的链路（动作在其后，逐支 submit/poll/download）
+    assert client.calls[:7] == [
         # 看照片在母版**之前**：毛长要赶得上进母版提示词
         "analyze_json",
         "submit_image",
@@ -240,9 +285,16 @@ def test_generate_motion_source_walks_photos_facts_master_frame_video(tmp_path: 
         f"poll_image:{VIDEO_TASK}",
         "download_video",
     ]
-    # 分析看的是原始照片；母版吃 1 张照片，视频吃 1 张首帧
-    assert client.analysis_image_counts == [1]
-    assert client.image_batches == [1, 1]
+    # 之后才判动作字段（看**首帧图**），再逐支生成动作视频
+    assert client.calls[7] == "analyze_json"
+    assert client.calls.count("submit_video") == 1 + len(ACTION_IDS)
+    assert client.calls.count("download_video") == 1 + len(ACTION_IDS)
+    # 照片分析看原始照片 1 张；动作分析看首帧图 1 张
+    assert client.analysis_image_counts == [1, 1]
+    # 母版吃 1 张照片，idle / yawn / lick 各吃 1 张首帧
+    assert client.image_batches[:4] == [1, 1, 1, 1]
+    # grab-release 是首尾帧模式：同一张图传两次（否则拎起来落不回原姿态）
+    assert client.image_batches[-1] == 2
 
     # 母版提示词：物种来自请求；分析说「看不出毛长」→ 不提档位
     assert "this exact cat." in client.prompts["master"]
@@ -265,6 +317,15 @@ def test_generate_motion_source_walks_photos_facts_master_frame_video(tmp_path: 
     assert result.video_path == motion_source_path(tmp_path, "provider-1")
     assert result.video_path.read_bytes() == b"fake-mp4-bytes"
     assert result.video_bytes == len(b"fake-mp4-bytes")
+    # 动作：每支各一支 mp4，落在 idle 旁边的 actions/
+    assert [action.action_id for action in result.actions] == list(ACTION_IDS)
+    for action in result.actions:
+        assert action.reused is False
+        assert action.video_path == action_video_path(tmp_path, "provider-1", action.action_id)
+        assert action.video_path.read_bytes() == b"fake-mp4-bytes"
+    # 动作提示词是**那支动作自己的**（yawn 的正文里写着「打哈欠」）
+    assert ACTION_IDS[0] == "yawn"
+    assert "打哈欠" in client.video_prompts[1]
     # 中间产物留档在 scratch，出问题时能整目录打包回看
     assert result.master_path is not None and result.master_path.is_file()
     assert result.first_frame_path is not None and result.first_frame_path.is_file()
@@ -378,8 +439,9 @@ def test_generate_motion_source_converges_framing_on_the_free_ladder(tmp_path: P
     assert result.first_frame_left_margin == FIRST_FRAME_MARGIN_LEFT
     assert result.first_frame_right_margin is not None
     assert result.first_frame_right_margin >= 0.05
-    # 两次首帧尝试都发生在视频之前，且只提交了一次视频（钱只花一次）
-    assert client.calls.count("submit_video") == 1
+    # 首帧收敛在免费阶梯上做完**才**进视频；idle 只提交一次，
+    # 加动作后总提交数 = 1 + 每支动作各一次（钱只花一次这件事由 idle 那 1 支守着）
+    assert client.calls.count("submit_video") == 1 + len(ACTION_IDS)
     ladder_dirs = sorted(
         path.name for path in (result.first_frame_path.parent.parent).iterdir()  # type: ignore[union-attr]
     )
@@ -403,19 +465,67 @@ def test_generate_motion_source_gives_up_before_paying_when_framing_never_fits(t
 
 def test_generate_motion_source_reuses_an_existing_video_without_paying_again(tmp_path: Path):
     """后端重启会把成功的 job 结果清掉（`_load_state`）→ 同 session 重试要白捡回视频。"""
-    video = motion_source_path(tmp_path, "provider-1")
-    video.parent.mkdir(parents=True)
-    video.write_bytes(b"already-paid-for")
+    _write_every_video(tmp_path, "provider-1", b"already-paid-for")
     client = _FakeClient()
 
     result = generate_motion_source(
         _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
     )
 
-    assert client.calls == [], "复用路径一次上游都不该打"
+    assert client.calls == [], "整步复用（idle + 全部动作都在）：一次上游都不该打"
     assert result.reused is True
     assert result.video_bytes == len(b"already-paid-for")
     assert result.master_path is None and result.first_frame_path is None
+    assert [action.action_id for action in result.actions] == list(ACTION_IDS)
+    assert all(action.reused for action in result.actions)
+
+
+def test_a_paid_idle_video_is_kept_while_only_the_missing_actions_are_generated(
+    tmp_path: Path,
+):
+    """省钱路径：把**旧会话的 idle mp4** 拷进新会话 → idle 不重付，只补缺的动作。
+
+    这就是「给一只已装好的宠物加动作」要走的路：idle 那 5 算力白捡，
+    母版也从 scratch 捡回来（0 算力），只有动作视频真正花钱。
+    """
+    idle = motion_source_path(tmp_path, "provider-1")
+    idle.parent.mkdir(parents=True)
+    idle.write_bytes(b"already-paid-for")
+    client = _FakeClient()
+
+    result = generate_motion_source(
+        _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
+    )
+
+    assert client.calls.count("submit_video") == len(ACTION_IDS), "idle 没重提交，只提交了动作"
+    assert idle.read_bytes() == b"already-paid-for", "旧 idle mp4 原封不动"
+    assert result.video_task_id is None, "idle 被复用 → 没有它的 task id 可报"
+    assert result.reused is False, "整步没有全复用（动作是新生成的）"
+    assert [action.action_id for action in result.actions] == list(ACTION_IDS)
+    assert all(not action.reused for action in result.actions)
+    # 母版：scratch 里没有 → 生成一次（0.06 算力）；这是这条路上唯一的小钱
+    assert client.calls.count("submit_image") == 1
+
+
+def test_a_failed_action_video_is_skipped_without_losing_the_whole_pet(tmp_path: Path):
+    """动作是加分项：某支失败（例如内容审核误伤）只跳过那一支。
+
+    idle 是基础 —— 没有它就没有宠物。所以审核误伤一支动作，不该让用户
+    连基础宠物都拿不到（那才是真正的白花 5 算力）。
+    """
+    client = _FakeClient(fail_video_indices=(2,))  # 第 2 支 = ACTION_IDS[0] = yawn
+
+    result = generate_motion_source(
+        _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
+    )
+
+    assert result.video_task_id == VIDEO_TASK, "idle 照常成功"
+    assert [action.action_id for action in result.actions] == list(ACTION_IDS)[1:], (
+        "失败的那一支不在 actions 里 —— 「少了哪支」看这个列表就知道"
+    )
+    assert not action_video_path(tmp_path, "provider-1", ACTION_IDS[0]).exists()
+    for action_id in ACTION_IDS[1:]:
+        assert action_video_path(tmp_path, "provider-1", action_id).is_file()
 
 
 def test_generate_motion_source_reports_exactly_one_provider_task(tmp_path: Path):
@@ -629,7 +739,7 @@ _ACTION_FACTS_OK = {
 
 
 def test_action_facts_are_taken_from_the_frame_when_the_model_answers() -> None:
-    client = _FakeClient(facts=_ACTION_FACTS_OK)
+    client = _FakeClient(action_facts=_ACTION_FACTS_OK)
 
     facts = analyze_action_facts(client, b"green-screen-frame-png", log=lambda _: None)
 
@@ -658,7 +768,7 @@ def test_action_facts_are_taken_from_the_frame_when_the_model_answers() -> None:
 def test_an_unusable_response_falls_back_as_a_whole(response: object) -> None:
     """四种「不可用」抹平成同一个结果，而且是**整包**换兜底 ——
     兜底本身是自洽的一套措辞，混用「真判的 identity + 兜底的 coat」只会自相矛盾。"""
-    client = _FakeClient(facts=response)
+    client = _FakeClient(action_facts=response)
 
     facts = analyze_action_facts(client, b"png", log=lambda _: None)
 
@@ -669,7 +779,7 @@ def test_an_unusable_response_falls_back_as_a_whole(response: object) -> None:
 def test_an_upstream_error_degrades_instead_of_failing() -> None:
     """一次失败会带走后面 ~5 算力/支的视频，而少这四项母版/视频照样出得来
     （真正的身份锚是首帧图本身）—— 纯提质项不该有这个权力。"""
-    client = _FakeClient(facts=Lk888Error("temporaryUnavailable", True, "analyze boom"))
+    client = _FakeClient(action_facts=Lk888Error("temporaryUnavailable", True, "analyze boom"))
 
     facts = analyze_action_facts(client, b"png", log=lambda _: None)
 
