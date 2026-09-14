@@ -8,8 +8,9 @@
 取景框复用 idle-combo 的（见第三节，2026-09-03 定版规则）。
 
 ★ 本文件由 scripts/poc_生成动作提示词.py 生成，不要手工编辑。
-  改动请改骨架（scripts/_提示词模板/骨架.txt）、动作配置（同目录 <action>.json）
-  或宠物档案（output/宠物档案/<petId>.json），再重新生成。
+  改动请改骨架与动作配置（services/appearance-generation/src/photo_avatar_backend/
+  assets/motion-prompts/action-skeleton.txt + actions/）或宠物档案
+  （output/宠物档案/<petId>.json），再重新生成。
 =====================================================================
 
 ----------------------------------------------------------------------

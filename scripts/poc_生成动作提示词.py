@@ -15,9 +15,9 @@ yawn 提示词里一段过时规则只存在于毛砌墙那份，改的时候才
 其余（绿幕、镜头、首尾一致、动作时间轴、负向词骨架）完全通用。
 所以拆成三层，各自独立演进：
 
-    scripts/_提示词模板/骨架.txt     公共骨架（含占位符）
-    scripts/_提示词模板/<action>.json  动作配置（时间轴/细节/严格/负向/包络风险）
-    output/宠物档案/<petId>.json     宠物变量（身份/毛色/crop/锚点帧）
+    <服务>/assets/motion-prompts/action-skeleton.txt   公共骨架（含占位符）
+    <服务>/assets/motion-prompts/actions/<action>.json  动作配置（时间轴/细节/严格/负向/包络风险）
+    output/宠物档案/<petId>.json                       宠物变量（身份/毛色/crop/锚点帧）
 
 加新宠物 = 加一个宠物档案 JSON；加新动作 = 加一个动作 JSON。都不用碰骨架。
 
@@ -37,7 +37,7 @@ yawn 提示词里一段过时规则只存在于毛砌墙那份，改的时候才
 
 为什么物理上是 N 个文件而不是 1 个
 --------------------------------
-维护单元只有 1 份（scripts/_提示词模板/<action>.json + 骨架.txt），
+维护单元只有 1 份（服务 assets 里的 `<action>.json` + `action-skeleton.txt`），
 但 Seedance 必须拿到填好具体变量的文本——身份描述、毛色、crop 余量、
 文件路径这些因猫而异，没法写成占位符丢给平台。
 所以 N 个文件 = 同一份模板的 N 次渲染，不是 N 份各自维护的提示词。
@@ -52,8 +52,15 @@ import sys
 from pathlib import Path
 
 ROOT = Path(__file__).resolve().parents[1]
-TEMPLATE_DIR = ROOT / "scripts" / "_提示词模板"
-SKELETON = TEMPLATE_DIR / "骨架.txt"
+# 骨架与动作配置的**唯一真源在服务里**（2026-09-14 搬过去）：服务侧渲染发给
+# Seedance 的提示词，脚本侧用它产出给人看的完整操作文档 —— 同一份资产，两份产出。
+# 别再往 scripts/ 下抄一份：抄了就必然漂移（改一处漏另一处，提示词差一个字 = 换只猫）。
+SERVICE_TEMPLATES = (
+    ROOT / "services" / "appearance-generation" / "src" / "photo_avatar_backend"
+    / "assets" / "motion-prompts"
+)
+SKELETON = SERVICE_TEMPLATES / "action-skeleton.txt"
+TEMPLATE_DIR = SERVICE_TEMPLATES / "actions"
 PROFILE_DIR = ROOT / "output" / "宠物档案"
 
 # 骨架里允许出现的占位符（其余占位符一律报错，防止拼写错误静默通过）
@@ -178,7 +185,7 @@ def build(pet: dict, action: dict, serial: str) -> str:
 def main() -> int:
     ap = argparse.ArgumentParser(description="生成偶发动作 Seedance 提示词")
     ap.add_argument("--pet", help="petId（对应 output/宠物档案/<petId>.json）")
-    ap.add_argument("--action", help="动作 id（对应 scripts/_提示词模板/<action>.json）")
+    ap.add_argument("--action", help="动作 id（对应服务 assets/motion-prompts/actions/<id>.json）")
     ap.add_argument("--serial", default="00", help="提示词编号（每只宠物各自的序号）")
     ap.add_argument("--out", help="输出文件路径")
     ap.add_argument("--list", action="store_true", help="列出可用档案与动作配置")

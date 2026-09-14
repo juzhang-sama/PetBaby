@@ -128,9 +128,49 @@ Avoid the following: <负向词>
 
 > 前 4 行 + 后 2 行就是「与 2026-09-12 那版通用提示词**逐字节相同**」的证明。
 
-## 还有一份提示词不在这里
+## 一次性/交互动作的提示词（2026-09-14 搬进来了）
 
-`scripts/_提示词模板/骨架.txt`（+ `yawn.json` / `lick.json` / `grab-release.json`）
-是**一次性动作**的提示词，走另一条路：它们必须复用 idle-combo 的 crop box，
-由 skill `petbaby-oneshot-action-integration` 处理。等写实风产品化走到
-「新宠也要 yawn/lick」那一步，再把那份也搬进服务。
+`action-skeleton.txt` + `actions/{yawn,lick,grab-release}.json`。原先在
+`scripts/_提示词模板/`，现已搬到这里当**唯一真源**，两条路都从这里读：
+
+| 谁 | 取哪部分 | 产出 |
+|---|---|---|
+| 服务 `frames/action_prompts.py` | 骨架的**【一】【二】两节** | **发给 Seedance 的**提示词 |
+| 脚本 `scripts/poc_生成动作提示词.py` | 整份骨架 | 给老王看的**操作文档**（含取景约束、下游管线命令、复查清单） |
+
+骨架是**给人看的五节文档**（【一】主提示词 /【二】负向词 /【三】取景约束 /
+【四】生成参数 /【五】复查清单）。服务只切【一】【二】—— 剩下的都是人工步骤，
+服务不需要。切分逻辑与 `scripts/poc_生成绿幕视频.py::section` **逐字一致**。
+
+### 服务侧只有 4 个宠物字段
+
+骨架里因猫而异的只有 `identity` / `coat` / `coatGuard` / `coatNegative` ——
+原先写在 `output/宠物档案/<petId>.json`（**`output/` 被 gitignore，服务拿不到**，
+而且只有 04/05/06 三份）。服务路径改由 `analyze_photo_facts`（gpt-4o 看首帧图）
+自动判定。crop / 余量 / 锚点帧 / 路径只出现在人读的三节里。
+
+### ⚠️ `lick` 的正文是**审核规避写法**，别「修正」成「舔」
+
+`actionId` 叫 `lick`，但 `lick.json` 的正文写的是「**理毛 / 清理 / 口部动作**」，
+**通篇没有「舔」「舌」「咬」**。这是有意的：内容审核对「舌/舔/咬 + 身体部位」的
+组合直接拒（失败态只给一句中文 `error`、**没有英文 code**、`refunded=true`、
+不可重试）。而**负向词里可以出现** `continuous licking` 之类（那是禁止项）。
+改这份 json 前先读 `参考-资产生产与取景契约.md` 与审核那一节。
+
+### golden 哈希（`frames/test_action_prompts.py` 钉住）
+
+| 动作 | 长度 | sha256 |
+|---|---|---|
+| `yawn` | 2236 | `2c4b3da92f72a10f71fa9908f4da107959e9a7221eb8ad0c37aea3a3436f236d` |
+| `lick` | 2292 | `f255c40f971b80cbf0d7540b00219b53ae49c7c22a41b1af9f06b284da1c617c` |
+| `grab-release` | 2732 | `7b3272034e593037c87d62102a3fa2caef0c2c76b7098408c667ea5b28f5768f` |
+
+> 测试的 fixture 是**写死**的，不读 `output/宠物档案/` —— 读那个等于「在别的机器上必红」。
+> 真档案（04/05/06）只在**搬家时的一次性黄金回归**里用过：9 组（3 宠物 × 3 动作）
+> 与老脚本渲染的文档**逐字节相同**。
+
+### 不在提示词里的那件事：取景复用
+
+动作**必须复用 idle-combo 的 crop box**，但这条约束**不在提示词里** ——
+它在抠像那一步（`--no-autocrop` + `--ref-params`）。反例：05 的 yawn 各自 autocrop，
+触发瞬间猫错位 27px。详见 `参考-资产生产与取景契约.md`。
