@@ -70,6 +70,21 @@ if (-not $pythonExe) {
 }
 Write-Output "使用 Python 解释器：$pythonExe"
 
+# ⚠️ Start-Process 构造子进程环境用的是**区分大小写**的字典：同名不同大小写
+# （最常见的就是 http_proxy / HTTP_PROXY）会被它判成重复键，直接抛
+# 「已添加项。字典中的关键字…」——2026-09-15 实测：带代理变量的环境里这条脚本
+# 根本起不来后端，报错停在下面 Start-Process 那一行，看起来像 Python 坏了。
+# 拉进程前先把重复的那份去掉，只保留先出现的那个名字（Windows 上大小写不敏感，安全）。
+$seenEnvNames = @{}
+foreach ($envName in @([Environment]::GetEnvironmentVariables('Process').Keys)) {
+    $folded = $envName.ToLowerInvariant()
+    if ($seenEnvNames.ContainsKey($folded)) {
+        Remove-Item -LiteralPath ("Env:" + $envName) -ErrorAction SilentlyContinue
+    } else {
+        $seenEnvNames[$folded] = $envName
+    }
+}
+
 # ⚠️ `-u` 不能去掉：`-RedirectStandardOutput` 把 stdout 变成**块缓冲(8KB)**，
 # 而写实风这条链的进度日志（`[1/4] [2/4] …`）一次只写几十字节 —— 进程还在跑时
 # 它们**全卡在缓冲区里不落盘**。2026-09-15 就因此误判了失败阶段
