@@ -146,17 +146,28 @@ export class CreationPageRun {
       if (!this.isCurrent(visit)) return null;
       if (!draft) return await this.openRoute(requestedRoute, null, visit);
       if (draft.method === requestedRoute) {
-        if (requestedRoute === "upload" && draft.candidateId === null) {
+        // 「空草稿」= **还没产出任何东西**。这里必须 `candidateId` 与 `status` 同时成立，
+        // 只判 `candidateId === null` 会误删真产物：
+        // 写实风（frame-video-v1）的 `appearance_variants` 行要到**安装那一刻**
+        // （`record_photo_avatar_runtime`）才插，且它的预览目录与 `photo_avatar_runs.step`
+        // 根本不体现在 `CreationSnapshot` 上 —— 于是一份「预览就绪、等着用户点接受」
+        // 的写实风草稿，看起来和刚点开的空草稿一模一样。
+        // 而 `abandon` 是**真删**（预览目录整棵没、会话行没），一次生成 ~5 算力。
+        if (
+          requestedRoute === "upload"
+          && draft.candidateId === null
+          && draft.status === "draft"
+        ) {
           // 照片分身：**空**草稿（还没产出任何东西）仍从全新会话开始。
           // 若自动恢复这种草稿，会残留上一次的预览界面（用户已明确要求每次全新）。
           await this.abandonDraft(draft.sessionId, requestedRoute);
           if (!this.isCurrent(visit)) return null;
           return await this.openRoute(requestedRoute, null, visit);
         }
-        // ⚠️ **已有候选产物（candidateId 非空）的草稿绝不能丢**。
-        // `abandon` 是**真删**：删掉已安装的资产整棵目录、会话行、照片与变体登记
-        // （2026-09-14 实测：进一次创建页就把已装好的写实风资产删干净了）。
-        // 而写实风一次生成 ~5 算力 / 3~8 分钟，重来代价极大 ——
+        // ⚠️ **已有产物的草稿绝不能丢**：`candidateReady`/`retryableFailure`/
+        // `finalizing` 都代表「有东西可看」。`abandon` 是**真删**：删掉已安装的资产
+        // 整棵目录、会话行、照片与变体登记（2026-09-14 实测：进一次创建页就把已装好的
+        // 写实风资产删干净了）。而写实风一次生成 ~5 算力 / 3~8 分钟，重来代价极大 ——
         // 必须让它能恢复成「预览就绪 → 接受并安装」。
         return await this.openRoute(requestedRoute, draft.sessionId, visit);
       }

@@ -1074,6 +1074,35 @@ impl PhotoAvatarStore {
         )
     }
 
+    /// 预览就绪 = 「**有产物可看**」，把 creation session 标成 `candidateReady`。
+    ///
+    /// 像素风在 `creation/store.rs::record_standard_candidate` 里做这一步，
+    /// composer 在 `composer.rs` 里做同一步；**写实风这条产线漏了**：
+    /// 它只写 `photo_avatar_runs.step`，`creation_sessions` 一直停在
+    /// `status='draft'`、`last_stable_status='draft'`，而 `appearance_variants`
+    /// 要到**安装那一刻**才插（`record_photo_avatar_runtime`），所以
+    /// 前端 `creation_draft` 拿到的 `candidateId` 也是 null。
+    ///
+    /// 后果不是「少个字段」：重启后这份快照与「刚点开、什么都没产出的空草稿」
+    /// **完全不可区分**，前端按「空草稿一律重开」把它 `abandon` 掉 ——
+    /// 那是**真删**（预览目录整棵没、会话行没），用户白付一次视频钱。
+    /// 补上这一步之后，写实风与像素风在「有没有产物」这件事上口径一致。
+    pub fn mark_frame_candidate_ready(&self, session_id: &str) -> Result<(), String> {
+        let storage = self.storage.lock().map_err(|_| "storage lock poisoned")?;
+        storage
+            .db
+            .execute(
+                "UPDATE creation_sessions
+                 SET status='candidateReady', last_stable_status='candidateReady',
+                     current_step='review', error=NULL, updated_at=?2
+                 WHERE session_id=?1 AND method='upload'
+                   AND status NOT IN ('completed','abandoned')",
+                params![session_id, now_iso()],
+            )
+            .map_err(|error| error.to_string())?;
+        Ok(())
+    }
+
     /// 记下 `packFrameSequence` 交付的那支 zip。
     ///
     /// `kind = 'frameSequence'`（v14 才放进 CHECK 的取值）。

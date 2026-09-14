@@ -542,13 +542,24 @@ mod tests {
             .await;
 
         let root = temp_root("ok");
-        let (store, _storage) = seeded_store(&root);
+        let (store, storage) = seeded_store(&root);
         let manager = Arc::new(FramePhotoAvatarManager::new(
             store,
             Some(Arc::new(ControlledBackendProvider::for_test(&server.uri()))),
             &root.join("previews"),
         ));
         manager.save_consent(true).unwrap();
+        let session_status = || -> (String, String) {
+            let storage = storage.lock().unwrap();
+            storage
+                .db
+                .query_row(
+                    "SELECT status, last_stable_status FROM creation_sessions WHERE session_id='session-a'",
+                    [],
+                    |row| Ok((row.get(0)?, row.get(1)?)),
+                )
+                .unwrap()
+        };
 
         let started = manager
             .begin("session-a", PHOTO_AVATAR_CONSENT_VERSION, vec![photo()])
@@ -640,11 +651,23 @@ mod tests {
         );
 
         // 人工确认 → PreviewReady → 安装到别处。
+        // 确认之前，会话还停在「空草稿」那一步；确认之后必须前进到 candidateReady，
+        // 否则重启后前端会把它当空草稿 `abandon` 掉（真删预览）。
+        assert_eq!(
+            session_status(),
+            ("draft".into(), "draft".into()),
+            "跑到 runtime check 之前不该有产物"
+        );
         let manifest_bytes = std::fs::read(preview.join("manifest.json")).unwrap();
         let confirmed = manager
             .runtime_check_passed("session-a", 1, &sha256_hex(&manifest_bytes))
             .unwrap();
         assert_eq!(confirmed.step, FramePhotoAvatarStep::PreviewReady);
+        assert_eq!(
+            session_status(),
+            ("candidateReady".into(), "candidateReady".into()),
+            "预览就绪必须与会话 candidateReady 同步（与像素风/composer 同口径）"
+        );
 
         let destination = root.join("installed");
         PhotoAvatarFinalizationPort::install_preview(

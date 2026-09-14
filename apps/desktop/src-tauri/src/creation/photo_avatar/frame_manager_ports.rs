@@ -33,6 +33,10 @@ impl FramePhotoAvatarManager {
         }
         self.store
             .set_frame_step(session_id, revision, FramePhotoAvatarStep::PreviewReady)?;
+        // 与像素风/composer 对齐：预览就绪就是「有产物」，会话必须从 `draft` 前进到
+        // `candidateReady`。少了这一步，重启后前端会把这份快照当成空草稿 `abandon` 掉
+        // （真删预览目录），白费一次生成。详见 `mark_frame_candidate_ready`。
+        self.store.mark_frame_candidate_ready(session_id)?;
         self.store.frame_snapshot(session_id)
     }
 

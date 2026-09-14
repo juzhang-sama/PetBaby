@@ -17,6 +17,7 @@ function snapshot(
   method: "upload" | "composer",
   sessionId = `session-${method}`,
   candidateId: string | null = null,
+  overrides: Partial<CreationSnapshot> = {},
 ): CreationSnapshot {
   return {
     sessionId,
@@ -31,6 +32,7 @@ function snapshot(
     candidateId,
     recipe: null,
     error: null,
+    ...overrides,
   };
 }
 
@@ -165,6 +167,38 @@ describe("CreationPageRun", () => {
     expect(test.creation.abandon).not.toHaveBeenCalled();
     expect(test.views.upload.open).toHaveBeenCalledWith("photo-avatar-session");
     expect(test.onRoute).toHaveBeenLastCalledWith("upload");
+  });
+
+  it("resumes a frame-video draft whose preview is ready but has no candidate yet", async () => {
+    // 🔴 写实风（frame-video-v1）的 `appearance_variants` 行要到安装那一刻才插，
+    // 所以「预览已就绪、等用户点接受」时 `candidateId` 仍然是 null。
+    // 只判 candidateId 会把它当空草稿 `abandon`（真删预览目录）→ 白付一次 5 算力。
+    // 真机值：status=retryableFailure、lastStableStatus=candidateReady（2026-09-14 实测）。
+    const draft = snapshot("upload", "session-4750", null, {
+      status: "retryableFailure",
+      lastStableStatus: "candidateReady",
+      currentStep: "review",
+      error: "actions[0].holdRange must be a [lo, hi] frame-index pair",
+    });
+    const test = routerPorts({ draft });
+
+    await test.page.open("upload");
+
+    expect(test.creation.abandon).not.toHaveBeenCalled();
+    expect(test.views.upload.open).toHaveBeenCalledWith("session-4750");
+    expect(test.onRoute).toHaveBeenLastCalledWith("upload");
+  });
+
+  it("still abandons a truly empty upload draft when no product exists yet", async () => {
+    // 反过来也要钉住：真的什么都还没产出（status 还在 draft、无候选）时，
+    // 仍然按老王的要求从全新会话开始。
+    const draft = snapshot("upload", "session-empty", null, { status: "draft" });
+    const test = routerPorts({ draft });
+
+    await test.page.open("upload");
+
+    expect(test.creation.abandon).toHaveBeenCalledWith("session-empty");
+    expect(test.views.upload.open).toHaveBeenCalledWith(null);
   });
 
   it("abandons before opening a different long-lived method", async () => {
