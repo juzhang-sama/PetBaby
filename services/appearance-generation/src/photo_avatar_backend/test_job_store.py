@@ -928,7 +928,7 @@ def test_frame_sequence_artifact_does_not_survive_a_restart(tmp_path: Path):
     不需要内存里的 result）。
 
     对写实风这条链代价可接受，而且是**有意选的**：用户重试时 `packFrameSequence`
-    0 算力重跑，mp4 还在 `scratch/<providerSessionId>/` 里，不会重付视频那 5.69。
+    0 算力重跑，mp4 还在 `scratch/<providerSessionId>/` 里，不会重付视频那 5.02。
     """
     store = JobStore(tmp_path, runner=FrameSequenceRunner())
     submitted = store.submit(_frame_request())

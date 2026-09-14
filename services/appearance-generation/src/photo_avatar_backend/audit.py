@@ -20,7 +20,7 @@ _MODEL_DISPLAY_NAME = "GPT-image-2.0"
 # `providerModel` 是**允许值白名单**，不是随便记一个字符串 —— 写错一个名字就会在
 # `reserve()` 里以 `AuditContractError` 炸掉（`AuditContextV1.from_state` 会重新校验）。
 # `seedance-2.0-guanfang` 是写实风的视频模型：那条链上母版只要 0.06 算力，
-# 5.69 全花在它身上，所以追溯时记它才是诚实的。
+# 5.02 全花在它身上，所以追溯时记它才是诚实的。
 _MODELS = frozenset({"gpt-4o", "gpt-image-2", "seedance-2.0-guanfang"})
 _BODY_MODULES = frozenset(
     {"body-slender-v1", "body-balanced-v1", "body-rounded-v1"}

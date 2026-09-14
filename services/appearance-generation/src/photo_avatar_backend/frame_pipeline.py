@@ -4,7 +4,7 @@
     generateMotionSource   照片 → 看照片（gpt-4o）→ 透明母版 → 绿幕首帧 → 视频  （**要花钱**）
     packFrameSequence      scratch 里的 mp4 → 抠像 → 验收 → WebP → zip          （**0 算力**）
 
-两个 step 按「钱」切：视频失败要重付约 5.69 算力，粒度不能太粗；而后面半段
+两个 step 按「钱」切：视频失败要重付约 5.02 算力，粒度不能太粗；而后面半段
 （抠像/验收/打包）便宜到可以整段重跑。
 
 「看照片」那一步（`analyze_photo_facts`）没有自己的 step 名 —— 它是
@@ -57,8 +57,10 @@ FRAME_FORMAT = "webp"
 
 # ---------------- 写实风的成套规格（改这些等于改产品，不是调参） ----------------
 #
-# ⚠️ 别拿 Mini 档（0.1728 算力/秒）估标准档（0.474 算力/秒）—— 同样 12s 差约 3 倍。
-# 实测：seedance + 标准 + 480p + 12s = 5.69 算力/支；母版（gpt-image-2）只要 0.06。
+# ⚠️ 计费是**按输出 token**（官方特惠渠道 43.41 算力/百万 token），不是按秒 ——
+# 单条**无法预估**，平台提交时按预估值校验余额：余额 6.23 也会被 `code=quota` 拒。
+# 实测（2026-09-14）：seedance + 标准 + 480p + 12s = 5.02 算力/支；
+# 母版 0.05~0.16、gpt-4o 看照片判毛长 ~0.004 → 一次生成约 5.1 算力。
 # 时长 12s / 24fps / 42ms 与内置资产同规格，换数值会让新宠物的节奏与内置不一致。
 VIDEO_VERSION = "标准"
 VIDEO_DURATION = "12"
@@ -342,7 +344,7 @@ def generate_motion_source(
     log("[3/4] 绿幕首帧 + 取景收敛（免费阶梯，不进视频）")
     fitted = _converge_first_frame(master_path, work_dir=work_dir, state_dir=state_dir, log=log)
 
-    log(f"[4/4] 生成绿幕视频（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s，约 5.69 算力）")
+    log(f"[4/4] 生成绿幕视频（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s，约 5.02 算力）")
     video_task_id = _generate_video(
         client=client,
         first_frame=fitted.frame_png,
@@ -483,7 +485,7 @@ def _coat_hint(
     """母版提示词的毛长档位。**这一步只能降级，不能失败。**
 
     少一句「long-haired」母版照样出得来（提示词下一段本来就要求「毛长照照片一模一样」），
-    但一次失败会带走后面那 5.69 算力的视频 —— 一个纯省钱的可选步骤不该有这个权力。
+    但一次失败会带走后面那 5.02 算力的视频 —— 一个纯省钱的可选步骤不该有这个权力。
     所以上游故障（`Lk888Error`：网络 / 额度 / 审核 / 协议）一律咽掉、只记日志。
 
     `AttributeError` 之类的**代码错误不在此列**：那是 bug，要炸出来。

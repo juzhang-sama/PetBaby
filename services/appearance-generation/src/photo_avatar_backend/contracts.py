@@ -39,7 +39,7 @@ _SOURCE_IMAGE_FIELDS = frozenset({"sourceId", "pngBase64", "sha256", "width", "h
 _STEPS = frozenset({"analyzeIdentity", "completeAppearance", "renderTextureAtlas"})
 _PIXEL_STEPS = frozenset({"analyzeIdentity", "generatePixelAvatar"})
 # 写实风（frame-video-v1）：两个 step 按「钱」切 —— 前一个要花算力（母版+视频），
-# 后一个 0 算力。切两刀是因为视频失败要重付 5.69，粒度不能太粗。
+# 后一个 0 算力。切两刀是因为视频失败要重付 5.02，粒度不能太粗。
 _FRAME_STEPS = frozenset({"generateMotionSource", "packFrameSequence"})
 _FRAME_ROUTE = "frame-video-v1"
 _FRAME_SPECIES = frozenset({"cat", "dog"})

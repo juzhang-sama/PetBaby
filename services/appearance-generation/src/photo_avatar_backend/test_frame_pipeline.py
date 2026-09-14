@@ -5,7 +5,7 @@
 测试夹具不跨模块借 —— 否则一边改了夹具，另一边的失败信息会变得莫名其妙。
 
 `generateMotionSource` 全程用 `_FakeClient`：**一次 API 都不打**。
-真实的那一步要花 5.69 算力，测试绝不能碰真钥匙。
+真实的那一步要花 5.02 算力，测试绝不能碰真钥匙。
 """
 
 from __future__ import annotations
@@ -67,7 +67,7 @@ def _request(**overrides: object) -> FrameStepRequest:
 def test_scratch_paths_are_keyed_by_provider_session(tmp_path: Path):
     """mp4 的 key 是 **providerSessionId 而不是 jobId**。
 
-    同一个 providerSession 重试要命中同一个文件，才谈得上「复用不重付 5.69 算力」。
+    同一个 providerSession 重试要命中同一个文件，才谈得上「复用不重付 5.02 算力」。
     """
     assert scratch_dir(tmp_path, "provider-1") == tmp_path / "scratch" / "provider-1"
     assert motion_source_path(tmp_path, "provider-1") == (
@@ -279,7 +279,7 @@ def test_photo_analysis_puts_the_coat_hint_into_the_master_prompt(tmp_path: Path
 
 
 def test_a_failed_photo_analysis_only_costs_the_hint(tmp_path: Path):
-    """分析是**可选**步骤：上游挂了也不许弄死一次要花 5.69 算力的生成。"""
+    """分析是**可选**步骤：上游挂了也不许弄死一次要花 5.02 算力的生成。"""
     client = _FakeClient(facts=Lk888Error("temporaryUnavailable", True, "analyze boom"))
     lines: list[str] = []
 
@@ -587,7 +587,7 @@ def test_the_packed_variant_id_is_the_one_finalization_expects(tmp_path: Path):
     `photo-avatar-<sessionId>-<revision>` 比对 —— 用 `combo-loop-v1`（内置宠物那个
     默认值）会在**用户点「接受并安装」**时才炸，前面两步全绿，极难定位。
 
-    这条就是钉住「不要沿用默认值」：真跑一次要 5.69 算力，测试里绝不重跑，
+    这条就是钉住「不要沿用默认值」：真跑一次要 5.02 算力，测试里绝不重跑，
     只断言打包写进 manifest 的那个值。
     """
     state_dir = tmp_path / "state"
