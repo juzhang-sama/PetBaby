@@ -19,6 +19,21 @@ class ConfigError(ValueError):
 
 _LK888_BASE_URL = "https://api.lk888.ai"
 
+# 视频模型（2026-09-15 定）。**不能随便换回 `seedance-2.0-guanfang`**：
+#
+# 1. **渠道要固定**。API 没有「指定渠道」的参数，而 `seedance-2.0-guanfang` 有
+#    「官方特惠」与「XH」两个可用渠道 —— 实际落过 XH，同一支视频贵 1.88 倍
+#    （实测 9.4446 vs 5.0188 算力）。`-anmiao` 版**只有官方特惠一个可用渠道**
+#    （AR / MC-S 都不可用），选它就等于把渠道锁死。
+# 2. **按秒计费可预估**。`-anmiao` 是 Per-Second 版：`秒数 × 档位价`、**预付**、
+#    失败自动退款。按 token 那版单条无法预估，平台提交时按预估值校验余额 ——
+#    余额明明够也会被 `code=quota` 拒（2026-09-15 实测三次失败就是这个）。
+# 3. 代价：`duration` 必须显式整数，**没有 `auto`**（我们本来就写死 12）。
+#
+# 参数与 `seedance-2.0-guanfang` 完全同名同取值（`mode` / `duration` / `resolution` /
+# `aspect_ratio`），所以换过去客户端一行都不用改。
+_VIDEO_MODEL = "seedance-2.0-guanfang-anmiao"
+
 
 @dataclass(frozen=True)
 class BackendConfig:
@@ -27,7 +42,7 @@ class BackendConfig:
     lk888_base_url: str = _LK888_BASE_URL
     analysis_model: str = "gpt-4o"
     image_model: str = "gpt-image-2"
-    video_model: str = "seedance-2.0-guanfang"
+    video_model: str = _VIDEO_MODEL
     host: str = "127.0.0.1"
     port: int = 8787
     state_dir: Path = Path("output/photo-avatar-backend")
@@ -62,7 +77,7 @@ class BackendConfig:
         port = _parse_port(env.get("PHOTO_AVATAR_BACKEND_PORT", "8787"))
         analysis_model = _fixed_model(env, "LK888_ANALYSIS_MODEL", "gpt-4o")
         image_model = _fixed_model(env, "LK888_IMAGE_MODEL", "gpt-image-2")
-        video_model = _fixed_model(env, "LK888_VIDEO_MODEL", "seedance-2.0-guanfang")
+        video_model = _fixed_model(env, "LK888_VIDEO_MODEL", _VIDEO_MODEL)
         state_dir = _state_dir(env)
 
         return cls(

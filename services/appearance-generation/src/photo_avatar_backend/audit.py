@@ -21,7 +21,18 @@ _MODEL_DISPLAY_NAME = "GPT-image-2.0"
 # `reserve()` 里以 `AuditContractError` 炸掉（`AuditContextV1.from_state` 会重新校验）。
 # `seedance-2.0-guanfang` 是写实风的视频模型：那条链上母版只要 0.06 算力，
 # 5.02 全花在它身上，所以追溯时记它才是诚实的。
-_MODELS = frozenset({"gpt-4o", "gpt-image-2", "seedance-2.0-guanfang"})
+#
+# ⚠️ 2026-09-15 换成了 `-anmiao` 版（按秒计费 + 渠道唯一，见 `config._VIDEO_MODEL`）。
+# **旧名必须留着**：历史 job 的 audit 里存的就是它，白名单一旦「替换」而不是「追加」，
+# 那些记录读的时候会以 `AuditContractError` 炸掉。
+_MODELS = frozenset(
+    {
+        "gpt-4o",
+        "gpt-image-2",
+        "seedance-2.0-guanfang",
+        "seedance-2.0-guanfang-anmiao",
+    }
+)
 _BODY_MODULES = frozenset(
     {"body-slender-v1", "body-balanced-v1", "body-rounded-v1"}
 )

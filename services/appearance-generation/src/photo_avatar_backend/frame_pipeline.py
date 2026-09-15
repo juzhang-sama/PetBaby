@@ -4,8 +4,8 @@
     generateMotionSource   照片 → 看照片（gpt-4o）→ 透明母版 → 绿幕首帧 → 视频  （**要花钱**）
     packFrameSequence      scratch 里的 mp4 → 抠像 → 验收 → WebP → zip          （**0 算力**）
 
-两个 step 按「钱」切：视频失败要重付约 5.02 算力，粒度不能太粗；而后面半段
-（抠像/验收/打包）便宜到可以整段重跑。
+两个 step 按「钱」切：视频失败要重付**整支视频的钱**（单价见下面 `VIDEO_VERSION` 那段），
+粒度不能太粗；而后面半段（抠像/验收/打包）0 算力，便宜到可以整段重跑。
 
 「看照片」那一步（`analyze_photo_facts`）没有自己的 step 名 —— 它是
 `generateMotionSource` 的**内部第一步**。理由见该函数的 docstring：它失败只意味着
@@ -35,6 +35,8 @@
 from __future__ import annotations
 
 import hashlib
+import shutil
+import subprocess
 import time
 from collections.abc import Callable, Mapping
 from dataclasses import dataclass
@@ -75,12 +77,18 @@ FRAME_FORMAT = "webp"
 
 # ---------------- 写实风的成套规格（改这些等于改产品，不是调参） ----------------
 #
-# ⚠️ 计费是**按输出 token**（官方特惠渠道 43.41 算力/百万 token），不是按秒 ——
-# 单条**无法预估**，平台提交时按预估值校验余额：余额 6.23 也会被 `code=quota` 拒。
-# 实测（2026-09-14）：seedance + 标准 + 480p + 12s = 5.02 算力/支；
-# 母版 0.05~0.16、gpt-4o 看照片判毛长 ~0.004 → 一次生成约 5.1 算力。
+# 计费：模型固定成 `seedance-2.0-guanfang-anmiao`（**只有官方特惠一个渠道、按秒**），
+# 所以单价**可预估**：秒 × 档位价。2026-09-15 实测 **Mini + 480p + 12s = 2.8416 算力/支**
+# （标准 + 同规格 = 5.6832）。加上母版 0.05~0.16、gpt-4o 看照片判毛长 ~0.004
+# ⇒ **一只宠（四支视频）≈ 11.4 算力**。
+# （换模型名白名单见 `config._fixed_model`；`audit._MODELS` 只能追加。）
+#
+# ⚠️ **Mini 档会把整帧压暗**（实测：主体亮度中位 226→200、饱和 16→25、背景绿 G 255→168），
+# 白猫肉眼变灰。所以 `packFrameSequence` 那条路**必须同时开校色**
+# （`color_match=<母版>`，见本文件里的 pack_frame_sequence）—— 实测校色后主体距母版
+# 4.2~4.4，反而比标准档不校色（4.5~5.1）更贴。
 # 时长 12s / 24fps / 42ms 与内置资产同规格，换数值会让新宠物的节奏与内置不一致。
-VIDEO_VERSION = "标准"
+VIDEO_VERSION = "Mini"
 VIDEO_DURATION = "12"
 VIDEO_RESOLUTION = "480p"
 VIDEO_ASPECT_RATIO = "1:1"
@@ -509,10 +517,8 @@ def generate_motion_source(
         video_task_id: str | None = None
         log(f"[4/4] idle 视频复用 scratch 里的 {MOTION_SOURCE_FILE}")
     else:
-        log(
-            f"[4/4] 生成 idle 绿幕视频"
-            f"（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s，约 5.02 算力）"
-        )
+        # 不在日志里写单价：价格随档位/渠道漂，写死必然过期（规格与单价见 `VIDEO_VERSION` 那一段）。
+        log(f"[4/4] 生成 idle 绿幕视频（{VIDEO_VERSION} / {VIDEO_RESOLUTION} / {VIDEO_DURATION}s）")
         video_task_id = _generate_video(
             client=client,
             first_frame=fitted.frame_png,
@@ -636,7 +642,7 @@ def _action_videos(
 
     # 只在**真要生成**时才判字段（判不出会退到通用兜底，见 `analyze_action_facts`）。
     facts = analyze_action_facts(client, first_frame.read_bytes(), log=log)
-    log(f"[动作] 待生成 {len(pending)} 支：{'、'.join(pending)}（每支约 5.02 算力）")
+    log(f"[动作] 待生成 {len(pending)} 支：{'、'.join(pending)}")
 
     videos: list[ActionVideo] = []
     for action_id in ACTION_IDS:
@@ -723,6 +729,18 @@ def pack_frame_sequence(
             f"[packFrameSequence] 另有 {len(clips)} 支动作并进同一个包："
             f"{'、'.join(clip.action_id for clip in clips)}"
         )
+    # 校色参考 = 那张透明**母版**（跟用户照片对齐的那张）。
+    #
+    # 为什么必须给 idle 也校色：**Mini 档会把整帧压暗**（主体亮度中位 226→200、饱和 16→25），
+    # 白猫肉眼变灰。实测校色把主体拉回距母版 4.2~4.4（不校色是 33.8~40.2）。
+    #
+    # ⚠️ 动作**不用改**：它们拿的是 idle 抠像后的第 0 帧（`pipeline.IDLE_ANCHOR_FRAME`），
+    # 而那一帧此时已经是校色过的 ⇒ 动作自动跟着校到同一个目标，两支不会色偏。
+    #
+    # 找不到母版（scratch 被清过）就**降级不校色**，不要因为校色参考缺失而让打包失败：
+    # 那一步 0 算力、不该成为「已付费视频装不进去」的理由。
+    master = _find_existing_master(state_dir, provider_session_id)
+    log(f"[packFrameSequence] 校色参考={'母版 ' + master.name if master else '无（跳过校色）'}")
     build = build_frame_sequence(
         video,
         out_dir,
@@ -730,6 +748,7 @@ def pack_frame_sequence(
         display_name=request.display_name,
         species=request.species,
         variant_id=upload_variant_id(request.session_id, request.revision),
+        color_match=master,
         path_base=state_dir,
         action_clips=clips,
         log=log,
@@ -992,4 +1011,42 @@ def _generate_video(
     staging.write_bytes(payload)
     staging.replace(video_path)
     log(f"[{label}] {video_path.name}  {len(payload) // 1024} KB")
+    _strip_audio_track(video_path, log=log)
     return task_id
+
+
+# 音轨白白占体积：实测一支 12s / 480p 的 mp4 里 AAC 音轨 **126,550 bps ≈ 191 KB**，
+# 占整支 3,980 KB 的 **4.8%**。
+#
+# ⚠️ 别指望关音频省钱 —— **平台侧省不了**：
+#   · `seedance-2.0-guanfang-anmiao` 是**按秒计费**（`秒 × 档位价`），音频不单独计价；
+#   · `seedance-2.0-guanfang` 的 pricing 里也只有 `output_token_price` 一项，没有音频项。
+#   → 收益只有「下载体积 / 磁盘占用」和「产物里不该有跟画面无关的东西」。
+# ⚠️ 也**没法在请求里关**：media 协议的 `params` 表里没有音频开关
+# （只有 `audio_url` = 参考音频**输入**）。所以只能下载后剥。
+def _strip_audio_track(video_path: Path, *, log: Callable[[str], None]) -> None:
+    """原地去掉音轨：`-c copy` 只重封装，**视频流逐字节不变**（帧内容零影响）。
+
+    失败**不阻断** —— 音轨不影响抠像，别为它丢掉一支已经付过钱的视频。
+    """
+    ffmpeg = shutil.which("ffmpeg")
+    if ffmpeg is None:
+        log("[警告] 找不到 ffmpeg，跳过剥音轨（不影响抠像）")
+        return
+    # 输出名**必须留 `.mp4` 后缀**：ffmpeg 按扩展名挑 muxer，写成 `xxx.noaudio`
+    # 会直接 `Unable to find a suitable output format`（2026-09-15 踩到）。
+    # 同时显式 `-f mp4`，不靠猜。
+    stripped = video_path.with_name(video_path.stem + ".noaudio.mp4")
+    result = subprocess.run(
+        [ffmpeg, "-y", "-loglevel", "error", "-i", str(video_path),
+         "-c", "copy", "-an", "-f", "mp4", str(stripped)],
+        capture_output=True, text=True, encoding="utf-8", errors="replace",
+    )
+    if result.returncode != 0 or not stripped.is_file():
+        log(f"[警告] 剥音轨失败，保留带音轨的原样：{result.stderr[-500:]}")
+        stripped.unlink(missing_ok=True)
+        return
+    # 先剥到 .noaudio 再改名：中途被杀时 video_path 仍是完整的原文件
+    before, after = video_path.stat().st_size, stripped.stat().st_size
+    stripped.replace(video_path)
+    log(f"[音轨] 已剥除  {before // 1024} KB -> {after // 1024} KB（省 {before - after} B）")

@@ -19,6 +19,7 @@ from photo_avatar_backend.frames.matting import (
     chroma_alpha,
     clean_mask,
     compute_autocrop,
+    match_color,
     matte_video,
     rvm_alpha,
     sam2_alpha,
@@ -131,3 +132,71 @@ def test_rejects_a_missing_color_match_master(tmp_path: Path):
 
     with pytest.raises(ValueError, match="color-match master does not exist"):
         matte_video(video, tmp_path / "out", color_match=tmp_path / "nope.png")
+
+
+def _color_ref(rgb: np.ndarray) -> np.ndarray:
+    return np.stack([rgb.mean(axis=0), rgb.std(axis=0)])
+
+
+def test_match_color_pulls_the_core_mean_onto_the_master():
+    """核心均值被搬到母版均值上（校色的本职）。
+
+    无噪声输入 ⇒ `src_std == dst_std` ⇒ `gain` 退化成 1（纯平移），结果应精确落到母版统计量。
+    """
+    rgb = np.full((40, 40, 3), (200.0, 184.0, 182.0), dtype=np.float32)
+    alpha = np.ones((40, 40), dtype=np.float32)
+    ref = np.stack([np.array([222.0, 216.0, 209.0], np.float32), np.full(3, 8.0, np.float32)])
+
+    out = match_color(rgb, alpha, ref)
+
+    assert np.allclose(out.mean(axis=(0, 1)), (222.0, 216.0, 209.0), atol=1e-3)
+
+
+def test_match_color_reduces_distance_to_the_master_on_noisy_input():
+    """有噪声（`gain != 1`）时也应当把核心拉近母版 —— 允许被绿余量闸口削掉一点。"""
+    rng = np.random.default_rng(0)
+    dark = np.clip(rng.normal((200.0, 184.0, 182.0), 10.0, (64, 64, 3)), 0, 255).astype(np.float32)
+    alpha = np.ones((64, 64), dtype=np.float32)
+    master = np.clip(rng.normal((222.0, 216.0, 209.0), 20.0, (64, 64, 3)), 0, 255).astype(np.float32)
+    flat = master.reshape(-1, 3)
+    target = flat.mean(axis=0)
+
+    out = match_color(dark, alpha, np.stack([target, flat.std(axis=0)]))
+
+    before = float(np.linalg.norm(dark.reshape(-1, 3).mean(axis=0) - target))
+    after = float(np.linalg.norm(out.reshape(-1, 3).mean(axis=0) - target))
+    assert after < before * 0.35
+
+
+def test_match_color_never_increases_green_excess():
+    """校色**不许**把任一像素的绿余量抬到校色前之上。
+
+    历史 bug：线性变换逐通道各拉各的，把 `despill` 刚压下去的半透明边缘带重新推绿
+    —— 实测 Mini 档 `edgeGreenFringeRatio` 3e-06 → 0.1298（阈 0.02），「无绿边」判据直接 FAIL。
+    """
+    # 左半：被整体压暗的主体（提供 core 统计量，且自身不绿）；
+    # 右半：带绿残留的半透明边缘带（alpha=0.6，不进 core 统计）。
+    rgb = np.full((64, 64, 3), (200.0, 184.0, 182.0), dtype=np.float32)
+    rgb[:, 48:] = (150.0, 190.0, 148.0)
+    alpha = np.ones((64, 64), dtype=np.float32)
+    alpha[:, 48:] = 0.6
+    ref = np.stack([np.array([222.0, 216.0, 209.0], np.float32), np.full(3, 12.0, np.float32)])
+
+    before = rgb[:, :, 1] - np.maximum(rgb[:, :, 0], rgb[:, :, 2])
+    out = match_color(rgb, alpha, ref)
+    after = out[:, :, 1] - np.maximum(out[:, :, 0], out[:, :, 2])
+
+    assert np.all(after <= np.maximum(before, 0.0) + 1e-4)
+    # 闸口只削"被推绿"的部分，不能把校色本身也削掉：主体仍然变亮
+    assert out[:, :48, 1].mean() > rgb[:, :48, 1].mean() + 20
+
+
+def test_match_color_leaves_a_tiny_frame_untouched():
+    """核心像素太少时不做任何事（避免用几个点估出来的统计量乱拉整帧）。"""
+    rgb = np.full((4, 4, 3), (10.0, 200.0, 10.0), dtype=np.float32)
+    alpha = np.zeros((4, 4), dtype=np.float32)
+
+    out = match_color(rgb, alpha, np.stack([np.full(3, 100.0, np.float32),
+                                            np.full(3, 10.0, np.float32)]))
+
+    assert np.array_equal(out, rgb)

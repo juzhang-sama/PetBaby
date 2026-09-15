@@ -750,7 +750,7 @@ def test_submit_video_uses_the_video_model_and_seedance_parameters():
     assert transport.requests[0].url.path == "/v1/media/generate"
     assert transport.requests[0].extensions["timeout"]["read"] == 300
     body = transport.json_bodies[0]
-    assert body["model"] == "seedance-2.0-guanfang"
+    assert body["model"] == "seedance-2.0-guanfang-anmiao"
     assert body["params"] == {
         "version": "标准",
         "duration": "12",

@@ -32,6 +32,7 @@ from photo_avatar_backend.frame_pipeline import (  # noqa: E402
     FramePipelineError,
     FrameSequenceArtifact,
     MotionSource,
+    _strip_audio_track,
     analyze_action_facts,
     analyze_photo_facts,
     generate_motion_source,
@@ -49,6 +50,7 @@ from photo_avatar_backend.frames.action_prompts import (  # noqa: E402
 from photo_avatar_backend.lk888_client import Lk888Error, MediaState  # noqa: E402
 
 FFMPEG = shutil.which("ffmpeg")
+FFPROBE = shutil.which("ffprobe")
 
 
 def _request(**overrides: object) -> FrameStepRequest:
@@ -302,9 +304,9 @@ def test_generate_motion_source_walks_photos_facts_master_frame_video(tmp_path: 
     assert "long-haired" not in client.prompts["master"]
     assert client.prompts["loop"].startswith("以首帧图作为这只动物唯一的身份")
 
-    # 视频规格是产品定死的，不是默认值
+    # 视频规格是产品定死的，不是默认值（`lk888_client.submit_video` 的默认 version 是「标准」）
     assert client.video_kwargs == {
-        "version": "标准",
+        "version": "Mini",
         "duration": "12",
         "resolution": "480p",
         "aspect_ratio": "1:1",
@@ -639,6 +641,116 @@ def _synth_green_video(path: Path, *, size: int = 128, frames: int = 8, fps: int
         check=True, capture_output=True,
     )
     return path
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="需要 ffmpeg + ffprobe")
+def test_strip_audio_track_removes_audio_but_keeps_the_video_stream(tmp_path: Path):
+    """剥音轨只许动音频：**视频流必须逐帧一致**（否则等于白重编码一次）。"""
+    video = _synth_green_video(tmp_path / "with-audio.mp4")
+    subprocess.run(
+        [FFMPEG, "-y", "-hide_banner", "-loglevel", "error", "-i", str(video),
+         "-f", "lavfi", "-i", "anullsrc=channel_layout=stereo:sample_rate=32000",
+         "-shortest", "-c:v", "copy", "-c:a", "aac", str(video.with_suffix(".tmp.mp4"))],
+        check=True, capture_output=True,
+    )
+    video.with_suffix(".tmp.mp4").replace(video)
+    assert "audio" in _stream_types(video), "夹具本身得先有音轨"
+    frames_before = _video_framemd5(video)
+
+    logs: list[str] = []
+    _strip_audio_track(video, log=logs.append)
+
+    assert "audio" not in _stream_types(video)
+    assert _video_framemd5(video) == frames_before, "视频流被动过了"
+    assert any("已剥除" in line for line in logs)
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="需要 ffmpeg + ffprobe")
+def test_strip_audio_track_keeps_a_video_that_has_no_audio(tmp_path: Path):
+    """本来就没音轨 → 重封装一次也不许改坏视频流。"""
+    video = _synth_green_video(tmp_path / "silent.mp4")
+    frames_before = _video_framemd5(video)
+
+    _strip_audio_track(video, log=lambda _: None)
+
+    assert _video_framemd5(video) == frames_before
+
+
+@pytest.mark.skipif(FFMPEG is None or FFPROBE is None, reason="需要 ffmpeg + ffprobe")
+def test_strip_audio_track_does_not_block_on_a_broken_mp4(tmp_path: Path):
+    """剥不了就留着原样 —— 音轨不影响抠像，别丢掉一支已付费的视频。"""
+    broken = tmp_path / "broken.mp4"
+    broken.write_bytes(b"not an mp4 at all")
+    logs: list[str] = []
+
+    _strip_audio_track(broken, log=logs.append)
+
+    assert broken.read_bytes() == b"not an mp4 at all"
+    assert any("剥音轨失败" in line for line in logs)
+
+
+def _stream_types(path: Path) -> set[str]:
+    result = subprocess.run(
+        [FFPROBE, "-v", "error", "-show_entries", "stream=codec_type",
+         "-of", "csv=p=0", str(path)],
+        check=True, capture_output=True, text=True,
+    )
+    return {line.strip() for line in result.stdout.splitlines() if line.strip()}
+
+
+def _video_framemd5(path: Path) -> str:
+    """视频流的逐帧 md5 清单 —— 用来证明「剥音轨没有动到画面」。"""
+    result = subprocess.run(
+        [FFMPEG, "-v", "error", "-i", str(path), "-map", "0:v", "-f", "framemd5", "-"],
+        check=True, capture_output=True, text=True,
+    )
+    return "\n".join(
+        line for line in result.stdout.splitlines() if not line.startswith("#")
+    )
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")
+def test_pack_frame_sequence_degrades_when_no_master_is_left(tmp_path: Path):
+    """母版没了（scratch 被清）就**降级不校色** —— 0 算力的打包步不许因此失败。"""
+    state_dir = tmp_path / "state"
+    video = motion_source_path(state_dir, "provider-1")
+    video.parent.mkdir(parents=True)
+    _synth_green_video(video, frames=4)
+    logs: list[str] = []
+
+    pack_frame_sequence(_request(), state_dir=state_dir, log=logs.append)
+
+    assert any("校色参考=无" in line for line in logs)
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")
+def test_pack_frame_sequence_color_matches_idle_against_the_master(tmp_path: Path):
+    """打包必须把 **母版** 当 idle 的校色参考。
+
+    为什么：Mini 档会把整帧压暗（主体亮度中位 226→200），白猫肉眼变灰。
+    这里用「母版 std=0」把 Reinhard 增益压成 0 ⇒ 主体像素会被**精确**搬到母版颜色上，
+    于是可以直接断言产物帧的主色，而不用去猜数值。
+    """
+    state_dir = tmp_path / "state"
+    video = motion_source_path(state_dir, "provider-1")
+    video.parent.mkdir(parents=True)
+    _synth_green_video(video, frames=4)
+    master_dir = video.parent / "motion-source" / "attempt-1" / "00-母版"
+    master_dir.mkdir(parents=True)
+    Image.new("RGBA", (48, 48), (200, 60, 60, 255)).save(master_dir / "母版-123.png")
+
+    logs: list[str] = []
+    pack_frame_sequence(_request(), state_dir=state_dir, log=logs.append)
+
+    assert any("校色参考=母版" in line for line in logs)
+    frame = video.parent / "pack-frame-sequence" / "attempt-1" / "04-抠像" / "frames" / "f000.png"
+    opaque = [
+        (count, colour)
+        for count, colour in (Image.open(frame).convert("RGBA").getcolors(1 << 22) or [])
+        if colour[3] == 255
+    ]
+    assert opaque, "抠像后连不透明像素都没有"
+    assert max(opaque)[1][:3] == (200, 60, 60), "主体没有被校到母版的颜色上"
 
 
 @pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")

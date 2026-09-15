@@ -224,6 +224,17 @@ def match_color(rgb: np.ndarray, alpha: np.ndarray, ref: np.ndarray) -> np.ndarr
 
     只在不透明主体（alpha>=0.99）上统计，避免半透明边缘的绿残留污染统计量；
     但变换应用到整帧，保证整只猫的颜色一致。
+
+    ⚠️ **线性变换是逐通道各拉各的，会重新制造绿边**（2026-09-15 实测）：
+    去绿（`despill`）刚把半透明边缘带压下去，校色又把 G 单独拉高 ——
+    需要的 G 增益越大越明显。实测同一支 Mini 视频：
+    `edgeGreenFringeRatio` 3e-06 → **0.1298**、`interiorGreenSpillRatio` 0.0 → **0.0134**
+    （阈值 0.02 / 0.005）⇒ 四项判据里的「无绿边」直接 FAIL。
+    连几乎不用校色的标准档也把 interiorSpill 顶到 0.0071。
+
+    所以这里给一条硬保证：**校色不许把任一像素的绿余量（`G-max(R,B)`）
+    抬到它校色前的水平之上**。校色前后都算一遍余量，多出来的部分从 G 上扣掉。
+    这不会削掉校色本身（主体该亮的还是亮的），只挡住"被推绿"的那部分。
     """
     out = rgb.astype(np.float32)
     core = alpha >= 0.99
@@ -235,7 +246,15 @@ def match_color(rgb: np.ndarray, alpha: np.ndarray, ref: np.ndarray) -> np.ndarr
     dst_mean, dst_std = ref[0], ref[1]
     # 标准差过小的通道不做拉伸，避免放大噪声
     gain = np.where(src_std > 1e-3, dst_std / np.maximum(src_std, 1e-3), 1.0)
-    return np.clip((out - src_mean) * gain + dst_mean, 0.0, 255.0)
+    corrected = np.clip((out - src_mean) * gain + dst_mean, 0.0, 255.0)
+
+    # 绿余量只许「不增加」：多出来的从 G 扣掉。
+    # 扣完仍满足 G >= max(R,B)，所以不会把 G 压到负值。
+    before = out[:, :, 1] - np.maximum(out[:, :, 0], out[:, :, 2])
+    after = corrected[:, :, 1] - np.maximum(corrected[:, :, 0], corrected[:, :, 2])
+    overshoot = np.clip(after - np.maximum(before, 0.0), 0.0, None)
+    corrected[:, :, 1] -= overshoot
+    return np.clip(corrected, 0.0, 255.0)
 
 
 def temporal_smooth(stack: np.ndarray, radius: int) -> np.ndarray:

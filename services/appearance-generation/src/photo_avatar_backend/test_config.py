@@ -33,7 +33,7 @@ def test_config_uses_frozen_models_and_resolved_state_directory(tmp_path):
     assert config.lk888_base_url == "https://api.lk888.ai"
     assert config.analysis_model == "gpt-4o"
     assert config.image_model == "gpt-image-2"
-    assert config.video_model == "seedance-2.0-guanfang"
+    assert config.video_model == "seedance-2.0-guanfang-anmiao"
     assert config.provider == "lk888"
     assert config.model_display_name == "GPT-image-2.0"
     assert config.api_contract_version == "lk888-media-generate-v1"
@@ -73,7 +73,7 @@ def test_config_rejects_every_origin_except_fixed_lk888_api(base_url):
         ({"LK888_IMAGE_MODEL": ""}, "LK888_IMAGE_MODEL"),
         ({"LK888_IMAGE_MODEL": "other-image-model"}, "gpt-image-2"),
         ({"LK888_VIDEO_MODEL": ""}, "LK888_VIDEO_MODEL"),
-        ({"LK888_VIDEO_MODEL": "kwvideo-v2"}, "seedance-2.0-guanfang"),
+        ({"LK888_VIDEO_MODEL": "kwvideo-v2"}, "seedance-2.0-guanfang-anmiao"),
     ],
 )
 def test_config_rejects_unsafe_or_invalid_values(overrides, message):
@@ -112,7 +112,7 @@ def test_example_configuration_contains_only_empty_secret_values():
     assert entries["PHOTO_AVATAR_BACKEND_TOKEN"] == ""
     assert entries["LK888_ANALYSIS_MODEL"] == "gpt-4o"
     assert entries["LK888_IMAGE_MODEL"] == "gpt-image-2"
-    assert entries["LK888_VIDEO_MODEL"] == "seedance-2.0-guanfang"
+    assert entries["LK888_VIDEO_MODEL"] == "seedance-2.0-guanfang-anmiao"
     assert entries["PHOTO_AVATAR_BACKEND_HOST"] == "127.0.0.1"
     assert entries["PHOTO_AVATAR_BACKEND_PORT"] == "8787"
     assert entries["PHOTO_AVATAR_BACKEND_STATE_DIR"] == "output/photo-avatar-backend"
