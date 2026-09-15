@@ -754,6 +754,37 @@ def test_pack_frame_sequence_color_matches_idle_against_the_master(tmp_path: Pat
 
 
 @pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")
+def test_pack_frame_sequence_merges_every_action_into_one_package(tmp_path: Path):
+    """多动作并进**同一个包**（一个 job 一个 artifact ⇒ 必须一支 zip）。
+
+    ⚠️ 这条测试是补出来的：原先所有端到端用例的 scratch 里**没有 `actions/*.mp4`**，
+    于是 `_action_clips` 的循环体从来不执行 —— 里面一个漏 import 的名字
+    （`joins_idle_schedule`）就这样躲过了全部单测，只在 2026-09-15 真跑时才炸
+    （`NameError`，被服务掩成「图片生成服务暂时不可用」）。**必须有覆盖循环体的用例。**
+    """
+    state_dir = tmp_path / "state"
+    video = motion_source_path(state_dir, "provider-1")
+    video.parent.mkdir(parents=True)
+    _synth_green_video(video, frames=4)
+    for action_id in ACTION_IDS:
+        action = action_video_path(state_dir, "provider-1", action_id)
+        action.parent.mkdir(parents=True, exist_ok=True)
+        _synth_green_video(action, frames=4)
+
+    logs: list[str] = []
+    artifact = pack_frame_sequence(_request(), state_dir=state_dir, log=logs.append)
+
+    assert artifact.frame_count == 4 * (1 + len(ACTION_IDS)), "idle + 每支动作的帧都要进包"
+    assert any("并进同一个包" in line for line in logs)
+    with zipfile.ZipFile(io.BytesIO(artifact.payload)) as archive:
+        manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
+    action_ids = {item["actionId"] for item in manifest["actions"]}
+    # `actions` 里 idle 也在（它是默认循环），三支一次性/交互动作必须都到齐
+    assert action_ids >= set(ACTION_IDS)
+    assert "idle-combo" in action_ids
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")
 def test_pack_frame_sequence_end_to_end_from_the_scratch_video(tmp_path: Path):
     state_dir = tmp_path / "state"
     video = motion_source_path(state_dir, "provider-1")

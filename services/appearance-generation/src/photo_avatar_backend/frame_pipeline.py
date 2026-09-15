@@ -52,6 +52,7 @@ from .frames.action_prompts import (
     ActionFacts,
     FALLBACK_ACTION_FACTS,
     action_hold_range,
+    joins_idle_schedule,
     load_action,
     render_action_prompt_for,
     uses_end_frame,

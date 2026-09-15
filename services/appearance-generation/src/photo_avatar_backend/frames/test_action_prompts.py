@@ -40,7 +40,10 @@ FACTS = {
 GOLDEN = {
     "yawn": "2c4b3da92f72a10f71fa9908f4da107959e9a7221eb8ad0c37aea3a3436f236d",
     "lick": "f255c40f971b80cbf0d7540b00219b53ae49c7c22a41b1af9f06b284da1c617c",
-    "grab-release": "7b3272034e593037c87d62102a3fa2caef0c2c76b7098408c667ea5b28f5768f",
+    # 2026-09-15：grab-release 从「抬起约半个身位」改成「原地悬空、不许向上位移」。
+    # 原因是实测必然出画：framing_ok 不校验上余量 + Seedance 重绘会把主体放大 ≈6%
+    # ⇒ 上余量 7.5% 掉到 4.1%，抬 26px 头顶就顶边、连续 145 帧被画幅切平、耳朵消失。
+    "grab-release": "db041a3d1ab91a65ae4f91349bdb865d44444d27c3c96ce322264b3a19c0c7c1",
 }
 
 
