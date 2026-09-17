@@ -15,9 +15,8 @@ $desktopRoot = if ([string]::IsNullOrWhiteSpace($DesktopRootOverride)) {
   [System.IO.Path]::GetFullPath($DesktopRootOverride)
 }
 $tauriCommand = Join-Path $desktopRoot "node_modules/.bin/tauri.cmd"
-$cubismCore = Join-Path $desktopRoot ".vendor/live2d-cubism-sdk/Core/live2dcubismcore.min.js"
-$cubismFramework = Join-Path $desktopRoot ".vendor/live2d-cubism-sdk/Framework/src/live2dcubismframework.ts"
-$publicCubismCore = Join-Path $desktopRoot "public/live2d/Core/live2dcubismcore.min.js"
+# 不再校验 Live2D 运行时：该路线已废弃，前端在缺 SDK 时会自动 alias 到降级实现，
+# 构建与开发都不需要它（干净克隆因此可以直接一键启动）。
 
 $npm = if ([string]::IsNullOrWhiteSpace($NpmCommandOverride)) {
   Get-Command npm.cmd -ErrorAction SilentlyContinue
@@ -38,13 +37,6 @@ $cargo = if ([string]::IsNullOrWhiteSpace($CargoCommandOverride)) {
 if (-not $cargo) {
   Write-Error "未找到 cargo。请安装 Rust 工具链后重试。" -ErrorAction Continue
   exit 11
-}
-
-function Test-CubismRuntime {
-  $vendorCorePresent = Test-Path -LiteralPath $cubismCore -PathType Leaf
-  $vendorFrameworkPresent = Test-Path -LiteralPath $cubismFramework -PathType Leaf
-  $publicCorePresent = Test-Path -LiteralPath $publicCubismCore -PathType Leaf
-  return $vendorCorePresent -and $vendorFrameworkPresent -and $publicCorePresent
 }
 
 Push-Location $desktopRoot
@@ -68,30 +60,12 @@ try {
     }
   }
 
-  if (-not (Test-CubismRuntime)) {
-    if ([string]::IsNullOrWhiteSpace($env:CUBISM_SDK_ROOT)) {
-      Write-Error "Cubism SDK 运行文件缺失。请将 CUBISM_SDK_ROOT 设置为官方 Cubism SDK for Web 根目录。" -ErrorAction Continue
-      exit 12
-    }
-    Write-Host "正在准备 Cubism SDK..."
-    & $npmCommand run prepare:cubism
-    if ($LASTEXITCODE -ne 0) {
-      $code = $LASTEXITCODE
-      Write-Error "Cubism SDK 准备失败，退出码：$code" -ErrorAction Continue
-      exit $code
-    }
-    if (-not (Test-CubismRuntime)) {
-      Write-Error "Cubism SDK 准备完成，但运行文件仍不完整。" -ErrorAction Continue
-      exit 14
-    }
-  }
-
   if ($ValidateOnly) {
     Write-Host "开发环境校验通过。"
     exit 0
   }
 
-  # 注入照片分身受控后端环境变量（生成像素宠物必需）。
+  # 注入写实风生成后端环境变量（照片 → 桌宠这条链必需）。
   # 后端地址固定为本机 127.0.0.1:8787；token 从 services/appearance-generation/.env 读取。
   $backendEnv = Join-Path $repoRoot "services/appearance-generation/.env"
   $backendConfigured = $false
@@ -148,7 +122,8 @@ try {
       Write-Host "警告：后端未在 30 秒内就绪，请检查 services/appearance-generation/output/photo-avatar-backend/photo-avatar-backend.stderr.log。"
     }
   } else {
-    Write-Host "警告：未找到 services/appearance-generation/.env，后端未启动，照片分身生成将不可用。"
+    Write-Host "警告：未找到 services/appearance-generation/.env，后端未启动，照片生成将不可用。"
+    Write-Host "      复制 services/appearance-generation/.env.example 为 .env 并填入其中的必填项即可启用。"
   }
 
   Write-Host "正在启动 PetBaby 前端、Rust 后端和桌宠窗口..."

@@ -1,13 +1,22 @@
 # Desktop Pet
 
-Windows 优先的轻量桌面宠物项目。当前阶段为 M0 技术探针，仅验证透明窗口、点击区域、窗口层级、全屏避让和资源基线。
+Windows 优先的轻量桌面宠物：上传猫/狗照片 → 云端生成形象 → 桌面陪伴（多宠、离线可用）。
 
 ## 开发
 
+**唯一入口：双击仓库根目录的 `一键启动桌宠开发环境.cmd`。**
+
+它依次做：检查 Node.js / Rust 工具链 → 补全前端依赖 → 拉起生成后端（`127.0.0.1:8787`，已在跑就复用）→ 启动桌宠窗口。
+
+前置条件：
+
+- 已安装 Node.js（含 npm）和 Rust 工具链（cargo）。
+- 需要「照片生成」能力：把 `services/appearance-generation/.env.example` 复制成 `.env` 并填好里面的必填项。没有这个文件也能正常开发和跑桌宠，只是不能生成新宠物。
+
+只做环境校验、不启动窗口：
+
 ```powershell
-npm install
-npm test
-npm run tauri dev
+powershell -NoProfile -ExecutionPolicy Bypass -File scripts\start-desktop-pet-dev.ps1 -ValidateOnly
 ```
 
 ## M0 状态

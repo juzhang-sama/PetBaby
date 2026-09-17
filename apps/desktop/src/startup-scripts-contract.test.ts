@@ -24,7 +24,6 @@ const temporaryRoots: string[] = [];
 
 type LauncherFixtureOptions = {
   cargoMissing?: boolean;
-  cubismComplete?: boolean;
   npmMissing?: boolean;
   npmLsExitCode?: number;
   npmInstallExitCode?: number;
@@ -40,18 +39,6 @@ function createLauncherFixture(options: LauncherFixtureOptions = {}) {
   mkdirSync(commandRoot, { recursive: true });
   mkdirSync(path.join(desktopRoot, "node_modules", ".bin"), { recursive: true });
   writeFileSync(path.join(desktopRoot, "node_modules", ".bin", "tauri.cmd"), "@exit /b 0\r\n");
-
-  if (options.cubismComplete) {
-    for (const relative of [
-      ".vendor/live2d-cubism-sdk/Core/live2dcubismcore.min.js",
-      ".vendor/live2d-cubism-sdk/Framework/src/live2dcubismframework.ts",
-      "public/live2d/Core/live2dcubismcore.min.js",
-    ]) {
-      const target = path.join(desktopRoot, ...relative.split("/"));
-      mkdirSync(path.dirname(target), { recursive: true });
-      writeFileSync(target, "fixture\n");
-    }
-  }
 
   const npmCommand = path.join(commandRoot, "npm.cmd");
   if (!options.npmMissing) {
@@ -97,7 +84,7 @@ function runLauncher(options: LauncherFixtureOptions = {}) {
     args,
     {
       encoding: "utf8",
-      env: { ...process.env, CUBISM_SDK_ROOT: "" },
+      env: process.env,
       timeout: 15_000,
     },
   );
@@ -127,20 +114,17 @@ describe("Windows one-click development startup", () => {
     expect(cmd).toMatch(/exit \/b/i);
   });
 
-  it("checks complete npm and Cubism runtime state before the only Tauri dev start", () => {
+  it("checks complete npm state before the only Tauri dev start", () => {
     expect(powershell).toContain("$PSScriptRoot");
     expect(powershell).toContain("Get-Command npm.cmd");
     expect(powershell).toContain("Get-Command cargo.exe");
     expect(powershell).toContain("& $npmCommand ls --depth=0 --silent");
     expect(powershell).toContain("& $npmCommand install");
     expect(powershell).toContain("node_modules/.bin/tauri.cmd");
-    expect(powershell).toContain(".vendor/live2d-cubism-sdk/Core/live2dcubismcore.min.js");
-    expect(powershell).toContain(".vendor/live2d-cubism-sdk/Framework/src/live2dcubismframework.ts");
-    expect(powershell).toContain("public/live2d/Core/live2dcubismcore.min.js");
-    expect(powershell).toContain("$env:CUBISM_SDK_ROOT");
-    expect(powershell).toContain("& $npmCommand run prepare:cubism");
-    expect(powershell).toContain("exit 12");
-    expect(powershell).toContain("exit 14");
+
+    // Live2D 路线已废弃：启动脚本不得再把 Cubism SDK 当成启动前置条件，
+    // 否则干净克隆（没有 .vendor/live2d-cubism-sdk）一键启动必然失败。
+    expect(powershell).not.toMatch(/cubism/i);
 
     const starts = powershell.match(/& \$npmCommand run tauri -- dev/g) ?? [];
     expect(starts).toHaveLength(1);
@@ -152,8 +136,6 @@ describe("Windows one-click development startup", () => {
     expect(powershell).toMatch(/未找到 npm/);
     expect(powershell).toMatch(/未找到 cargo/);
     expect(powershell).toMatch(/正在安装 npm 依赖/);
-    expect(powershell).toMatch(/正在准备 Cubism SDK/);
-    expect(powershell).toMatch(/Cubism SDK.*缺失/);
     expect(powershell).toMatch(/正在启动 PetBaby/);
   });
 
@@ -169,16 +151,16 @@ describe("Windows one-click development startup", () => {
     expectLauncherStatus({ npmLsExitCode: 1, npmInstallExitCode: 23 }, 23);
   });
 
-  it("returns reserved code 12 when Cubism is incomplete without an SDK root", () => {
-    expectLauncherStatus({}, 12);
+  it("starts without any Live2D runtime files in the desktop root", () => {
+    expectLauncherStatus({}, 0);
   });
 
   it("validates a complete temporary environment without starting Tauri", () => {
-    expectLauncherStatus({ cubismComplete: true, validateOnly: true }, 0);
+    expectLauncherStatus({ validateOnly: true }, 0);
   });
 
   it("propagates the Tauri command exit code", () => {
-    expectLauncherStatus({ cubismComplete: true, tauriExitCode: 37 }, 37);
+    expectLauncherStatus({ tauriExitCode: 37 }, 37);
   });
 
   it("does not embed destructive, network, provider, secret, or production-content operations", () => {
