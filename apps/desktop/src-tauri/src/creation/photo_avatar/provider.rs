@@ -207,6 +207,29 @@ pub struct RemoteError {
     pub message: String,
 }
 
+/// 一条动作（`yawn` / `lick` / `grab-release`）的 wire 形状 ——
+/// 与 Python 侧 `frame_pipeline.ActionVideo.to_wire()` 逐字对应。
+///
+/// 视频同样**一个字节都不往客户端送**（留在服务侧
+/// `scratch/<providerSessionId>/actions/<actionId>.mp4`），客户端只需要知道
+/// 「这支做出来了没有、是复用还是新跑、花了哪次 task」。
+///
+/// 🔴 **这个类型的存在本身就是一次回归修复**：动作扩展让 `motionSource` 的结果多了
+/// `actions` 这一个键，而 wire 枚举上一版没有它（且带 `deny_unknown_fields`）⇒
+/// 服务侧明明 `succeeded`（四支视频全在 scratch 里、钱已花），客户端却报
+/// `invalidInput: unknown field 'actions'`，宠物卡在 `draft`。
+/// 用 `tests/fixtures/photo-avatar/motion-source-wire-multi-action.json`
+/// （**从真跑的服务响应里原样抄下来的**）钉住它，别再靠手写 json! 猜形状。
+#[derive(Debug, Clone, Deserialize)]
+#[serde(rename_all = "camelCase", deny_unknown_fields)]
+pub struct MotionActionWire {
+    pub action_id: String,
+    pub video_bytes: u64,
+    #[serde(default)]
+    pub video_task_id: Option<String>,
+    pub reused: bool,
+}
+
 #[derive(Debug, Clone)]
 pub enum ProviderStepResult {
     Identity {
@@ -248,6 +271,10 @@ pub enum ProviderStepResult {
         first_frame_scale: Option<f64>,
         first_frame_left_margin: Option<f64>,
         first_frame_right_margin: Option<f64>,
+        /// 每条动作各一支视频。**只放真做出来的那些** —— 某支失败会被跳过
+        /// （动作是加分项，不该拖垮整步），所以「少了哪支」看这个列表就知道。
+        /// 空列表 = 只有 idle、没有动作，也是合法成功。
+        actions: Vec<MotionActionWire>,
     },
     /// `packFrameSequence` 的产物：一支 schema 7 运行时包（**zip**）。
     ///
@@ -313,6 +340,10 @@ enum ProviderStepResultWire {
         first_frame_left_margin: Option<f64>,
         #[serde(default)]
         first_frame_right_margin: Option<f64>,
+        /// 0~3 条动作。🔴 **`#[serde(default)]` 是必须的**：这是「动作扩展」加进来的键，
+        /// 早先的服务不发它；缺了要按「没有动作」处理，**不能算结果非法**。
+        #[serde(default)]
+        actions: Vec<MotionActionWire>,
     },
     /// 与 Python 侧 `FrameSequenceArtifact.to_wire()` 对应（`resultType: "frameSequence"`），
     /// 外面再套一个 `artifactUrl` / `sha256`（由 `_job_wire` 展开）。
@@ -434,6 +465,7 @@ impl<'de> Deserialize<'de> for ProviderStepResult {
                 first_frame_scale,
                 first_frame_left_margin,
                 first_frame_right_margin,
+                actions,
             } => Ok(Self::MotionSource {
                 video_bytes,
                 reused,
@@ -442,6 +474,7 @@ impl<'de> Deserialize<'de> for ProviderStepResult {
                 first_frame_scale,
                 first_frame_left_margin,
                 first_frame_right_margin,
+                actions,
             }),
             ProviderStepResultWire::FrameSequence {
                 artifact_url,
@@ -1885,6 +1918,57 @@ mod tests {
             "videoTaskID": "x"
         }));
         assert!(typo.is_err());
+    }
+
+    /// 🔴 回归：真跑里服务侧明明 `succeeded`（四支视频全在 scratch、10.5 算力已花），
+    /// 客户端却报 `invalidInput: unknown field 'actions'` ⇒ 宠物卡在 `draft`。
+    ///
+    /// 根因 = 动作扩展让结果多了 `actions` 键，而 wire 枚举带 `deny_unknown_fields`
+    /// 又不认识它。**老的单测抓不到**：那些用例是手写 `json!`，手写时自然只会写
+    /// 自己知道的那几个键。
+    ///
+    /// 这份 JSON 是**从真跑的服务响应里原样抄下来的**
+    /// （`GET /v1/photo-avatar/jobs/199839751a9b445db6b9179594136f84`），
+    /// 不是手写 —— 契约 fixture 必须来自真实产出，否则它只会证明「我以为的形状」。
+    #[test]
+    fn frame_motion_source_wire_accepts_the_real_multi_action_payload() {
+        let body =
+            include_str!("../../../tests/fixtures/photo-avatar/motion-source-wire-multi-action.json");
+        let state: RemoteJobState =
+            serde_json::from_str(body).expect("真跑的服务响应必须能解出来");
+        assert_eq!(state.state, "succeeded");
+        let Some(ProviderStepResult::MotionSource {
+            video_bytes,
+            actions,
+            first_frame_scale,
+            ..
+        }) = state.result
+        else {
+            panic!("result 必须是 motionSource");
+        };
+        assert_eq!(video_bytes, 3_669_520);
+        assert_eq!(first_frame_scale, Some(0.8));
+        assert_eq!(
+            actions
+                .iter()
+                .map(|action| action.action_id.as_str())
+                .collect::<Vec<_>>(),
+            vec!["yawn", "lick", "grab-release"]
+        );
+        assert!(actions.iter().all(|action| !action.reused && action.video_bytes > 0));
+
+        // 缺 `actions` 的**旧服务响应**同样要能解 —— `#[serde(default)]` 是刻意的，
+        // 不能因为加了动作就把「只有 idle」的结果判成非法。
+        let legacy: ProviderStepResult = serde_json::from_value(json!({
+            "resultType": "motionSource",
+            "videoBytes": 1,
+            "reused": true
+        }))
+        .unwrap();
+        assert!(matches!(
+            legacy,
+            ProviderStepResult::MotionSource { ref actions, .. } if actions.is_empty()
+        ));
     }
 
     /// 🔴 这就是那个「会白花 5.69 算力 + 白等 136 秒」的坑：

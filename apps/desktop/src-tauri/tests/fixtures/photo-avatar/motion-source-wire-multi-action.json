@@ -1,0 +1,19 @@
+{
+  "state": "succeeded",
+  "result": {
+    "resultType": "motionSource",
+    "videoBytes": 3669520,
+    "reused": false,
+    "masterTaskId": "141158972",
+    "videoTaskId": "141159748",
+    "firstFrameScale": 0.8,
+    "firstFrameLeftMargin": 0.06,
+    "firstFrameRightMargin": 0.0716,
+    "actions": [
+      { "actionId": "yawn", "videoBytes": 3705238, "videoTaskId": "141161061", "reused": false },
+      { "actionId": "lick", "videoBytes": 3642496, "videoTaskId": "141162793", "reused": false },
+      { "actionId": "grab-release", "videoBytes": 4231600, "videoTaskId": "141165086", "reused": false }
+    ]
+  },
+  "error": null
+}

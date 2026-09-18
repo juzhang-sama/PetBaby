@@ -29,6 +29,7 @@ from photo_avatar_backend.contracts import FrameStepRequest, SourceImage  # noqa
 from photo_avatar_backend.frame_pipeline import (  # noqa: E402
     FIRST_FRAME_MARGIN_LEFT,
     SCALE_LADDER,
+    ActionVideo,
     FramePipelineError,
     FrameSequenceArtifact,
     MotionSource,
@@ -950,3 +951,69 @@ def test_the_fallback_still_renders_a_valid_prompt(action_id: str) -> None:
     assert FALLBACK_ACTION_FACTS.coat_negative in text
     for token in ("__IDENTITY__", "__COAT__", "__ACTION_", "__TAIL_"):
         assert token not in text
+
+
+# ------------------------------------------------------------------ 跨语言契约 fixture
+#
+# `motionSource` 的结果是**服务侧发出、Rust 侧解出**的 wire，两边各有一份手写知识。
+# 这里断言「我们**现在**发的就是这份」（防服务侧悄悄多送/少送一个键），
+# Rust 侧（provider.rs）断言「它进得来」（防客户端的 wire 枚举比服务更严）。
+#
+# 🔴 这份 fixture 的来历就是一次真事故：动作扩展给结果加了 `actions` 键，Python
+# 照着发，而 Rust 的 wire 枚举带 `deny_unknown_fields` 又不认识它 ⇒
+# **服务侧明明 `succeeded`（四支视频全在 scratch、10.5 算力已花），客户端报
+# `invalidInput: unknown field 'actions'`，宠物卡在 `draft`**。
+# 所以它是**从真跑的服务响应里原样抄下来的**，不是手写 —— 手写只会证明「我以为的形状」。
+
+MOTION_SOURCE_WIRE_FIXTURE = (
+    Path(__file__).resolve().parents[4]
+    / "apps/desktop/src-tauri/tests/fixtures/photo-avatar/motion-source-wire-multi-action.json"
+)
+
+
+def test_the_motion_source_wire_still_matches_the_shared_fixture() -> None:
+    fixture = json.loads(MOTION_SOURCE_WIRE_FIXTURE.read_text(encoding="utf-8"))
+    expected = fixture["result"]
+    # `resultType` 由 app.py 的 `_job_wire` 贴上去，不在 `to_wire()` 里。
+    expected_keys = set(expected) - {"resultType"}
+
+    produced = MotionSource(
+        out_dir=Path("scratch/x"),
+        video_path=Path("scratch/x/motion-source.mp4"),
+        master_path=None,
+        first_frame_path=None,
+        master_task_id=None,
+        video_task_id=None,
+        first_frame_scale=None,
+        first_frame_left_margin=None,
+        first_frame_right_margin=None,
+        video_bytes=1,
+        reused=True,
+        actions=(
+            ActionVideo(
+                action_id="yawn",
+                video_path=Path("scratch/x/actions/yawn.mp4"),
+                video_task_id=None,
+                video_bytes=1,
+                reused=True,
+            ),
+        ),
+    ).to_wire()
+
+    assert set(produced) == expected_keys, (
+        "motionSource 的结果形状变了。这份 fixture 是 Python 与 Rust 共用的契约 —— "
+        "改它之前先看 apps/desktop/src-tauri/src/creation/photo_avatar/provider.rs "
+        "的 frame_motion_source_wire_accepts_the_real_multi_action_payload 还认不认"
+    )
+    assert set(produced["actions"][0]) == set(expected["actions"][0]), (
+        "动作条目的形状变了（Rust 侧 MotionActionWire 是 deny_unknown_fields）"
+    )
+
+
+def test_the_motion_source_wire_fixture_still_covers_every_action() -> None:
+    """真跑那次四支全成 ⇒ fixture 里三支动作一个不能少（少一支就不足以当契约）。"""
+
+    fixture = json.loads(MOTION_SOURCE_WIRE_FIXTURE.read_text(encoding="utf-8"))
+    ids = [action["actionId"] for action in fixture["result"]["actions"]]
+
+    assert set(ids) == set(ACTION_IDS)
