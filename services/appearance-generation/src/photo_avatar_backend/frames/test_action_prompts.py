@@ -43,7 +43,11 @@ GOLDEN = {
     # 2026-09-15：grab-release 从「抬起约半个身位」改成「原地悬空、不许向上位移」。
     # 原因是实测必然出画：framing_ok 不校验上余量 + Seedance 重绘会把主体放大 ≈6%
     # ⇒ 上余量 7.5% 掉到 4.1%，抬 26px 头顶就顶边、连续 145 帧被画幅切平、耳朵消失。
-    "grab-release": "db041a3d1ab91a65ae4f91349bdb865d44444d27c3c96ce322264b3a19c0c7c1",
+    # 2026-09-19：改提示词也没管住 —— 三次实测「余量给得越大、它抬得越高」
+    # （4.1%→80/145、11.9%→36/289、14.7%→126/289），模型是「一路抬到画幅上边」。
+    # ⇒ 换语义：整套删掉「腾空/悬空/被托起/飘浮」，改成**原地姿态变化**
+    #   —— 只有四条腿从收在身下改为自然下垂、尾巴垂落，位置与高度都不变。
+    "grab-release": "1a59ab95a09aab4ab82e53176fb338330c791ee18c2aa95b796da581acac9015",
 }
 
 
@@ -83,6 +87,17 @@ def test_prompt_carries_the_pet_fields_and_the_shared_negative_prefix(action_id:
     assert "\n\nAvoid the following: " in text
     # 绿幕与静止镜头是动作视频的硬前提（抠像靠它）。
     assert "绿幕" in text
+
+
+def test_grab_release_never_asks_the_model_to_lift_the_cat() -> None:
+    """三次实测：提示词里只要出现「腾空/悬空/被托起/飘浮」，模型就一路抬到画幅上边。
+
+    这套语义是被实证否证过的（余量给越大抬越高），不允许再溜回提示词里。
+    """
+    text = render("grab-release")
+    banned = ["腾空", "悬空", "被托起", "托起", "飘浮", "重力失效"]
+    left = [word for word in banned if word in text]
+    assert left == [], f"grab-release 提示词里又出现了被否证的提举语义: {left}"
 
 
 def test_grab_release_is_the_only_end_frame_action() -> None:

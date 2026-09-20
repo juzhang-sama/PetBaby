@@ -20,3 +20,8 @@ _debug/
 output/
 services/saas-backend/data/*.db
 services/appearance-generation/models/
+
+# 换 key / 改配置时留的后备文件里**有真 key**，绝不能进提交（.env 本身已忽略，
+# 但 .env.before-unify / .env.bak 这类名字不在这个模式里）。
+.env.*
+!.env.example
