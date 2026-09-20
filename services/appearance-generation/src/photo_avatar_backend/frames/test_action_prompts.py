@@ -160,12 +160,28 @@ def test_refinement_keys_are_absent_by_default() -> None:
     assert action_frame_target({"actionId": "yawn"}) is None
 
 
-def test_grab_release_declares_its_refinement_budget() -> None:
-    """精修数字是**对标内置 05 建国量出来的**（81 帧 = 3.40s），改它等于改手感。"""
-    action = load_action("grab-release")
+# 精修预算 = **从内置宠量出来的**（帧数 × 帧时长 = 单次时长）。改它等于改手感。
+# 建国（内置 05）：grab-release 81 帧 3.40s、yawn 119 帧 5.00s、lick 119 帧 5.00s。
+REFINEMENT_BUDGET = {
+    "grab-release": ((0, 236), 81),
+    "yawn": ((0, 227), 119),
+    "lick": ((0, 249), 119),
+}
 
-    assert action_frame_range(action) == (0, 236)
-    assert action_frame_target(action) == 81
+
+@pytest.mark.parametrize("action_id", sorted(REFINEMENT_BUDGET))
+def test_every_one_shot_action_declares_its_refinement_budget(action_id: str) -> None:
+    """精修数字是**对标内置 05 建国量出来的**，改它等于改手感。"""
+    expected_range, expected_target = REFINEMENT_BUDGET[action_id]
+    action = load_action(action_id)
+
+    assert action_frame_range(action) == expected_range
+    assert action_frame_target(action) == expected_target
+
+
+def test_only_one_shot_actions_are_refined() -> None:
+    """idle-combo 是循环支：裁区间 / 重采样会改循环长度 ⇒ 它不该出现在精修表里。"""
+    assert "idle-combo" not in REFINEMENT_BUDGET
 
 
 @pytest.mark.parametrize("raw", [[0], [0, 1, 2], "0-1", [1, 0], [-1, 5], [True, 5], [0.5, 5]])
