@@ -19,7 +19,9 @@ from photo_avatar_backend.frames.packing import (
     FRAME_MS,
     PRODUCT_MOTIONS,
     ExtraAction,
+    map_to_planned_index,
     pack_frame_sequence,
+    plan_frame_indices,
 )
 
 
@@ -351,6 +353,100 @@ def test_a_hold_range_outside_the_action_frames_is_rejected(tmp_path: Path):
 
     with pytest.raises(ValueError, match="holdRange"):
         pack(idle, tmp_path / "out", extra_actions=[grab])
+
+
+# ------------------------------------------------------------------ 精修（裁 + 重采样）
+#
+# 产线视频固定 12 秒、动作摊在 3 倍时长里还带几秒静止废料，内置宠是人工裁过节奏的
+# （建国 grab-release = 81 帧 3.4s，新宠原生 = 287 帧 12.1s）。
+# `frameRange` 裁废料、`frameTarget` 均匀重采样到内置宠量级 —— **0 算力**，
+# 见 `docs/设计/动作精修流程-2026-09-20.md`。
+
+
+def test_no_refinement_keys_takes_every_frame():
+    assert plan_frame_indices(5) == [0, 1, 2, 3, 4]
+
+
+def test_a_frame_range_only_crops_the_tail():
+    assert plan_frame_indices(10, (2, 6)) == [2, 3, 4, 5, 6]
+
+
+def test_a_frame_target_only_resamples_the_whole_clip():
+    """均匀重采样**含首含尾**：尾巴不能丢，否则收回动作少最后一步。"""
+    assert plan_frame_indices(10, None, 4) == [0, 3, 6, 9]
+
+
+def test_a_frame_range_and_a_frame_target_compose():
+    assert plan_frame_indices(10, (0, 6), 3) == [0, 3, 6]
+
+
+@pytest.mark.parametrize(
+    "total, frame_range, frame_target, match",
+    [
+        (10, (0, 10), None, "frameRange"),      # hi 越界
+        (10, (5, 2), None, "frameRange"),       # 反序
+        (10, None, 1, "frameTarget"),           # 少于 2 帧
+        (10, (0, 3), 8, "frameTarget"),         # 目标比素材还多 = 复制帧，不是精修
+    ],
+)
+def test_a_bad_refinement_plan_is_rejected(total, frame_range, frame_target, match):
+    with pytest.raises(ValueError, match=match):
+        plan_frame_indices(total, frame_range, frame_target)
+
+
+def test_mapping_a_source_index_reuses_the_plan_itself():
+    """映射必须复用同一份 plan —— 两个方向各算一遍逆公式迟早会漂一帧。"""
+    plan = plan_frame_indices(10, (0, 6), 3)   # [0, 3, 6]
+
+    assert map_to_planned_index(0, plan) == 0
+    assert map_to_planned_index(3, plan) == 1
+    assert map_to_planned_index(6, plan) == 2
+    assert map_to_planned_index(4, plan) == 1  # 最近邻，落在 3 上
+
+
+def test_refinement_rewrites_the_hold_range_into_packed_coordinates(tmp_path: Path):
+    idle = write_frames(tmp_path, 2)
+    grab = _extra(
+        tmp_path, "grab-release", count=9, hold_range=(3, 6), frame_target=4
+    )
+
+    manifest = json.loads(
+        pack(idle, tmp_path / "out", extra_actions=[grab]).manifest_path.read_text(
+            encoding="utf-8"
+        )
+    )
+    action = manifest["actions"][1]
+
+    # plan = [0, 3, 5, 8] ⇒ 原始 [3, 6] 最近邻映射到 [1, 2]
+    assert len(action["frames"]) == 4
+    assert action["frames"] == [f"frames/grab-release/f{index:04d}.png" for index in range(4)]
+    assert action["holdRange"] == [1, 2]
+    # 包内只登记留下的那 4 帧（Rust 安装时逐文件校 sha256）
+    assert len([entry for entry in manifest["files"] if "grab-release" in entry["relativePath"]]) == 4
+
+
+def test_a_hold_range_that_collapses_under_resampling_is_rejected(tmp_path: Path):
+    """窗口比采样间隔还短 ⇒ 映射后 lo == hi = 一张静止图，必须当场报错而不是静默出包。"""
+    idle = write_frames(tmp_path, 2)
+    grab = _extra(
+        tmp_path, "grab-release", count=100, hold_range=(50, 51), frame_target=4
+    )
+
+    with pytest.raises(ValueError, match="collapses"):
+        pack(idle, tmp_path / "out", extra_actions=[grab])
+
+
+def test_refinement_logs_the_numbers_it_used(tmp_path: Path):
+    """精修是人定的数字，映射结果必须看得见（看不见就等于黑箱）。"""
+    lines: list[str] = []
+    idle = write_frames(tmp_path, 2)
+    grab = _extra(tmp_path, "grab-release", count=10, hold_range=(2, 7), frame_target=4)
+
+    pack(idle, tmp_path / "out", extra_actions=[grab], log=lines.append)
+    text = "\n".join(lines)
+
+    assert "原始 10 帧" in text
+    assert "[精修] grab-release：holdRange [2, 7]（原始帧）→ [" in text
 
 
 def test_a_single_action_package_still_has_no_idle_schedule(tmp_path: Path):

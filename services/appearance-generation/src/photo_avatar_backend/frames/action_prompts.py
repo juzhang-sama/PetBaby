@@ -54,6 +54,8 @@ __all__ = [
     "NEGATIVE_PREFIX",
     "ActionFacts",
     "ActionPromptError",
+    "action_frame_range",
+    "action_frame_target",
     "action_hold_range",
     "joins_idle_schedule",
     "load_action",
@@ -246,16 +248,46 @@ def action_hold_range(action: dict) -> tuple[int, int] | None:
     调它，而那个文件的纪律是「启动时不许硬依赖 numpy/PIL/scipy」。
     """
     raw = action.get("holdRange")
-    if raw is None:
-        return None
+    return None if raw is None else _read_pair(raw, "holdRange")
+
+
+def _read_pair(raw: object, label: str) -> tuple[int, int] | None:
+    """读一个 `[lo, hi]` 整数对（缺省 / 形态不对的处理由调用方定）。"""
     if not isinstance(raw, (list, tuple)) or len(raw) != 2:
-        raise ActionPromptError(f"action holdRange must be a [lo, hi] pair, got {raw!r}")
+        raise ActionPromptError(f"action {label} must be a [lo, hi] pair, got {raw!r}")
     lo, hi = raw
     if any(isinstance(value, bool) or not isinstance(value, int) for value in (lo, hi)):
-        raise ActionPromptError(f"action holdRange must contain integers, got {raw!r}")
+        raise ActionPromptError(f"action {label} must contain integers, got {raw!r}")
     if lo < 0 or hi < lo:
-        raise ActionPromptError(f"action holdRange must satisfy 0 <= lo <= hi, got {raw!r}")
+        raise ActionPromptError(f"action {label} must satisfy 0 <= lo <= hi, got {raw!r}")
     return lo, hi
+
+
+def action_frame_range(action: dict) -> tuple[int, int] | None:
+    """从动作配置里读**人定的** `frameRange`（原始帧闭区间，没有 → `None`）。
+
+    精修用：砍掉「收回完成后那几秒静止废料」。**下标对着原始抠像帧序**
+    （`精修-分段节奏表.py` 量出来的那套），重采样后的坐标由打包层算。
+    """
+    raw = action.get("frameRange")
+    return None if raw is None else _read_pair(raw, "frameRange")
+
+
+def action_frame_target(action: dict) -> int | None:
+    """从动作配置里读**人定的** `frameTarget`（重采样后的目标帧数，没有 → `None`）。
+
+    精修用：产线视频固定 12 秒，动作摊在 3 倍时长里；内置宠是人工裁过节奏的
+    （建国 grab-release = 81 帧 3.4s，新宠原生 = 287 帧 12.1s）。
+    **均匀重采样**到内置宠量级，手感才对得上。
+
+    ⚠️ 只允许**变少**（压缩），不允许变多 —— 变多就是复制帧，那不是精修。
+    """
+    raw = action.get("frameTarget")
+    if raw is None:
+        return None
+    if isinstance(raw, bool) or not isinstance(raw, int) or raw < 2:
+        raise ActionPromptError(f"action frameTarget must be an integer >= 2, got {raw!r}")
+    return raw
 
 
 def _fill(text: str, values: dict[str, str], label: str) -> str:

@@ -23,6 +23,8 @@ import pytest
 from photo_avatar_backend.frames.action_prompts import (
     ACTION_IDS,
     ActionPromptError,
+    action_frame_range,
+    action_frame_target,
     joins_idle_schedule,
     load_action,
     render_action_prompt,
@@ -148,3 +150,31 @@ def test_the_action_files_and_the_whitelist_agree() -> None:
         "assets/motion-prompts/actions 里的配置与 ACTION_IDS 白名单不一致 —— "
         "加了动作就要同时加白名单（它也是 scratch 文件名与 manifest 的 actionId）"
     )
+
+
+# ---- 精修参数（都是可选的，没有就不裁不压）----
+
+
+def test_refinement_keys_are_absent_by_default() -> None:
+    assert action_frame_range({"actionId": "yawn"}) is None
+    assert action_frame_target({"actionId": "yawn"}) is None
+
+
+def test_grab_release_declares_its_refinement_budget() -> None:
+    """精修数字是**对标内置 05 建国量出来的**（81 帧 = 3.40s），改它等于改手感。"""
+    action = load_action("grab-release")
+
+    assert action_frame_range(action) == (0, 236)
+    assert action_frame_target(action) == 81
+
+
+@pytest.mark.parametrize("raw", [[0], [0, 1, 2], "0-1", [1, 0], [-1, 5], [True, 5], [0.5, 5]])
+def test_a_malformed_frame_range_is_rejected(raw: object) -> None:
+    with pytest.raises(ActionPromptError, match="frameRange"):
+        action_frame_range({"frameRange": raw})
+
+
+@pytest.mark.parametrize("raw", [0, 1, -3, True, "81", 2.5])
+def test_a_malformed_frame_target_is_rejected(raw: object) -> None:
+    with pytest.raises(ActionPromptError, match="frameTarget"):
+        action_frame_target({"frameTarget": raw})

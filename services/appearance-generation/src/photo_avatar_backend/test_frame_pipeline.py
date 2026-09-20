@@ -46,6 +46,10 @@ from photo_avatar_backend.frame_pipeline import (  # noqa: E402
 from photo_avatar_backend.frames.action_prompts import (  # noqa: E402
     ACTION_IDS,
     FALLBACK_ACTION_FACTS,
+    action_frame_range,
+    action_frame_target,
+    action_hold_range,
+    load_action,
     render_action_prompt_for,
 )
 from photo_avatar_backend.lk888_client import Lk888Error, MediaState  # noqa: E402
@@ -754,6 +758,22 @@ def test_pack_frame_sequence_color_matches_idle_against_the_master(tmp_path: Pat
     assert max(opaque)[1][:3] == (200, 60, 60), "主体没有被校到母版的颜色上"
 
 
+def _synth_action_frames(action_id: str) -> int:
+    """合成动作视频要放多少帧 —— **按动作配置算，别在测试里另抄一个数**。
+
+    `frameRange` / `holdRange` 是**人对着真实素材量出来的绝对帧下标**（grab-release 到 236 / 169），
+    所以合成素材太短会被打包层判越界（那是**故意的**：越界说明素材不是这支配置对应的那条）。
+    ⇒ 这里按配置把素材造够长，顺手让 e2e 真的走到「裁区间 + 重采样 + holdRange 映射」那条路。
+    """
+    action = load_action(action_id)
+    ends = [
+        pair[1]
+        for pair in (action_frame_range(action), action_hold_range(action))
+        if pair is not None
+    ]
+    return max(4, max(ends, default=0) + 1)
+
+
 @pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")
 def test_pack_frame_sequence_merges_every_action_into_one_package(tmp_path: Path):
     """多动作并进**同一个包**（一个 job 一个 artifact ⇒ 必须一支 zip）。
@@ -770,12 +790,11 @@ def test_pack_frame_sequence_merges_every_action_into_one_package(tmp_path: Path
     for action_id in ACTION_IDS:
         action = action_video_path(state_dir, "provider-1", action_id)
         action.parent.mkdir(parents=True, exist_ok=True)
-        _synth_green_video(action, frames=4)
+        _synth_green_video(action, frames=_synth_action_frames(action_id))
 
     logs: list[str] = []
     artifact = pack_frame_sequence(_request(), state_dir=state_dir, log=logs.append)
 
-    assert artifact.frame_count == 4 * (1 + len(ACTION_IDS)), "idle + 每支动作的帧都要进包"
     assert any("并进同一个包" in line for line in logs)
     with zipfile.ZipFile(io.BytesIO(artifact.payload)) as archive:
         manifest = json.loads(archive.read("manifest.json").decode("utf-8"))
@@ -783,6 +802,13 @@ def test_pack_frame_sequence_merges_every_action_into_one_package(tmp_path: Path
     # `actions` 里 idle 也在（它是默认循环），三支一次性/交互动作必须都到齐
     assert action_ids >= set(ACTION_IDS)
     assert "idle-combo" in action_ids
+
+    counts = {item["actionId"]: len(item["frames"]) for item in manifest["actions"]}
+    assert counts["idle-combo"] == 4, "没配精修的动作原样全取"
+    # 精修在**真链路**上生效：resample 到配置的 frameTarget（不是合成素材的原长）
+    target = action_frame_target(load_action("grab-release"))
+    assert counts["grab-release"] == target, "grab-release 必须被重采样到配置的帧数"
+    assert artifact.frame_count == sum(counts.values()), "整包帧数 = 各支之和"
 
 
 @pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")

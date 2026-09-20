@@ -21,7 +21,7 @@ import hashlib
 import io
 import json
 import shutil
-from collections.abc import Sequence
+from collections.abc import Callable, Sequence
 from dataclasses import dataclass
 from pathlib import Path
 
@@ -69,6 +69,14 @@ class ExtraAction:
     `hold_range` 是「悬空保持」的帧下标闭区间（只对交互动作有意义，且是**实测**出来的，
     见落地清单第七节第 5 片）；给不出就不写这个键 —— 别猜一个。
     `scheduled` 决定它进不进 `idleSchedule`（交互动作由 playMotion 触发，不进）。
+
+    `frame_range` / `frame_target` = **精修**（`docs/设计/动作精修流程-2026-09-20.md`）：
+    产线视频固定 12 秒、动作摊在 3 倍时长里还带几秒静止废料，而内置宠是人工裁过节奏的
+    （建国 grab-release = 81 帧 3.4s，新宠原生 = 287 帧 12.1s）。
+    这两个键在**打包时**裁掉废料并把整支重采样到目标帧数，**0 算力**。
+
+    🔴 **`hold_range` / `frame_range` 一律用「原始抠像帧」的下标**（人量出来的那套坐标），
+    重采样后的坐标由本层算 —— 让人只维护一套坐标，才不会两套数字互相打架。
     """
 
     action_id: str
@@ -78,6 +86,46 @@ class ExtraAction:
     scheduled: bool = False
     min_interval_ms: int = 30_000
     max_interval_ms: int = 60_000
+    frame_range: tuple[int, int] | None = None
+    frame_target: int | None = None
+
+
+def plan_frame_indices(
+    total: int,
+    frame_range: tuple[int, int] | None = None,
+    frame_target: int | None = None,
+) -> list[int]:
+    """打包时到底取原始帧序里的哪几帧（`total` = 原始帧数）。
+
+    先按 `frame_range` 闭区间裁，再**均匀重采样**到 `frame_target` 帧（含首含尾）。
+    两个都不给 = 原样全取。
+
+    ⚠️ 重采样是**均匀**的，不是「只砍尾巴」：动作摊在 3 倍时长里时，
+    光裁尾巴救不回手感（变姿/收回照样慢 3 倍），必须整支压缩。
+    """
+    lo, hi = frame_range if frame_range is not None else (0, total - 1)
+    if not 0 <= lo <= hi < total:
+        raise ValueError(f"frameRange [{lo}, {hi}] is outside the {total} frames")
+    count = frame_target if frame_target is not None else hi - lo + 1
+    if count < 2:
+        raise ValueError(f"frameTarget must be at least 2, got {count}")
+    if count > hi - lo + 1:
+        raise ValueError(
+            f"frameTarget {count} exceeds the frameRange length {hi - lo + 1} "
+            f"(重采样只能变慢成复制帧，那不是精修)"
+        )
+    if count == hi - lo + 1:
+        return list(range(lo, hi + 1))
+    return [lo + round(index * (hi - lo) / (count - 1)) for index in range(count)]
+
+
+def map_to_planned_index(source_index: int, plan: Sequence[int]) -> int:
+    """把「原始帧下标」映射成「重采样后的下标」= 取最近的那个采样点。
+
+    ⚠️ **必须复用 `plan` 本身**（而不是另算一个逆公式）：两个方向各算一遍迟早会漂，
+    而这一漂就是「悬空保持窗口偏了一帧」，肉眼能看出来。
+    """
+    return min(range(len(plan)), key=lambda i: (abs(plan[i] - source_index), i))
 
 
 def action_semantics(action_ids: Sequence[str]) -> dict[str, str]:
@@ -169,6 +217,7 @@ def pack_frame_sequence(
     webp_quality: int = WEBP_QUALITY,
     replace_existing: bool = False,
     extra_actions: Sequence[ExtraAction] = (),
+    log: Callable[[str], None] | None = None,
 ) -> PackedFrameSequence:
     """把 `frames_dir` 下的 f*.png 打成 schema 7 包；`extra_actions` 是 idle 之外的动作。
 
@@ -180,7 +229,11 @@ def pack_frame_sequence(
 
     `frame_format` 决定包里的帧用什么编码 + manifest 里写什么扩展名。
     默认 `"png"` 与搬入前逐字节一致（黄金基线）；产品走 `"webp"`。
+
+    `log` 只用来把「这支动作裁成几帧、holdRange 映射成什么」打出来 ——
+    精修是**人定的数字**，映射结果必须看得见（看不见就等于黑箱）。
     """
+    say = log or (lambda _message: None)
 
     frames_dir = Path(frames_dir)
     out_dir = Path(out_dir)
@@ -257,9 +310,19 @@ def pack_frame_sequence(
             extra_dir = Path(extra.frames_dir)
             if not extra_dir.is_dir():
                 raise ValueError(f"frames directory does not exist: {extra_dir}")
-            extra_paths = sorted(extra_dir.glob("f*.png"))
-            if not extra_paths:
+            source_paths = sorted(extra_dir.glob("f*.png"))
+            if not source_paths:
                 raise ValueError(f"no f*.png frames in {extra_dir}")
+            source_count = len(source_paths)
+            # 精修：裁区间 + 均匀重采样（0 算力）。不配这两个键 = 原样全取，plan 就是 range。
+            plan = plan_frame_indices(source_count, extra.frame_range, extra.frame_target)
+            extra_paths = [source_paths[index] for index in plan]
+            if len(plan) != source_count or extra.frame_range is not None:
+                say(
+                    f"[精修] {extra.action_id}：原始 {source_count} 帧 → "
+                    f"取 [{plan[0]}, {plan[-1]}] 内的 {len(plan)} 帧"
+                    f"（{len(plan) * frame_duration_ms / 1000:.2f}s）"
+                )
             extra_rels = write_action(extra.action_id, extra_paths)
             entry: dict[str, object] = {
                 "actionId": extra.action_id,
@@ -268,13 +331,27 @@ def pack_frame_sequence(
                 "frames": extra_rels,
             }
             if extra.hold_range is not None:
+                # 配置里的 holdRange 是**原始帧**坐标（人量出来的那套）⇒ 按同一份 plan 映射。
                 lo, hi = extra.hold_range
-                if not 0 <= lo <= hi < len(extra_rels):
+                if not 0 <= lo <= hi < source_count:
                     raise ValueError(
-                        f"holdRange {extra.hold_range} is outside the {len(extra_rels)} frames "
+                        f"holdRange {extra.hold_range} is outside the {source_count} frames "
                         f"of {extra.action_id}"
                     )
-                entry["holdRange"] = [lo, hi]
+                mapped_lo = map_to_planned_index(lo, plan)
+                mapped_hi = map_to_planned_index(hi, plan)
+                if mapped_lo >= mapped_hi:
+                    raise ValueError(
+                        f"holdRange [{lo}, {hi}] of {extra.action_id} collapses to "
+                        f"[{mapped_lo}, {mapped_hi}] after resampling to {len(plan)} frames "
+                        f"—— 保持窗口比采样间隔还短：把 frameTarget 调大，或把窗口选长一点"
+                    )
+                if (mapped_lo, mapped_hi) != (lo, hi):
+                    say(
+                        f"[精修] {extra.action_id}：holdRange {list(extra.hold_range)}"
+                        f"（原始帧）→ [{mapped_lo}, {mapped_hi}]（包内 {len(plan)} 帧）"
+                    )
+                entry["holdRange"] = [mapped_lo, mapped_hi]
             actions.append(entry)
 
         # 先套产品规则（carried/landed/react-curious），再让每个动作自己占一个键。

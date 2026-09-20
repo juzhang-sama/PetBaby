@@ -51,6 +51,8 @@ from .frames.action_prompts import (
     ACTION_IDS,
     ActionFacts,
     FALLBACK_ACTION_FACTS,
+    action_frame_range,
+    action_frame_target,
     action_hold_range,
     joins_idle_schedule,
     load_action,
@@ -767,8 +769,9 @@ def _action_clips(state_dir: Path, provider_session_id: str) -> tuple[Any, ...]:
     进不进 `idleSchedule` 由 `pipelineTail` 决定（交互动作是 `--no-idle-schedule`），
     不在这里另抄一份规则。
 
-    ⚠️ `holdRange` 是**实测**出来的（见落地清单第 5 片），现在还标不出来 → 不写这个键。
-    少了它 = 拎起来不「悬空保持」，而不是一个错的值。
+    **精修参数也来自动作配置**：`holdRange`（悬空保持窗口）+ `frameRange`/`frameTarget`
+    （裁掉静止废料 + 重采样到内置宠的节奏），三者都用**原始抠像帧**下标，
+    映射成包内坐标是打包层的事 —— 见 `docs/设计/动作精修流程-2026-09-20.md`。
     """
     # 懒 import：`frames.pipeline` 会拉起 numpy/PIL/scipy（理由见上面那段注释）。
     from .frames.pipeline import ActionClip
@@ -789,6 +792,9 @@ def _action_clips(state_dir: Path, provider_session_id: str) -> tuple[Any, ...]:
                 # **人定的**「悬空保持」区间；配置里没有就是不写这个键（见 action_hold_range）。
                 hold_range=action_hold_range(action),
                 scheduled=joins_idle_schedule(action),
+                # **人定的**精修：裁废料 + 重采样（见 action_frame_range / action_frame_target）。
+                frame_range=action_frame_range(action),
+                frame_target=action_frame_target(action),
             )
         )
     return tuple(clips)

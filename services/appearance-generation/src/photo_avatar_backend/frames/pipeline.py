@@ -85,6 +85,10 @@ class ActionClip:
     scheduled: bool = False
     min_interval_ms: int = 30_000
     max_interval_ms: int = 60_000
+    # 精修（0 算力，打包时生效）：裁掉废料 + 重采样到目标帧数。
+    # **用原始帧下标**；`hold_range` 也在这套坐标里，映射由打包层统一做。
+    frame_range: tuple[int, int] | None = None
+    frame_target: int | None = None
 
 
 @dataclass(frozen=True)
@@ -237,6 +241,8 @@ def build_frame_sequence(
                 scheduled=clip.scheduled,
                 min_interval_ms=clip.min_interval_ms,
                 max_interval_ms=clip.max_interval_ms,
+                frame_range=clip.frame_range,
+                frame_target=clip.frame_target,
             )
         )
 
@@ -252,6 +258,7 @@ def build_frame_sequence(
         frame_format="webp",
         webp_quality=webp_quality,
         extra_actions=extra_actions,
+        log=log,
     )
 
     log("[4/4] 打 zip")
