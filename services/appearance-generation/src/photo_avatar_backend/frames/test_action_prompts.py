@@ -23,6 +23,7 @@ import pytest
 from photo_avatar_backend.frames.action_prompts import (
     ACTION_IDS,
     ActionPromptError,
+    action_first_frame_master,
     action_frame_range,
     action_frame_target,
     joins_idle_schedule,
@@ -56,7 +57,15 @@ GOLDEN = {
     # ⇒ 本版把时间轴**按 12 秒重写**，让「保持段」占全片四分之三以上（1.0-10.2 秒），
     #   并把 section/details/strict 里的中文否定句（「不转身、不侧身」）**全部改成正向描述** ——
     #   09-19 的教训是中文否定句等于把那个动作名喂给模型，禁止项只留给英文 negative。
-    "grab-release": "4c566ae7597218650489c0f90b47380120991b0614f61bfb293fc489cbceff84",
+    # 2026-09-20 晚（第三次改，本版）：老王拿短毛猫实测反馈「**前腿不变、后腿劈叉**」——
+    #   原地语义把**动作本身也治没了**（身材比例清楚的短毛猫一眼就看出来）。
+    #   回到建国那套（原文 = `output/宠物动作-建国-v1-2026-09-03/12-拎起/02-提示词/
+    #   Seedance提示词-grab-release.txt`）：**明说腾空**
+    #   （`被看不见的力量轻轻托起`、`四只腿自然垂落、尾巴向下垂`）
+    #   **+ 身体钉成折叠态**（`从头顶点到最低一只脚掌的总高度与首帧端坐时基本相等`）。
+    #   09-15 那次之所以顶边，缺的正是后半条「折叠」约束 ⇒ 身体一路往上飘。
+    #   ⚠️ 顶边风险随之回归（暹罗首帧上余量实测只有 6.5%）⇒ **重出后必须量逐帧头顶余量再进包**。
+    "grab-release": "df7d822ecc42ed7645168b1664d0b535e25e4781eca4062db72c3daf971cf583",
 }
 
 
@@ -98,21 +107,80 @@ def test_prompt_carries_the_pet_fields_and_the_shared_negative_prefix(action_id:
     assert "绿幕" in text
 
 
-def test_grab_release_never_asks_the_model_to_lift_the_cat() -> None:
-    """三次实测：提示词里只要出现「腾空/悬空/被托起/飘浮」，模型就一路抬到画幅上边。
+def test_grab_release_asks_for_a_folded_lift_not_a_pose_change() -> None:
+    """锁「腾空语义 + 折叠约束」这对组合 —— 少任何一半都会坏。
 
-    这套语义是被实证否证过的（余量给越大抬越高），不允许再溜回提示词里。
+    - 少了**腾空**：模型只敢动局部肢体 ⇒ 前腿不变、后腿劈叉
+      （老王 09-20 拿身材比例清楚的短毛猫实测反馈）。
+    - 少了**折叠**：身体一路往上飘 ⇒ 顶到画幅上边（09-15 / 09-18 / 09-19 四次实测）。
+
+    建国（内置 05）两个都有（原文 = `output/宠物动作-建国-v1-2026-09-03/12-拎起/02-提示词/
+    Seedance提示词-grab-release.txt`）。它多一道保险：先做一张**背弓悬垂的拎起母版**当首帧，
+    视频里再用「总高度不超过首帧坐姿」把身体钉住 —— 腾出的空间留给下垂的腿，头顶不用上移。
+    本产线只有一张坐姿首帧，所以更依赖提示词里那条折叠约束。
     """
     text = render("grab-release")
-    banned = ["腾空", "悬空", "被托起", "托起", "飘浮", "重力失效"]
-    left = [word for word in banned if word in text]
-    assert left == [], f"grab-release 提示词里又出现了被否证的提举语义: {left}"
+    # ① 腾空 + 悬垂：没有它，四条腿不会真的垂下来（前腿不动、后腿劈叉）
+    assert "腾空" in text, "grab-release 又退回「原地姿态变化」了：四条腿不会垂下来"
+    assert "自然垂落" in text or "悬垂" in text
+    # ② 折叠：没有它，身体会一路抬到画幅上边（09-15~09-19 实测）
+    assert "自然弯曲" in text, "缺「身体保持弯曲」⇒ 身体会被拉直、整体高度超过首帧"
+    assert "总高度" in text, "缺「总高度与首帧端坐时基本相等」⇒ 顶边风险回归"
+    # ③ 无外力源：建国原文的硬要求（画面里不许出现手/夹子/绳子）
+    assert "没有任何可见的抓取工具" in text
+    # ④ 负向词里**不许**再出现禁止抬升的那几条 —— 它们与「腾空」自相矛盾
+    for word in ("rising", "floating upward", "moving up", "drifting upward"):
+        assert word not in text, f"负向词里的 {word!r} 会直接禁掉要的抬升动作"
 
 
 def test_grab_release_is_the_only_end_frame_action() -> None:
     assert uses_end_frame(load_action("grab-release"))
     assert not uses_end_frame(load_action("yawn"))
     assert not uses_end_frame(load_action("lick"))
+
+
+# ---- 动作专用首帧（2026-09-20：拎起必须有自己的首帧）----
+
+
+def test_only_the_lift_uses_its_own_first_frame() -> None:
+    """**首帧定义了姿态起点**：只有拎起需要一张自己的母版首帧。
+
+    别的动作必须继续与 idle **共用同一张首帧** —— 那是「触发动作时不跳变」的前提。
+    这条一旦松开（比如给 yawn 也配一个 `firstFrameMaster`），产线会给每支动作各花
+    0.06 算力，而且各支的身份锚开始互相漂。
+    """
+    assert action_first_frame_master(load_action("grab-release")) == "master-lift.txt"
+    for action_id in ACTION_IDS:
+        if action_id != "grab-release":
+            assert action_first_frame_master(load_action(action_id)) is None
+
+
+def test_the_lift_master_prompt_asset_exists_and_renders() -> None:
+    """`master-lift.txt` 必须真的存在，且物种/毛长两个待填位置都填得上。
+
+    它在配置里是**可选键**，`load_action` 不检查 ⇒ 少了这份资产只有真跑才炸，
+    而一次真跑是 2.84 算力。所以在这里提前钉住。
+    """
+    from photo_avatar_backend.frames.prompts import render_master_prompt
+
+    text = render_master_prompt("cat", "short", template="master-lift.txt")
+    assert text.startswith("Use the uploaded seated character master image")
+    assert "short-haired" in text
+    # 折叠约束就是它存在的理由：少了它模型会一路往上飘（09-15~09-19 四次实测）
+    assert "ALL FOUR PAWS ARE RAISED OFF THE GROUND" in text
+    assert "must be roughly equal to" in text
+    # 毛长写死就废了（猫/狗、长毛/短毛要共用同一份），`coat=None` 时必须能渲染
+    assert render_master_prompt("dog", None, template="master-lift.txt").startswith(
+        "Use the uploaded seated character master image"
+    )
+    assert "long-haired" not in render_master_prompt("dog", None, template="master-lift.txt")
+
+
+@pytest.mark.parametrize("raw", ["../secret.txt", "sub/master.txt", "", 5, "master.txt.bak"])
+def test_a_bad_first_frame_master_is_rejected(raw: object) -> None:
+    """它只认资产目录下的**文件名**：放过一个 `/` 就指到资产目录外面去了。"""
+    with pytest.raises(ActionPromptError, match="firstFrameMaster"):
+        action_first_frame_master({"firstFrameMaster": raw})
 
 
 def test_grab_release_stays_out_of_the_idle_schedule() -> None:

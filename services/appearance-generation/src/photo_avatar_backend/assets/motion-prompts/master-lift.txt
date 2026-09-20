@@ -1,0 +1,16 @@
+Use the uploaded seated character master image only as the identity reference for this exact {{COAT_LEN}} {{SPECIES}}. Do not copy the original seated pose — change the pose to "lifted off the ground with all four paws raised at the same time, back gently arched, body compact and slightly curled". Keep the exact same coat color, markings, face, eye color, and illustration style; only the pose changes.
+
+Match the reference image's coat color, pattern, marking layout, and fur length exactly. The overall body must read as the same color and pattern as the reference, neither lightened nor darkened, not washed out and not desaturated. Preserve the exact eye color from the reference; do not invent or change it.
+
+Keep the character's recognizable identity: the face shape, eye shape and position, ear shape, nose and muzzle shape, tail shape and length, and any distinctive markings from the reference. Preserve the natural anatomy and adult body proportions; do not make it chibi, plush, round, oversized-headed, or cute mascot-like.
+
+Pose: the character is lifted off the ground and suspended in the air, supported by an invisible gentle hold at the scruff and shoulders. ALL FOUR PAWS ARE RAISED OFF THE GROUND AT THE SAME TIME — no paw touches anything, no paw reaches down to push or stand. The four paws hang together in a relaxed cluster beneath the body, slightly curled and close to each other. The BACK IS GENTLY ARCHED: a soft C-curve with the shoulders slightly higher than the hips, the body compact and rounded, not stretched out. The tail hangs down along the body, relaxed. The head stays at its normal height, level and relaxed, looking slightly surprised but calm — not struggling, not scared, not looking up.
+
+CRITICAL silhouette constraints:
+- The back arch must be SUBTLE — do NOT curl into a tight ball, do NOT tuck the head into the chest, do NOT roll or twist the body sideways, do NOT stretch the body into a long straight vertical line.
+- The total height from the top of the head to the lowest paw must be roughly equal to, or slightly LESS than, the seated reference height. The character is "lifted and folded", not "pulled straight" and not "compressed into a ball".
+- The top of the head must NOT end up higher than in the seated reference image.
+- Absolutely not standing, not sitting, not lying down, not crouching on the ground, not crawling.
+- No hand, no arm, no finger, no glove, no tool, no pliers, no string, no rope, no harness, no mechanical arm appears anywhere in the image.
+
+Centered in a 1024x1024 square composition with about 8 percent transparent margin. Output one genuine 1024x1024 RGBA PNG with a fully transparent background. No floor, ground, cast shadow, room, furniture, text, watermark, collar, accessory, hand, arm, finger, glow, gradients, blur, extra limbs, extra tail, crop, or background color. Do not use pixel art.

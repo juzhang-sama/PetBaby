@@ -189,6 +189,9 @@ class _FakeClient:
         self.calls: list[str] = []
         self.prompts: dict[str, str] = {}
         self.video_prompts: list[str] = []
+        # 按顺序记下每一次 `submit_image` 的提示词：第一次是 idle 母版，之后是
+        # 「动作专用母版」（目前只有 grab-release 有一次）。
+        self.image_prompts: list[str] = []
         self.image_batches: list[int] = []
         self.video_image_counts: list[int] = []
         self.analysis_image_counts: list[int] = []
@@ -218,7 +221,10 @@ class _FakeClient:
 
     def submit_image(self, prompt: str, images: object) -> str:
         self.calls.append("submit_image")
-        self.prompts["master"] = prompt
+        # 第一次 = idle 母版（`prompts["master"]` 保持旧语义，既有断言不用改；
+        # 后来的「动作专用母版」按顺序进 `image_prompts`，与 `prompts["loop"]` 同一手法）。
+        self.prompts.setdefault("master", prompt)
+        self.image_prompts.append(prompt)
         self.image_batches.append(len(images))  # type: ignore[arg-type]
         return MASTER_TASK
 
@@ -510,8 +516,39 @@ def test_a_paid_idle_video_is_kept_while_only_the_missing_actions_are_generated(
     assert result.reused is False, "整步没有全复用（动作是新生成的）"
     assert [action.action_id for action in result.actions] == list(ACTION_IDS)
     assert all(not action.reused for action in result.actions)
-    # 母版：scratch 里没有 → 生成一次（0.06 算力）；这是这条路上唯一的小钱
+    # 两张图要花钱：idle 透明母版（0.06）+ 拎起的**专用姿态母版**（0.06）。
+    # 后者是 2026-09-20 加的：**首帧定义了姿态起点** —— 拿坐姿首帧演「被拎起」，
+    # 模型给不出可靠结果（四次实测：顶边 / 劈叉 / 站起来走两步）。
+    # 这条路上真正的钱仍是三支动作视频（idle 那支白捡）。
+    assert client.calls.count("submit_image") == 2
+    assert client.image_batches[1] == 1, "拎起母版是图生图：参考图只有那一张 idle 透明母版"
+    assert "The total height from the top of the head" in client.image_prompts[1], (
+        "第二张必须是拎起母版提示词（折叠约束在里面），不是 idle 母版被重跑一遍"
+    )
+
+
+def test_a_paid_lift_master_is_reused_instead_of_regenerated(tmp_path: Path) -> None:
+    """拎起专用母版也是「花过钱就不重付」。
+
+    它与 idle 母版同一套依据（`_find_existing_master` / `_find_existing_lift_master`）：
+    重跑同一会话、或给这只宠物再补别的支时，那份 0.06 不该再付一次。
+    ⚠️ 复用还有第二个好处：**老王验收过的那张**不会被模型重新采样成另一只猫。
+    """
+    from photo_avatar_backend.frame_pipeline import lift_master_dir
+
+    client = _FakeClient()
+    lift_dir = lift_master_dir(tmp_path, "provider-1", "grab-release")
+    lift_dir.mkdir(parents=True)
+    (lift_dir / f"母版-{MASTER_TASK}.png").write_bytes(client.master_png)
+
+    generate_motion_source(
+        _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
+    )
+
+    # 只剩 idle 母版那一次；拎起母版命中 scratch ⇒ 不重付
     assert client.calls.count("submit_image") == 1
+    # 视频照常跑：idle 一支 + 三支动作（idle 的 mp4 这条路上本来就不存在）
+    assert client.calls.count("submit_video") == len(ACTION_IDS) + 1
 
 
 def test_a_failed_action_video_is_skipped_without_losing_the_whole_pet(tmp_path: Path):

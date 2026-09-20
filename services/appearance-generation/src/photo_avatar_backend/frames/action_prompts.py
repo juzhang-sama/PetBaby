@@ -54,6 +54,7 @@ __all__ = [
     "NEGATIVE_PREFIX",
     "ActionFacts",
     "ActionPromptError",
+    "action_first_frame_master",
     "action_frame_range",
     "action_frame_target",
     "action_hold_range",
@@ -261,6 +262,31 @@ def _read_pair(raw: object, label: str) -> tuple[int, int] | None:
     if lo < 0 or hi < lo:
         raise ActionPromptError(f"action {label} must satisfy 0 <= lo <= hi, got {raw!r}")
     return lo, hi
+
+
+def action_first_frame_master(action: dict) -> str | None:
+    """这支动作要不要**自己的母版首帧**（有 → 返回提示词资产的文件名）。
+
+    `grab-release`（拎起）是唯一需要的一支，理由是**首帧定义了姿态起点**：
+    让「坐姿首帧」里的猫靠语言变成四爪离地的悬垂姿态，模型给不出可靠结果
+    （2026-09-20 四次实测：顶边 / 劈叉 / 站起来走两步）。建国（内置 05）就是
+    给拎起单独做了一张「背弓悬垂」母版 —— 这个键把那一步产线化。
+
+    别的动作保持 `None` ⇒ 继续与 idle **共用同一张首帧**，那是「触发动作时
+    不跳变」的前提（见 `_action_videos` 第 3 条规矩）。
+
+    值只认 `assets/motion-prompts/` 下的 `.txt` **文件名**（不认路径）：它是从
+    配置文件读进来的字符串，放过一个 `/` 就能指到资产目录外面去。
+    """
+    raw = action.get("firstFrameMaster")
+    if raw is None:
+        return None
+    name = str(raw).strip()
+    if not name.endswith(".txt") or "/" in name or "\\" in name or name.startswith("."):
+        raise ActionPromptError(
+            f"action firstFrameMaster 必须是 assets/motion-prompts 下的 .txt 文件名, got {raw!r}"
+        )
+    return name
 
 
 def action_frame_range(action: dict) -> tuple[int, int] | None:

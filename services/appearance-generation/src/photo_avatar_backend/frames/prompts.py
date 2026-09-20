@@ -105,7 +105,9 @@ def _require_no_placeholder(text: str, label: str) -> str:
     return text
 
 
-def render_master_prompt(species: str, coat: str | None = None) -> str:
+def render_master_prompt(
+    species: str, coat: str | None = None, *, template: str = MASTER_TEMPLATE
+) -> str:
     """母版提示词：照片 → 透明母版（`gpt-image-2`，约 0.06 算力）。
 
     只指定「物种 + 毛长档位」两个最外层约束，其余一律以照片为准 ——
@@ -115,12 +117,16 @@ def render_master_prompt(species: str, coat: str | None = None) -> str:
     `FrameStepRequest` 里没有毛长字段，产品也问不出来）。
     少说这一句是安全的：提示词下一段本来就要求「毛长照照片一模一样」，
     毛长真正的来源是照片，`{{COAT_LEN}}` 只是一句提前的提示。
+
+    `template` 换成别的资产就是**另一张母版**：`master-lift.txt` 用同一套
+    待填位置（物种 + 毛长）渲染「拎起姿态母版」，参考图是 idle 的透明母版
+    而不是照片 —— 见 `frame_pipeline._action_first_frame`。
     """
     if species not in SPECIES_IDS:
         raise PromptError(f"不支持的物种: {species!r}")
     if coat is not None and coat not in COAT_LENGTHS:
         raise PromptError(f"不支持的毛长档位: {coat!r}")
-    text = _read(MASTER_TEMPLATE, _MASTER_PLACEHOLDERS)
+    text = _read(template, _MASTER_PLACEHOLDERS)
     rendered = (
         text.replace("{{COAT_LEN}}", COAT_LENGTHS[coat])
         if coat is not None

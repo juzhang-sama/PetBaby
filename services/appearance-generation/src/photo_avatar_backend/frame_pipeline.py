@@ -51,6 +51,7 @@ from .frames.action_prompts import (
     ACTION_IDS,
     ActionFacts,
     FALLBACK_ACTION_FACTS,
+    action_first_frame_master,
     action_frame_range,
     action_frame_target,
     action_hold_range,
@@ -74,6 +75,10 @@ PACK_SUBDIR = "pack-frame-sequence"
 MOTION_SUBDIR = "motion-source"
 MASTER_DIR = "00-母版"
 FIRST_FRAME_DIR = "01-首帧"
+# 「动作专用母版」的家：`scratch/<providerSessionId>/lift-master/<actionId>/`。
+# 与 idle 的 `motion-source/` 平级 —— 它是另一条产线（参考图是 idle 母版、不是照片），
+# 且按动作分子目录：将来若有第二支动作要自己的首帧，不会互相串。
+LIFT_MASTER_SUBDIR = "lift-master"
 
 # 产品固定 WebP（与内置宠物 04/05 的现有资产一致）。
 FRAME_FORMAT = "webp"
@@ -500,6 +505,10 @@ def generate_motion_source(
     report_first = _report_first(report_task_id)
 
     # ---- 基座：母版（钱，能复用就复用）+ 首帧（免费阶梯）----
+    # `coat` 提到这一层是为了「动作专用母版」（它的参考图就是这张母版）；
+    # 母版被复用时它保持 `None` = 「不知道毛长」，与 `render_master_prompt` 的
+    # 既有处理一致（少一句话不影响产出）。
+    coat: str | None = None
     master_path = _find_existing_master(state_dir, provider_session_id)
     if master_path is not None:
         log(f"[复用] scratch 里已有母版 {master_path.name}，跳过母版（不重付 0.06 算力）")
@@ -539,6 +548,8 @@ def generate_motion_source(
         state_dir=state_dir,
         provider_session_id=provider_session_id,
         first_frame=fitted.frame_png,
+        idle_master=master_path,
+        coat=coat,
         report_task_id=report_first,
         log=log,
     )
@@ -608,6 +619,82 @@ def _find_existing_master(state_dir: Path, provider_session_id: str) -> Path | N
     return None
 
 
+def lift_master_dir(state_dir: Path, provider_session_id: str, action_id: str) -> Path:
+    """动作专用母版的家：`scratch/<providerSessionId>/lift-master/<actionId>/`。"""
+    return scratch_dir(state_dir, provider_session_id) / LIFT_MASTER_SUBDIR / action_id
+
+
+def _find_existing_lift_master(
+    state_dir: Path, provider_session_id: str, action_id: str
+) -> Path | None:
+    """`_find_existing_master` 的动作版：scratch 里已经算过的那张专用母版。
+
+    为什么值得找：专用母版是**花钱的**（gpt-image-2 图生图 ≈0.06），而取景收敛是
+    免费的 —— 留住母版，之后重跑这一步就不必再付这 0.06。复用它还有第二个好处：
+    **老王验收过的那张**不会被模型重新采样成另一只猫（同一份提示词两次出图不保证一样）。
+    """
+    root = lift_master_dir(state_dir, provider_session_id, action_id)
+    if not root.is_dir():
+        return None
+    for candidate in sorted(root.glob("*.png")):
+        if candidate.stat().st_size > 0:
+            return candidate
+    return None
+
+
+def _action_video_first_frame(
+    action: dict,
+    *,
+    action_id: str,
+    request: FrameStepRequest,
+    first_frame: Path,
+    idle_master: Path | None,
+    coat: str | None,
+    client: Any,
+    state_dir: Path,
+    provider_session_id: str,
+    log: Callable[[str], None],
+) -> Path:
+    """这一支动作该用哪张首帧。
+
+    没声明 `firstFrameMaster` ⇒ 直接退回 `first_frame`（= idle 那张）。
+    声明了 ⇒ **图生图另做一张**：参考图是 idle 的**透明母版**（不是绿幕首帧 ——
+    要的是干净身份、不带绿幕色偏），只改姿态，再走同一套免费取景收敛。
+
+    抛出去就是「这一支放弃」：调用方与「视频生成失败」同样处理。🔴 **绝不退回
+    idle 首帧** —— 那等于又拿坐姿演拎起，正是这一整套要消灭的行为。
+    """
+    prompt_file = action_first_frame_master(action)
+    if prompt_file is None:
+        return first_frame
+
+    if idle_master is None:
+        # 只有 idle 母版被复用、又没找到它时才会走到这。没有身份参考而凭空生成一张
+        # 姿态母版 = 换一只猫，所以宁可让这一支缺掉。
+        raise FramePipelineError(
+            f"{action_id} 需要专用首帧，但这只宠物没有 idle 透明母版可作参考"
+        )
+
+    master = _find_existing_lift_master(state_dir, provider_session_id, action_id)
+    if master is not None:
+        log(f"[{action_id} 首帧] 复用 scratch 里的 {master.name}（不重付 0.06 算力）")
+    else:
+        from .frames.prompts import render_master_prompt
+
+        prompt = render_master_prompt(request.species, coat, template=prompt_file)
+        log(f"[{action_id} 首帧] 生成专用姿态母版（gpt-image-2 图生图，约 0.06 算力）")
+        task_id = client.submit_image(prompt, [idle_master.read_bytes()])
+        state = _wait_for_media(client, task_id, label=f"{action_id} 专用母版")
+        out_dir = lift_master_dir(state_dir, provider_session_id, action_id)
+        out_dir.mkdir(parents=True, exist_ok=True)
+        master = out_dir / f"母版-{task_id}.png"
+        master.write_bytes(client.download(state.result_url))
+        log(f"[{action_id} 首帧] 母版 task={task_id}  {master.stat().st_size // 1024} KB")
+
+    fitted = _converge_first_frame(master, work_dir=master.parent, state_dir=state_dir, log=log)
+    return fitted.frame_png
+
+
 def _action_videos(
     *,
     request: FrameStepRequest,
@@ -615,12 +702,14 @@ def _action_videos(
     state_dir: Path,
     provider_session_id: str,
     first_frame: Path,
+    idle_master: Path | None,
+    coat: str | None,
     report_task_id: Callable[[str], None] | None,
     log: Callable[[str], None],
 ) -> tuple[ActionVideo, ...]:
     """逐支生成/复用偶发与交互动作视频。
 
-    三条规矩：
+    四条规矩：
 
     1. **逐支复用**：某支已在 scratch 就跳过它（与 idle 那支同一套依据）——
        「拷一支旧 idle mp4 到新会话」时，idle 白捡、只付动作的钱。
@@ -630,6 +719,12 @@ def _action_videos(
     3. **身份锚是首帧图**：动作视频与 idle 用**同一张首帧图**、同一个画幅 ——
        这就是「触发动作时不跳变」的前提；取景框的复用是抠像那一步的事
        （`--no-autocrop` + ref-params），不在视频生成这一步。
+       ⚠️ 例外见第 4 条。
+    4. 🔴 **声明了 `firstFrameMaster` 的动作改用「自己的首帧」**（目前只有拎起）：
+       **首帧定义了姿态起点** —— 让坐姿首帧里的猫靠语言变成四爪离地，模型给不出
+       可靠结果（2026-09-20 四次实测：顶边 / 劈叉 / 站起来走两步）。建国就是靠
+       一张专门的「背弓悬垂」母版做到的，这里把它产线化。
+       这一支**绝不退回 idle 首帧**：退回 = 又用坐姿演拎起，正是要消灭的行为。
     """
     pending = [
         action_id
@@ -658,9 +753,21 @@ def _action_videos(
         action = load_action(action_id)
         prompt = render_action_prompt_for(action_id, facts, pet_id=request.pet_id)
         try:
+            action_frame = _action_video_first_frame(
+                action,
+                action_id=action_id,
+                request=request,
+                first_frame=first_frame,
+                idle_master=idle_master,
+                coat=coat,
+                client=client,
+                state_dir=state_dir,
+                provider_session_id=provider_session_id,
+                log=log,
+            )
             task_id = _generate_video(
                 client=client,
-                first_frame=first_frame,
+                first_frame=action_frame,
                 video_path=video_path,
                 prompt=prompt,
                 report_task_id=report_task_id,
