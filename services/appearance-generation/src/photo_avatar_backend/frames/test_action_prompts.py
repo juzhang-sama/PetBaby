@@ -70,7 +70,7 @@ GOLDEN = {
     #   **+ 身体钉成折叠态**（`从头顶点到最低一只脚掌的总高度与首帧端坐时基本相等`）。
     #   09-15 那次之所以顶边，缺的正是后半条「折叠」约束 ⇒ 身体一路往上飘。
     #   ⚠️ 顶边风险随之回归（暹罗首帧上余量实测只有 6.5%）⇒ **重出后必须量逐帧头顶余量再进包**。
-    # 2026-09-20 深夜（第四次改，本版）：**正文一字未改，只把两句说反了的话改对。**
+    # 2026-09-20 深夜（第四次改）：**正文一字未改，只把两句说反了的话改对。**
     #   真正的病根在代码不在文案：`_generate_video(end_frame=True)` 是 `images = [frame, frame]`
     #   （同一张传两次）；首帧换成拎起母版（背弓悬垂）之后，尾帧也成了悬垂
     #   ⇒ 模型被要求「结尾回到悬垂」⇒ 落回永远坐不正（实测末帧 vs idle 锚点 IoU 0.5477）
@@ -79,7 +79,15 @@ GOLDEN = {
     #   「首帧与尾帧是同一张图」；代码侧尾帧改传 **idle 的端坐绿幕首帧**
     #   （守卫测试 `test_frame_pipeline.py::
     #   test_the_lift_tail_frame_is_the_seated_frame_not_its_own_first_frame`）。
-    "grab-release": "c128e8630676066cb036f4d3729dd1e898d665f5edc4d0f35e4a6786491e5d14",
+    # 2026-09-21（第五次改，本版）：**把时间轴的「腾空」整套删掉** —— 首帧早就是
+    #   拎起悬垂母版了，文案却还写着「0.0-1.0 秒 腾空：猫从端坐位置被托起」，
+    #   自相矛盾（模型被要求先端坐）。实测毛球那支 grab-release 全片没有一帧像 idle 锚点
+    #   （最像 0.5646）⇒ 落回不到位。时间轴照建国**悬垂首帧**那版一致文案改写：
+    #   `output/宠物动作-建国-v1-2026-09-03/12-拎起/02-提示词/Seedance提示词-landed.txt`。
+    #   同时把 `details`/`strict` 里残留的中文否定句改成纯正向，禁止项全部收进英文 negative
+    #   （外力源那几条骨架里已有 human hand/gripper/rope…，这里只补骨架没有的
+    #   tongs / claw grabber / fishing line / strap / cloth / holding the cat / gripping the cat）。
+    "grab-release": "60cd6ef468c9ad82ba75d021487abd1da8013d2bd2f5e3359099115b97fcd930",
 }
 
 
@@ -121,30 +129,34 @@ def test_prompt_carries_the_pet_fields_and_the_shared_negative_prefix(action_id:
     assert "绿幕" in text
 
 
-def test_grab_release_asks_for_a_folded_lift_not_a_pose_change() -> None:
-    """锁「腾空语义 + 折叠约束」这对组合 —— 少任何一半都会坏。
+def test_grab_release_asks_for_a_folded_hang_not_a_lift_from_sitting() -> None:
+    """锁「悬垂起手的一致性 + 折叠约束」这对组合 —— 少任何一半都会坏。
 
-    - 少了**腾空**：模型只敢动局部肢体 ⇒ 前腿不变、后腿劈叉
-      （老王 09-20 拿身材比例清楚的短毛猫实测反馈）。
+    - 少了**起手一致性**：首帧早就是「拎起母版」（`master-lift.txt`，背弓悬垂）了，
+      文案却还写着「0.0-1.0 秒 腾空：猫从端坐位置被托起」⇒ 模型一边被告知起手已悬垂、
+      一边被要求先端坐再腾空。2026-09-21 实测毛球那支就是这个病：
+      视频**全片没有任何一帧**与 idle 端坐锚点 IoU 到 0.88（最像的只有 0.5646）。
     - 少了**折叠**：身体一路往上飘 ⇒ 顶到画幅上边（09-15 / 09-18 / 09-19 四次实测）。
 
-    建国（内置 05）两个都有（原文 = `output/宠物动作-建国-v1-2026-09-03/12-拎起/02-提示词/
-    Seedance提示词-grab-release.txt`）。它多一道保险：先做一张**背弓悬垂的拎起母版**当首帧，
-    视频里再用「总高度不超过首帧坐姿」把身体钉住 —— 腾出的空间留给下垂的腿，头顶不用上移。
-    本产线只有一张坐姿首帧，所以更依赖提示词里那条折叠约束。
+    建国自己为「悬垂首帧」写过一版一致文案 = `output/宠物动作-建国-v1-2026-09-03/12-拎起/
+    02-提示词/Seedance提示词-landed.txt`（第 0 秒保持首帧悬垂 → 0.3~2.2s 放下 →
+    2.5~5s 完全静止端坐），本版时间轴就是照它改写、按 12 秒产线重排的。
     """
     text = render("grab-release")
-    # ① 腾空 + 悬垂：没有它，四条腿不会真的垂下来（前腿不动、后腿劈叉）
-    assert "腾空" in text, "grab-release 又退回「原地姿态变化」了：四条腿不会垂下来"
+    # ① 起手即悬垂（与首帧图一致），整段保持这一姿态
+    assert "腾空" not in text, (
+        "文案又出现「腾空」⇒ 与拎起悬垂首帧自相矛盾（2026-09-21 已整套删掉，别再写回来）"
+    )
+    assert "悬空保持" in text, "缺「悬空保持」⇒ holdRange 那九秒的语义没了"
     assert "自然垂落" in text or "悬垂" in text
     # ② 折叠：没有它，身体会一路抬到画幅上边（09-15~09-19 实测）
     assert "自然弯曲" in text, "缺「身体保持弯曲」⇒ 身体会被拉直、整体高度超过首帧"
-    assert "总高度" in text, "缺「总高度与首帧端坐时基本相等」⇒ 顶边风险回归"
+    assert "总高度" in text, "缺「总高度与首帧基本相等」⇒ 顶边风险回归"
     # ③ 无外力源：建国原文的硬要求（画面里不许出现手/夹子/绳子）
     assert "没有任何可见的抓取工具" in text
-    # ④ 负向词里**不许**再出现禁止抬升的那几条 —— 它们与「腾空」自相矛盾
+    # ④ 负向词里**不许**出现禁止抬升的那几条 —— 它们与「悬垂」自相矛盾
     for word in ("rising", "floating upward", "moving up", "drifting upward"):
-        assert word not in text, f"负向词里的 {word!r} 会直接禁掉要的抬升动作"
+        assert word not in text, f"负向词里的 {word!r} 会直接禁掉要的悬垂姿态"
 
 
 def test_grab_release_is_the_only_end_frame_action() -> None:
