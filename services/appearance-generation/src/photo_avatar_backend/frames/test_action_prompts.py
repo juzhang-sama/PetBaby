@@ -17,15 +17,20 @@
 from __future__ import annotations
 
 import hashlib
+import json
+import shutil
+from pathlib import Path
 
 import pytest
 
+from photo_avatar_backend.frames import action_prompts
 from photo_avatar_backend.frames.action_prompts import (
     ACTION_IDS,
     ActionPromptError,
     action_first_frame_master,
     action_frame_range,
     action_frame_target,
+    action_hold_range,
     joins_idle_schedule,
     load_action,
     render_action_prompt,
@@ -271,3 +276,94 @@ def test_a_malformed_frame_range_is_rejected(raw: object) -> None:
 def test_a_malformed_frame_target_is_rejected(raw: object) -> None:
     with pytest.raises(ActionPromptError, match="frameTarget"):
         action_frame_target({"frameTarget": raw})
+
+
+# ---- 按宠精修覆盖（`refinements/<petId>/<action>.json`）----
+#
+# 三个数字必须跟素材走：同一段动作在不同猫的视频里分段长度差 30~40 帧
+# （2026-09-21 实测：grab-release 暹罗 278 / 短毛猫 236 / 毛球 249）。
+# 全局 `actions/<id>.json` 退化成**兜底**，提示词语义字段仍然只有一份。
+
+
+def _refinement_fixture(tmp_path, monkeypatch, action_id: str = "yawn") -> Path:
+    """把 `_ASSETS` 指到临时目录：`actions/` 放真实配置的副本，`refinements/` 放覆盖。"""
+    real = action_prompts._ASSETS / action_prompts.ACTIONS_DIR / f"{action_id}.json"
+    actions = tmp_path / action_prompts.ACTIONS_DIR
+    actions.mkdir(parents=True, exist_ok=True)
+    shutil.copy2(real, actions / f"{action_id}.json")
+    monkeypatch.setattr(action_prompts, "_ASSETS", tmp_path)
+    return tmp_path / action_prompts.REFINEMENTS_DIR
+
+
+def _write_refinement(root: Path, pet_id: str, action_id: str, payload: object) -> None:
+    folder = root / pet_id
+    folder.mkdir(parents=True, exist_ok=True)
+    (folder / f"{action_id}.json").write_text(json.dumps(payload), encoding="utf-8")
+
+
+def test_a_refinement_overrides_only_the_three_numbers(tmp_path, monkeypatch) -> None:
+    root = _refinement_fixture(tmp_path, monkeypatch)
+    _write_refinement(
+        root, "pet-x", "yawn",
+        {"frameRange": [0, 10], "frameTarget": 4, "holdRange": [2, 5]},
+    )
+
+    action = load_action("yawn", "pet-x")
+
+    assert action_frame_range(action) == (0, 10)
+    assert action_frame_target(action) == 4
+    assert action_hold_range(action) == (2, 5)
+    # 提示词字段一个字都不该动（覆盖文件只管数字）。
+    assert action["actionName"] == load_action("yawn")["actionName"]
+    assert action["section"] == load_action("yawn")["section"]
+
+
+def test_a_pet_without_a_refinement_file_falls_back_to_the_global_config(
+    tmp_path, monkeypatch
+) -> None:
+    _refinement_fixture(tmp_path, monkeypatch)
+
+    assert load_action("yawn", "pet-nobody") == load_action("yawn")
+
+
+def test_the_global_config_is_used_when_no_pet_id_is_given(tmp_path, monkeypatch) -> None:
+    """覆盖文件存在也不能漏给别的宠：不传 pet_id ⇒ 只看全局。"""
+    root = _refinement_fixture(tmp_path, monkeypatch)
+    _write_refinement(root, "pet-x", "yawn", {"frameTarget": 7})
+
+    assert action_frame_target(load_action("yawn")) == 119
+    assert action_frame_target(load_action("yawn", "pet-y")) == 119
+
+
+def test_a_refinement_refuses_keys_that_are_not_numbers(tmp_path, monkeypatch) -> None:
+    """覆盖文件是「三行数字」，长出提示词字段说明有人把整份配置复制进来了。"""
+    root = _refinement_fixture(tmp_path, monkeypatch)
+    _write_refinement(root, "pet-x", "yawn", {"frameTarget": 7, "section": "整份复制品"})
+
+    with pytest.raises(ActionPromptError, match="多出来的"):
+        load_action("yawn", "pet-x")
+
+
+def test_a_refinement_refuses_out_of_range_numbers(tmp_path, monkeypatch) -> None:
+    """越界值要在读配置时就炸，而不是等打包（那时 scratch 已经烧进去了）。"""
+    root = _refinement_fixture(tmp_path, monkeypatch)
+    _write_refinement(root, "pet-x", "yawn", {"frameRange": [5, 2]})
+
+    with pytest.raises(ActionPromptError, match="frameRange"):
+        load_action("yawn", "pet-x")
+
+
+def test_a_refinement_must_be_a_non_empty_object(tmp_path, monkeypatch) -> None:
+    root = _refinement_fixture(tmp_path, monkeypatch)
+    _write_refinement(root, "pet-x", "yawn", {})
+
+    with pytest.raises(ActionPromptError, match="非空对象"):
+        load_action("yawn", "pet-x")
+
+
+def test_the_shipped_refinements_only_cover_known_actions() -> None:
+    """真资产目录里的覆盖文件名必须都是白名单动作 —— 改名/删动作要同步清掉。"""
+    root = action_prompts._ASSETS / action_prompts.REFINEMENTS_DIR
+    for path in sorted(root.glob("*/*.json")):
+        assert path.stem in ACTION_IDS, f"覆盖文件对应未知动作: {path}"
+        assert path.parent.name.startswith("pet-"), f"覆盖目录不是 petId: {path}"

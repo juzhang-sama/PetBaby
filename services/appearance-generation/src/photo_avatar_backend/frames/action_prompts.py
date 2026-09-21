@@ -69,6 +69,12 @@ _ASSETS = Path(__file__).resolve().parent.parent / "assets" / "motion-prompts"
 
 SKELETON_FILE = "action-skeleton.txt"
 ACTIONS_DIR = "actions"
+# 按宠精修覆盖目录：`refinements/<petId>/<actionId>.json`，**只放数字键**
+# （frameRange / holdRange / frameTarget）。同一段动作不同猫的生成视频分段各异，
+# 三个数字必须跟素材走；提示词语义字段（section/details/...）仍全局唯一一份。
+REFINEMENTS_DIR = "refinements"
+# 覆盖文件里允许的键。出现别的键 = 大概率有人把整份动作配置复制进来了，直接报错。
+_REFINEMENT_KEYS = frozenset({"frameRange", "holdRange", "frameTarget"})
 
 # 允许的动作。**白名单**：动作 id 会变成 scratch 里的文件名与 manifest 里的
 # `actionId`，不接受调用方临时发明一个。
@@ -191,8 +197,13 @@ def _skeleton_lines() -> list[str]:
     return text.splitlines()
 
 
-def load_action(action_id: str) -> dict:
-    """读一份动作配置（`actions/<id>.json`）。"""
+def load_action(action_id: str, pet_id: str | None = None) -> dict:
+    """读一份动作配置（`actions/<id>.json`），再叠加按宠精修覆盖。
+
+    `pet_id` 给了且 `refinements/<petId>/<actionId>.json` 存在 ⇒ 那份文件里的
+    数字键（frameRange/holdRange/frameTarget）覆盖全局值，其余字段不动；
+    文件不存在 ⇒ 行为与不传 `pet_id` 完全一致（回落全局）。
+    """
     if action_id not in ACTION_IDS:
         raise ActionPromptError(f"不支持的动作: {action_id!r}")
     path = _ASSETS / ACTIONS_DIR / f"{action_id}.json"
@@ -213,7 +224,43 @@ def load_action(action_id: str) -> dict:
     for field in ("actionName", "section", "details", "strict", "negative", "duration"):
         if field not in action:
             raise ActionPromptError(f"动作配置缺少字段 {field}: {path}")
+    if pet_id:
+        action = _apply_refinement(action, action_id, pet_id)
     return action
+
+
+def _apply_refinement(action: dict, action_id: str, pet_id: str) -> dict:
+    """把 `refinements/<petId>/<actionId>.json` 的数字键叠到全局配置上。
+
+    只认 `_REFINEMENT_KEYS` 里的键；空对象 / 多余键都报错 ——
+    覆盖文件该是三行数字，长出别的字段说明放错了文件。
+    """
+    path = _ASSETS / REFINEMENTS_DIR / pet_id / f"{action_id}.json"
+    if not path.exists():
+        return action
+    try:
+        raw = path.read_text(encoding="utf-8")
+    except OSError as exc:
+        raise ActionPromptError(f"按宠精修读不到: {path}") from exc
+    try:
+        overrides = json.loads(raw)
+    except json.JSONDecodeError as exc:
+        raise ActionPromptError(f"按宠精修不是合法 JSON: {path}: {exc}") from exc
+    if not isinstance(overrides, dict) or not overrides:
+        raise ActionPromptError(f"按宠精修必须是非空对象: {path}")
+    unknown = set(overrides) - _REFINEMENT_KEYS
+    if unknown:
+        raise ActionPromptError(
+            f"按宠精修只允许 {sorted(_REFINEMENT_KEYS)}，多出来的: {sorted(unknown)}: {path}"
+        )
+    # 先在副本上过一遍解析器再落地：让越界值在覆盖文件上就报错，
+    # 而不是等打包时才炸（那时已烧进 scratch）。
+    merged = dict(action)
+    merged.update(overrides)
+    action_frame_range(merged)
+    action_frame_target(merged)
+    action_hold_range(merged)
+    return merged
 
 
 def uses_end_frame(action: dict) -> bool:

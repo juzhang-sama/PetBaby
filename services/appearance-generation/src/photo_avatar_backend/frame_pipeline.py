@@ -750,7 +750,7 @@ def _action_videos(
             videos.append(_reused_action_video(video_path))
             continue
 
-        action = load_action(action_id)
+        action = load_action(action_id, request.pet_id)
         prompt = render_action_prompt_for(action_id, facts, pet_id=request.pet_id)
         try:
             action_frame = _action_video_first_frame(
@@ -838,7 +838,7 @@ def pack_frame_sequence(
 
     out_dir = scratch_dir(state_dir, provider_session_id) / PACK_SUBDIR / f"attempt-{request.attempt}"
     log(f"[packFrameSequence] mp4={video.name}  输出={out_dir}")
-    clips = _action_clips(state_dir, provider_session_id)
+    clips = _action_clips(state_dir, provider_session_id, request.pet_id)
     if clips:
         log(
             f"[packFrameSequence] 另有 {len(clips)} 支动作并进同一个包："
@@ -871,7 +871,9 @@ def pack_frame_sequence(
     return FrameSequenceArtifact.from_build(build)
 
 
-def _action_clips(state_dir: Path, provider_session_id: str) -> tuple[Any, ...]:
+def _action_clips(
+    state_dir: Path, provider_session_id: str, pet_id: str | None = None
+) -> tuple[Any, ...]:
     """scratch 里已生成的动作视频 → 打包用的动作清单。
 
     **扫目录，不信请求里的清单** —— 与 idle 那支同一个真源：scratch 里有什么就是什么。
@@ -884,6 +886,10 @@ def _action_clips(state_dir: Path, provider_session_id: str) -> tuple[Any, ...]:
     **精修参数也来自动作配置**：`holdRange`（悬空保持窗口）+ `frameRange`/`frameTarget`
     （裁掉静止废料 + 重采样到内置宠的节奏），三者都用**原始抠像帧**下标，
     映射成包内坐标是打包层的事 —— 见 `docs/设计/动作精修流程-2026-09-20.md`。
+
+    🔴 三个数字**按宠**：优先读 `refinements/<petId>/<actionId>.json`，没有才回落全局
+    `actions/<actionId>.json`。同一段动作在不同猫的视频里分段长度差 30~40 帧
+    （抄上一只的数字 = 把落回段裁掉），所以 `pet_id` 必须传下来（见 `load_action`）。
     """
     # 懒 import：`frames.pipeline` 会拉起 numpy/PIL/scipy（理由见上面那段注释）。
     from .frames.pipeline import ActionClip
@@ -893,7 +899,7 @@ def _action_clips(state_dir: Path, provider_session_id: str) -> tuple[Any, ...]:
         path = action_video_path(state_dir, provider_session_id, action_id)
         if not _has_video(path):
             continue
-        action = load_action(action_id)
+        action = load_action(action_id, pet_id)
         clips.append(
             ActionClip(
                 action_id=action_id,
