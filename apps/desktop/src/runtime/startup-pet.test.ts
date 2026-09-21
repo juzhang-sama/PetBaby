@@ -43,7 +43,8 @@ describe("startup pet source", () => {
   });
 
   it("treats the built-in pixel pets as built-in sources", () => {
-    expect(BUILTIN_PIXEL_PETS).toHaveLength(9);
+    // 01/02/03 已下线（像素风素材，2026-09-21），在线的是 04-09 共 6 只。
+    expect(BUILTIN_PIXEL_PETS).toHaveLength(6);
     for (const pet of BUILTIN_PIXEL_PETS) {
       expect(selectStartupPetSource(pet.petId)).toEqual({
         kind: "builtin",

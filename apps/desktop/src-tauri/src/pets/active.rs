@@ -8,12 +8,13 @@ use std::sync::{Arc, Mutex};
 
 pub const BUILTIN_PET_ID: &str = "cat-a-standard-v1";
 const LEGACY_BUILTIN_PET_ID: &str = "pet-live2d-v1";
-/// 内置像素宠物（固定帧动作资源协议 schemaVersion 6）。
+/// 内置宠物（固定帧动作资源协议 schemaVersion 7）。
 /// 与前端 `startup-pet.ts` 的 BUILTIN_PIXEL_PETS 保持同步。
+///
+/// ⚠️ 01/02/03 已下线（2026-09-21）：虽然也是 schema 7 帧序列，但素材来自**像素风**
+/// （`variantId = pixel-mid-simple-v1`，布局 `body.png + actions/`），与新产线不一致。
+/// 目录已挪到 `_archive-builtin-pets-20260921/`，别再往回加。
 pub const BUILTIN_PIXEL_PET_IDS: &[&str] = &[
-    "01-longhair-black-white",
-    "02-round-tabby",
-    "03-sleek-black",
     "04-warm-brown-tabby",
     "05-silver-tabby",
     // 果冻（短毛猫）：第一只「真实照片 → AI 视频 → 抠像 → 帧序列」端到端跑通的宠物。2026-09-12 接入。

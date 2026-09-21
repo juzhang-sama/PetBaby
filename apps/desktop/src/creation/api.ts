@@ -52,6 +52,11 @@ export interface PhotoAvatarUpload {
  * 两条产线的 route 取值。
  *
  * 与 Rust 侧 `PhotoAvatarRoute` / DB 里 `photo_avatar_runs.route` 的取值域**逐字一致**。
+ *
+ * ⚠️ **不要收窄这个联合**：`pixel-v1` 已于 2026-09-20 停用（不能再开新会话），
+ * 但这个类型**双用** —— 除了当 `begin` 的入参，还要解析历史会话的 snapshot，
+ * 那里 route 仍然是 `pixel-v1`。收窄会把老会话弄成读不出来。
+ * 「不许把退役值往外送」由 `selectedRoute()`（前端输入面）与 Rust 的生成闸口负责。
  */
 export type PhotoAvatarRoute = "pixel-v1" | "frame-video-v1";
 

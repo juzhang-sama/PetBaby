@@ -127,7 +127,7 @@ describe("settings upload creation assembly", () => {
     expect(html).toContain('id="photo-avatar-files"');
     expect(html).toContain('accept="image/png,image/jpeg" multiple');
     expect(html).toContain('id="photo-avatar-live2d"');
-    expect(html).toContain("照片分身像素动态预览");
+    expect(html).toContain("照片分身动态预览");
     expect(html).toContain('id="photo-avatar-accept"');
     expect(html).toContain('id="photo-avatar-regenerate"');
     expect(html).toContain('id="photo-avatar-revise"');

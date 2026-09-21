@@ -213,10 +213,15 @@ export class PhotoAvatarCreationView {
   /**
    * 现在选的画风。认不出来就返回 `undefined` —— 让 Rust 侧走**默认产线**，
    * 而不是在这边猜一个（两边各猜一次就是两个口径）。
+   *
+   * 🔴 `pixel-v1` 已停用（2026-09-20），**不再从这一层往外送**：类型里仍留着它
+   * （历史会话的 snapshot 还是这个取值，要靠它解析），但这里只放现役的
+   * `frame-video-v1`。万一 DOM 里残留了旧值（旧构建的缓存 / 手改），
+   * 就返回 `undefined` 落到现役默认产线，而不是把一个退役值送去后端换一条错误。
    */
   private selectedRoute(): PhotoAvatarRoute | undefined {
     const value = this.dom.elements.style.value;
-    return value === "frame-video-v1" || value === "pixel-v1" ? value : undefined;
+    return value === "frame-video-v1" ? value : undefined;
   }
 
   private async generate(): Promise<void> {

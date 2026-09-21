@@ -1076,8 +1076,8 @@ type SharedFrameAvatarManager<'a> = tauri::State<
     creation::photo_avatar::frame_manager::SharedFramePhotoAvatarManager,
 >;
 
-/// 这条会话该走哪条产线。没有 run 时按**默认产线**（像素风）——
-/// 与 `begin` 不给 route 时的默认保持同一个口径。
+/// 这条会话该走哪条产线。没有 run 时按**默认产线**（写实风）——
+/// 与 `begin` 不给 route 时的默认保持同一个口径（`DEFAULT_PHOTO_AVATAR_ROUTE`）。
 ///
 /// 分派只在命令层做一次：九个命令共用这一处，别在每个命令里各写一遍 match。
 fn photo_avatar_session_route(
@@ -1086,7 +1086,7 @@ fn photo_avatar_session_route(
 ) -> Result<creation::photo_avatar::domain::PhotoAvatarRoute, String> {
     Ok(pixel
         .session_route(session_id)?
-        .unwrap_or(creation::photo_avatar::domain::PhotoAvatarRoute::Pixel))
+        .unwrap_or(creation::photo_avatar::domain::DEFAULT_PHOTO_AVATAR_ROUTE))
 }
 
 /// 命令的返回统一成 `serde_json::Value`。
@@ -1115,7 +1115,9 @@ fn creation_photo_avatar_begin(
     photos: Vec<PhotoAvatarUpload>,
     route: Option<String>,
 ) -> Result<serde_json::Value, String> {
-    use creation::photo_avatar::domain::PhotoAvatarRoute;
+    use creation::photo_avatar::domain::{PhotoAvatarRoute, DEFAULT_PHOTO_AVATAR_ROUTE};
+    // 像素 manager 仍由 Tauri 注入（State 参数，不由前端传），但退役后**没有任何分支再用它**。
+    let _ = pixel;
     let raw = photos
         .into_iter()
         .map(|photo| {
@@ -1125,20 +1127,28 @@ fn creation_photo_avatar_begin(
             })
         })
         .collect::<Result<Vec<_>, String>>()?;
-    // 不给 route = 走现役产线（像素风）。显式给了就必须是认得的取值。
+    // 不给 route = 走**现役产线**（写实风）。显式给了就必须是认得的取值。
     let route = match route.as_deref() {
-        None => PhotoAvatarRoute::Pixel,
+        None => DEFAULT_PHOTO_AVATAR_ROUTE,
         Some(value) => PhotoAvatarRoute::parse(value)?,
     };
+    // 🔴 生成闸口（唯一一处）：退役路线在这里硬拒。
+    //    `PhotoAvatarRoute::parse` 之所以仍认得 `pixel-v1` / `live2d-v5`，
+    //    只是为了把历史 run / 历史快照读出来 —— **不代表能用它们开新会话**。
+    if !route.is_active_for_generation() {
+        return Err(format!(
+            "photo avatar route {} is retired and cannot start a new session",
+            route.as_str()
+        ));
+    }
     match route {
         PhotoAvatarRoute::Frame => {
             photo_avatar_wire(frame.inner().begin(&session_id, &consent_version, raw)?)
         }
-        PhotoAvatarRoute::Pixel => {
-            photo_avatar_wire(pixel.inner().begin(&session_id, &consent_version, raw)?)
-        }
-        PhotoAvatarRoute::Live2d => {
-            Err("legacy photo avatar route cannot start a new revision".into())
+        // 上面那道闸已经排掉其余两条；这条臂留着是为了让编译器在将来新增路线时
+        // **强制**这里做决定，而不是默认落到某条产线上。
+        PhotoAvatarRoute::Pixel | PhotoAvatarRoute::Live2d => {
+            Err("retired photo avatar route reached dispatch".into())
         }
     }
 }

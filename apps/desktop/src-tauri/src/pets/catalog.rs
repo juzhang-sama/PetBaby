@@ -1014,12 +1014,11 @@ mod tests {
     }
 }
 
-/// 内置像素宠物的展示名。与前端 builtin 资源目录的 displayName 保持一致。
+/// 内置宠物的展示名。与前端 builtin 资源目录的 displayName 保持一致。
+///
+/// ⚠️ 01/02/03 已下线（2026-09-21，像素风素材），见 `active.rs::BUILTIN_PIXEL_PET_IDS`。
 fn pixel_pet_display_name(pet_id: &str) -> String {
     match pet_id {
-        "01-longhair-black-white" => "长毛黑白猫".to_owned(),
-        "02-round-tabby" => "圆脸狸花猫".to_owned(),
-        "03-sleek-black" => "修长黑猫".to_owned(),
         "04-warm-brown-tabby" => "毛砌墙（暖棕虎斑）".to_owned(),
         "05-silver-tabby" => "建国（银渐层）".to_owned(),
         "06-guodong" => "果冻（短毛猫）".to_owned(),

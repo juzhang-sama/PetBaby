@@ -12,23 +12,11 @@ const LEGACY_BUILTIN_LIVE2D_PET = {
   previewUrl: "/builtin-pets/pet-live2d-v1/preview.png",
 } as const;
 
+// ⚠️ 01/02/03 已下线（2026-09-21）：它们是 schema 7 帧序列，但素材来自**像素风**
+// （variantId = pixel-mid-simple-v1，布局是 body.png + actions/），与新产线不一致。
+// 目录已挪到 `_archive-builtin-pets-20260921/`，别再把它们加回来。
 export const BUILTIN_PIXEL_PETS = [
-  {
-    petId: "01-longhair-black-white",
-    manifestUrl: "/builtin-pets/01-longhair-black-white/manifest.json",
-    previewUrl: "/builtin-pets/01-longhair-black-white/body.png",
-  },
-  {
-    petId: "02-round-tabby",
-    manifestUrl: "/builtin-pets/02-round-tabby/manifest.json",
-    previewUrl: "/builtin-pets/02-round-tabby/body.png",
-  },
-  {
-    petId: "03-sleek-black",
-    manifestUrl: "/builtin-pets/03-sleek-black/manifest.json",
-    previewUrl: "/builtin-pets/03-sleek-black/body.png",
-  },
-  // 绿幕抠像路线产物（AI 视频 -> 抠像 -> 单视频循环），与 01-03 的程序化像素宠物并列。
+  // 绿幕抠像路线产物（AI 视频 -> 抠像 -> 单视频循环）。
   // baseImage = 循环首帧，previewUrl 指向它（无独立 body.png）。帧已转 WebP 瘦身。
   {
     petId: "04-warm-brown-tabby",

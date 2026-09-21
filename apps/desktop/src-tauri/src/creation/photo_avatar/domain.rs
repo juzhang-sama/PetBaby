@@ -297,6 +297,12 @@ pub const LIVE2D_ROUTE: &str = "live2d-v5";
 pub const PIXEL_ROUTE: &str = "pixel-v1";
 pub const FRAME_ROUTE: &str = "frame-video-v1";
 
+/// 新会话**没给 route** 时走的产线。改这里 = 换现役产线。
+///
+/// 刻意收成一个常量：`begin` 的默认、`session_route` 的兜底、`route_ports` 的兜底
+/// 三处必须同一个口径，散着写迟早会漂。
+pub const DEFAULT_PHOTO_AVATAR_ROUTE: PhotoAvatarRoute = PhotoAvatarRoute::Frame;
+
 /// 一条创建会话走的是哪条产线。
 ///
 /// 存在的理由：命令层与 finalization port **都只拿到一个 `session_id`**，
@@ -304,8 +310,14 @@ pub const FRAME_ROUTE: &str = "frame-video-v1";
 #[derive(Debug, Clone, Copy, PartialEq, Eq, Serialize, Deserialize)]
 #[serde(rename_all = "camelCase")]
 pub enum PhotoAvatarRoute {
+    /// 已冻结的历史路线（`live2d-v5`）。**禁止用于生成**：唯一用途是把老会话的 run 行读出来。
     Live2d,
+    /// **已停用（2026-09-20）**的像素风。
+    ///
+    /// **禁止用于开新会话**：唯一用途是解析历史 run / 历史快照，以及让**已经存在**的会话
+    /// 跑完收尾（取消 / 预览 / 安装）。生成入口只认 [`DEFAULT_PHOTO_AVATAR_ROUTE`]。
     Pixel,
+    /// 现役路线（`frame-video-v1`，写实照片分身 · 逐帧循环）。
     Frame,
 }
 
@@ -318,6 +330,11 @@ impl PhotoAvatarRoute {
         }
     }
 
+    /// 读取历史数据（数据库行、历史审计、历史档案）用。**不是**生成入口。
+    ///
+    /// 🔴 刻意保持宽容：`Pixel` / `Live2d` 都已退役，但**必须仍能解析出来**，
+    /// 否则老会话的 run 行一读就报「不支持的路线」，等于把历史数据弄坏。
+    /// 「不许开新会话」这件事只由 [`Self::is_active_for_generation`] 与生成闸口负责。
     pub fn parse(value: &str) -> Result<Self, String> {
         match value {
             LIVE2D_ROUTE => Ok(Self::Live2d),
@@ -325,6 +342,14 @@ impl PhotoAvatarRoute {
             FRAME_ROUTE => Ok(Self::Frame),
             other => Err(format!("unsupported photo avatar route: {other}")),
         }
+    }
+
+    /// 生成入口唯一允许的路线。`false` = 已退役，只可用于读取历史数据。
+    ///
+    /// 刻意写成白名单（只认 Frame）而不是黑名单：将来新增路线若忘了更新这里，
+    /// 会**拒绝**而不是静默放行。
+    pub const fn is_active_for_generation(self) -> bool {
+        matches!(self, Self::Frame)
     }
 }
 
@@ -848,6 +873,47 @@ mod tests {
         assert_eq!(
             super::DEFAULT_PIXEL_STYLE_ID,
             PixelStyleProfileId::V2AnimationReady
+        );
+    }
+
+    #[test]
+    fn route_parser_accepts_retired_and_active_routes() {
+        use super::{PhotoAvatarRoute, FRAME_ROUTE, LIVE2D_ROUTE, PIXEL_ROUTE};
+        // 退役 ≠ 读不出来：老 run 行里就是这两个字面量，必须照样解析成功。
+        for (raw, expected) in [
+            (LIVE2D_ROUTE, PhotoAvatarRoute::Live2d),
+            (PIXEL_ROUTE, PhotoAvatarRoute::Pixel),
+            (FRAME_ROUTE, PhotoAvatarRoute::Frame),
+        ] {
+            assert_eq!(PhotoAvatarRoute::parse(raw).unwrap(), expected);
+        }
+        assert!(PhotoAvatarRoute::parse("pixel-v2").is_err());
+    }
+
+    #[test]
+    fn only_the_frame_route_is_active_for_generation() {
+        use super::PhotoAvatarRoute;
+        assert!(PhotoAvatarRoute::Frame.is_active_for_generation());
+        assert!(
+            !PhotoAvatarRoute::Pixel.is_active_for_generation(),
+            "pixel-v1 已停用，必须永远无法开新会话"
+        );
+        assert!(
+            !PhotoAvatarRoute::Live2d.is_active_for_generation(),
+            "live2d-v5 是冻结路线，必须永远无法开新会话"
+        );
+        assert_eq!(
+            PhotoAvatarRoute::Pixel.as_str(),
+            super::PIXEL_ROUTE,
+            "退役路线的 wire id 不可改动，否则历史 run / 快照会读不出来"
+        );
+    }
+
+    #[test]
+    fn new_photo_avatar_session_defaults_to_the_frame_route_after_cutover() {
+        assert_eq!(
+            super::DEFAULT_PHOTO_AVATAR_ROUTE,
+            super::PhotoAvatarRoute::Frame
         );
     }
 }

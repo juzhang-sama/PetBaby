@@ -481,13 +481,9 @@ mod tests {
     use crate::runtime_assets::manifest::{parse_manifest, RuntimeAssetManifest};
     use std::path::PathBuf;
 
-    const REAL_PETS: [&str; 5] = [
-        "01-longhair-black-white",
-        "02-round-tabby",
-        "03-sleek-black",
-        "04-warm-brown-tabby",
-        "05-silver-tabby",
-    ];
+    /// 读真实内置 manifest 的用例。01/02/03 已下线（像素风素材，2026-09-21），
+    /// 目录挪走后这两只是唯一还在线上的帧序列内置宠。
+    const REAL_PETS: [&str; 2] = ["04-warm-brown-tabby", "05-silver-tabby"];
 
     fn builtin_pets_root() -> PathBuf {
         PathBuf::from(env!("CARGO_MANIFEST_DIR")).join("../public/builtin-pets")

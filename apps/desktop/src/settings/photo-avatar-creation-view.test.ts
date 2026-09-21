@@ -98,8 +98,9 @@ function viewHarness(options: {
     preview: new FakeElement(), live2d: new FakeElement(), completions: new FakeElement(), name: new FakeElement(),
     accept: new FakeElement(), regenerate: new FakeElement(), revision: new FakeElement(), revise: new FakeElement(),
     cancel: new FakeElement(), status: new FakeElement(), complete: new FakeElement(), done: new FakeElement(),
-    // 画风选择：默认像素风（与 Rust 侧「不给 route = 现役产线」同一个口径）。
-    style: Object.assign(new FakeElement(), { value: "pixel-v1" }),
+    // 画风选择：默认写实风（与 Rust 侧「不给 route = 现役产线」同一个口径；
+    // settings.html 里 `pixel-v1` 已下线，下拉里只剩这一个选项）。
+    style: Object.assign(new FakeElement(), { value: "frame-video-v1" }),
     revisionGroup: new FakeElement(),
   };
   const snapshots = [...(options.status ?? [options.snapshot ?? avatarSnapshot()])];
@@ -230,8 +231,8 @@ describe("PhotoAvatarCreationView", () => {
       "session-1", "photo-avatar-third-party-ai-lk888-no-delete-v2", expect.arrayContaining([
         expect.objectContaining({ bytesB64: "AQID" }), expect.objectContaining({ bytesB64: "AQID" }),
       ]),
-      // 第 4 个参数是画风（route）。默认选项就是现役的像素风。
-      "pixel-v1",
+      // 第 4 个参数是画风（route）。默认选项就是现役的写实风。
+      "frame-video-v1",
     );
   });
 
@@ -580,6 +581,21 @@ describe("PhotoAvatarCreationView", () => {
     const call = h.api.photoAvatarBegin.mock.calls[0] as unknown as
       [string, string, PhotoAvatarUpload[], string | undefined];
     expect(call[3]).toBe("frame-video-v1");
+  });
+
+  it("never forwards the retired pixel route to begin", async () => {
+    const h = viewHarness();
+    await h.view.enter();
+    // 下拉里已经没有这个选项了；这里模拟「旧构建缓存下来的 DOM」残留旧值。
+    h.elements.style.value = "pixel-v1";
+    h.selectFiles([photo("face.jpg", "image/jpeg")]);
+    h.clickGenerate();
+    await vi.waitFor(() => expect(h.api.photoAvatarBegin).toHaveBeenCalledOnce());
+
+    const call = h.api.photoAvatarBegin.mock.calls[0] as unknown as
+      [string, string, PhotoAvatarUpload[], string | undefined];
+    // undefined = 交给 Rust 走现役默认产线，而不是把退役值送去换一条错误。
+    expect(call[3]).toBeUndefined();
   });
 
   it("shows frame-route progress copy and hides revision controls that do not apply", async () => {

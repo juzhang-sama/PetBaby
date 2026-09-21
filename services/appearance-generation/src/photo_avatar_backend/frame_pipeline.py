@@ -772,7 +772,12 @@ def _action_videos(
                 prompt=prompt,
                 report_task_id=report_task_id,
                 label=f"动作 {action_id}",
-                end_frame=uses_end_frame(action),
+                # 交互动作要「首尾两张图」：起点是这一支自己的首帧（拎起 = 背弓悬垂），
+                # 终点必须是 **idle 的端坐绿幕首帧**（`first_frame` 这个入参）。
+                # 🔴 别写成 `action_frame`：那就是同一张图传两次，落回坐不正、切 idle 必跳。
+                # 没声明 `firstFrameMaster` 的动作 `action_frame is first_frame`，
+                # 传它进去等价于老行为（首尾同图），不会变。
+                end_frame_path=first_frame if uses_end_frame(action) else None,
                 log=log,
             )
         except (Lk888Error, FramePipelineError) as error:
@@ -1086,22 +1091,28 @@ def _generate_video(
     report_task_id: Callable[[str], None] | None,
     log: Callable[[str], None],
     label: str = "视频",
-    end_frame: bool = False,
+    end_frame_path: Path | None = None,
 ) -> str:
     """首帧（+ 可选尾帧）+ 提示词 → 绿幕视频，原子落盘到约定的 mp4 路径。
 
     `prompt` 由调用方给：idle 用 `render_loop_prompt()`，动作各自用
     `render_action_prompt_for()` —— **这一层不认识提示词**，只负责发与收。
 
-    `end_frame=True`（交互动作 `grab-release`）时**同一张图传两次**：
-    它必须首尾回到同一张端坐图，否则拎起来落不回原姿态。
+    `end_frame_path` 是**第二张图（终点姿态）**，只有交互动作 `grab-release` 用：
+    首帧给「起点姿态」、尾帧给「终点姿态」，拎起就是「背弓悬垂 → 端坐」。
+
+    🔴 **尾帧绝不能塞首帧自己**：那样模型收到的指令变成「从悬垂出发、结尾回到悬垂」，
+    落回永远坐不正，松手切 idle 必跳。2026-09-20 实测（对 idle 锚点帧算 IoU）：
+    暹罗尾帧图写错 ⇒ **0.5477**；尾帧正确（建国 0.88 / 早前短毛猫 0.98）才连贯。
+    建国留档原话：「⚠️ 不能用『首帧即可』——只用首帧的话结尾不会回到坐姿，衔接 idle 会断」。
+    守卫测试见 `test_frame_pipeline.py::test_a_master_first_frame_gets_a_different_tail_frame`。
 
     ⚠️ **只上报一支的 task id**（见 `_report_first`）：job 上的 `lk888_task_id` 是单选，
     报第二个不同 id 会被 `job_store` 拒掉并让整个 step 失败。母版那一个记在
     `MotionSource.master_task_id`、动作那几支记在各自的 `ActionVideo` 里，追溯够用。
     """
     frame = first_frame.read_bytes()
-    images = [frame, frame] if end_frame else [frame]
+    images = [frame] if end_frame_path is None else [frame, end_frame_path.read_bytes()]
     task_id = client.submit_video(
         prompt,
         images=images,

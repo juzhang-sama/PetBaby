@@ -194,6 +194,9 @@ class _FakeClient:
         self.image_prompts: list[str] = []
         self.image_batches: list[int] = []
         self.video_image_counts: list[int] = []
+        # 每支视频实际提交的**图片字节**（按提交顺序，第 1 支 = idle）。
+        # 只有它才能验「尾帧是哪一张」—— 计数验不出「两张图是不是同一个东西」。
+        self.video_images: list[list[bytes]] = []
         self.analysis_image_counts: list[int] = []
         self.video_kwargs: dict[str, object] = {}
 
@@ -244,6 +247,7 @@ class _FakeClient:
         self.video_prompts.append(prompt)
         self.image_batches.append(len(images))  # type: ignore[arg-type]
         self.video_image_counts.append(len(images))  # type: ignore[arg-type]
+        self.video_images.append(list(images))  # type: ignore[arg-type]
         self.video_kwargs = kwargs
         index = len(self.video_prompts)
         if index in self.fail_video_indices:
@@ -549,6 +553,47 @@ def test_a_paid_lift_master_is_reused_instead_of_regenerated(tmp_path: Path) -> 
     assert client.calls.count("submit_image") == 1
     # 视频照常跑：idle 一支 + 三支动作（idle 的 mp4 这条路上本来就不存在）
     assert client.calls.count("submit_video") == len(ACTION_IDS) + 1
+
+
+def test_the_lift_tail_frame_is_the_seated_frame_not_its_own_first_frame(
+    tmp_path: Path,
+) -> None:
+    """🔴 交互动作的**尾帧必须是 idle 的端坐首帧**，不能是它自己的拎起首帧。
+
+    曾经这里是 `images = [frame, frame]`（同一张传两次）。首帧换成「拎起母版（背弓悬垂）」
+    之后，模型收到的指令变成「从悬垂出发、结尾回到悬垂」⇒ 落回永远坐不正 ⇒
+    松手切 idle 是一个明显跳变（2026-09-20 实测末帧 vs idle 锚点 IoU **0.5477**；
+    尾帧正确的包是 0.98、建国 0.88）。
+    建国留档原话：「⚠️ 不能用『首帧即可』——只用首帧的话结尾不会回到坐姿，衔接 idle 会断」。
+
+    这是**唯一**能挡住「有人又把两张图写成一张」的东西：只数张数（`video_image_counts`）
+    分辨不出「两张图其实是同一个东西」。
+    """
+    from photo_avatar_backend.frame_pipeline import lift_master_dir
+
+    client = _FakeClient()
+    # 故意让拎起母版与 idle 母版**不一样**（主体宽度不同 ⇒ 取景收敛的结果不同）。
+    # 否则这条用例里两张图会长得一模一样，测不出「尾帧传错了哪一张」。
+    lift_dir = lift_master_dir(tmp_path, "provider-1", "grab-release")
+    lift_dir.mkdir(parents=True)
+    (lift_dir / f"母版-{MASTER_TASK}.png").write_bytes(_master_png(0.6))
+
+    generate_motion_source(
+        _motion_request(), client=client, state_dir=tmp_path, log=lambda _: None
+    )
+
+    idle_images, *action_images = client.video_images
+    assert len(idle_images) == 1, "idle 只有首帧"
+    assert ACTION_IDS[-1] == "grab-release", "下面的 zip 依赖 grab-release 排在最后一支"
+    for action_id, images in zip(ACTION_IDS, action_images):
+        if action_id == "grab-release":
+            assert len(images) == 2, "交互动作要首尾两帧"
+            assert images[1] == idle_images[0], (
+                "尾帧必须是 idle 的端坐首帧 —— 传它自己的拎起首帧（悬垂）就落不回坐姿"
+            )
+            assert images[0] != images[1], "首帧（拎起姿态）与尾帧（端坐）必须是两张不同的图"
+        else:
+            assert len(images) == 1, f"{action_id} 是偶发动作：只传首帧"
 
 
 def test_a_failed_action_video_is_skipped_without_losing_the_whole_pet(tmp_path: Path):

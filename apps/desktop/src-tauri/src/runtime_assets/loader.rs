@@ -294,11 +294,8 @@ mod tests {
     fn accepts_real_frame_sequence_asset_directories() {
         // schema 7 曾经会在这里被判成 Corrupt（parse_manifest 只认 1/3/4/5），
         // 于是帧序列资产永远过不了资产层的安装前校验。
-        for pet_id in [
-            "01-longhair-black-white",
-            "04-warm-brown-tabby",
-            "05-silver-tabby",
-        ] {
+        // 01-longhair-black-white 已下线（像素风素材，2026-09-21），别再加回来。
+        for pet_id in ["04-warm-brown-tabby", "05-silver-tabby"] {
             let dir = builtin_pets_dir().join(pet_id);
             validate_asset_directory(&dir)
                 .unwrap_or_else(|error| panic!("{pet_id} 必须通过资产校验：{error}"));

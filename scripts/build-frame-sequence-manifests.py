@@ -22,6 +22,9 @@ ROOT = Path(__file__).resolve().parents[1]  # desktop-pet
 SOURCE_ROOT = ROOT / "output" / "中等简约像素标准验收-2026-08-21"
 TARGET_ROOT = ROOT / "apps" / "desktop" / "public" / "builtin-pets"
 
+# ⚠️ 01/02/03 这三只已下线（2026-09-21）：素材来自像素风（variantId=pixel-mid-simple-v1），
+#    与写实帧序列新产线不一致，目录已挪到 `_archive-builtin-pets-20260921/`。
+#    本脚本只作为那批资产的历史重建工具留着，新产线不走它。
 PETS = [
     {
         "petId": "01-longhair-black-white",
