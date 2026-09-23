@@ -109,8 +109,12 @@ def test_build_rejects_non_empty_output_directory(tmp_path: Path):
 
 # ------------------------------------------------------------------ 端到端
 
-def synth_green_video(path: Path, *, size: int = 128, frames: int = 8, fps: int = 8) -> Path:
+def synth_green_video(path: Path, *, size: int = 128, frames: int = 8, fps: int = 8,
+                      step: int = 6) -> Path:
     """现场合成一支「纯绿背景 + 移动色块」的 mp4（**不烧算力**）。
+
+    `step` 是色块每帧右移的像素数：调大就能造出「运动范围超出默认循环取景框」的动作，
+    用来验证重取景路径。
 
     逐帧画 PNG 再用 ffmpeg 合成，而不是让 `lavfi` 的 `drawbox` 画：
     实测这台机器上 `-vf drawbox=...` 一帧都没画上去 —— 抽出来的帧 100% 是纯绿
@@ -123,7 +127,7 @@ def synth_green_video(path: Path, *, size: int = 128, frames: int = 8, fps: int 
     block = (136, 68, 34)
     for index in range(frames):
         image = Image.new("RGB", (size, size), (0, 255, 0))
-        left = 10 + index * 6
+        left = 10 + index * step
         ImageDraw.Draw(image).rectangle([left, 30, left + 40, 90], fill=block)
         image.save(sequence / f"f{index:04d}.png")
     subprocess.run(
@@ -265,3 +269,41 @@ def test_build_bundles_an_action_into_the_same_package_reusing_the_idle_crop_box
     assert result.overall_passed == (
         result.acceptance.overall_passed and result.action_acceptances[0][1].overall_passed
     )
+
+
+@pytest.mark.skipif(FFMPEG is None, reason="需要 ffmpeg 现场合成测试视频")
+def test_build_refits_the_action_framing_when_the_idle_box_would_clip_it(tmp_path: Path):
+    """动作并集装不进 idle 的取景框 → **重取景 + 缩回同一画布**，不是静默裁切。
+
+    毛球2 的 `grab-release` 就是这条路径：并集 634×614 装不进 idle 的 564 框，
+    硬复用的结果是落地那一帧的脚被整条切掉 —— 裁掉的像素打包侧补不回来。
+    """
+    idle = synth_green_video(tmp_path / "idle.mp4")
+    wide = synth_green_video(tmp_path / "wide.mp4", step=12)
+
+    result = build_frame_sequence(
+        idle,
+        tmp_path / "out",
+        pet_id="99-synth",
+        display_name="合成测试（大动作）",
+        fps=8.0,
+        frame_duration_ms=42,
+        action_clips=[ActionClip(action_id="grab-release", video=wide)],
+    )
+
+    idle_params = json.loads(
+        (result.out_dir / "04-抠像" / "抠像参数.json").read_text(encoding="utf-8")
+    )
+    action_params = json.loads(
+        (result.out_dir / "04-抠像-grab-release" / "抠像参数.json").read_text(encoding="utf-8")
+    )
+    crop = action_params["crop"]
+    assert crop["source"] == "refit"
+    assert crop["clippedByReferenceBox"] is True, "超框这件事必须留档"
+    assert crop["clipsForeground"] is False, "重取景后一个像素都不该裁"
+    assert crop["size"] > idle_params["crop"]["size"], "取景窗口必须比 idle 的框大"
+    # refitScale 是留档用的 4 位小数，别用默认相对误差去比
+    assert crop["refitScale"] == pytest.approx(
+        idle_params["crop"]["size"] / crop["size"], abs=1e-4
+    )
+    assert action_params["outputSize"] == idle_params["outputSize"], "画布仍与 idle 同尺寸"

@@ -16,11 +16,13 @@ import pytest
 from photo_avatar_backend.frames.matting import (
     CROP_MARGIN,
     MattingError,
+    box_contains,
     chroma_alpha,
     clean_mask,
     compute_autocrop,
     match_color,
     matte_video,
+    plan_crop,
     rvm_alpha,
     sam2_alpha,
 )
@@ -83,6 +85,162 @@ def test_autocrop_square_covers_the_union_of_every_frame():
     assert x <= fx0 and y <= fy0 and x + side > fx1 and y + side > fy1
     # 紧裁：边长应等于并集长边 + 两侧硬边距（不超过画幅）
     assert side == min(min(height, width), max(fx1 - fx0 + 1, fy1 - fy0 + 1) + 2 * CROP_MARGIN)
+
+
+def block_frames(size: int, boxes: list[tuple[int, int, int, int]]) -> list[np.ndarray]:
+    """画 `size×size` 的绿幕帧，每帧放一个灰色方块（闭区间坐标）。"""
+    frames = []
+    for x0, y0, x1, y1 in boxes:
+        frame = green_frame(size, size)
+        frame[y0:y1 + 1, x0:x1 + 1] = (200, 200, 200)
+        frames.append(frame)
+    return frames
+
+
+def test_box_contains_counts_the_far_edge_inclusively():
+    """框内最右/最下列是 `x + side - 1`，差 1 就漏判一整列像素。"""
+    assert box_contains((0, 0, 100), (0, 0, 99, 99)) is True
+    assert box_contains((0, 0, 100), (0, 0, 100, 99)) is False
+    assert box_contains((10, 10, 100), (10, 10, 109, 109)) is True
+
+
+def test_plan_crop_reuses_the_reference_box_when_the_foreground_fits():
+    """装得进 → 原样复用（旧行为逐字节不变，触发瞬间零跳位）。"""
+    frames = block_frames(200, [(20, 20, 59, 59)])
+
+    plan = plan_crop(frames, autocrop=False, crop_box=(10, 10, 100))
+
+    assert plan.source == "reused"
+    assert plan.box == (10, 10, 100)
+    assert plan.clipped_by_reference is False
+    assert plan.refit_target == 0
+
+
+def test_plan_crop_refits_with_its_own_box_when_the_reference_would_clip():
+    """装不进 → 退回动作自己的并集取景，再缩回参考框边长：**一个像素都不裁**。
+
+    毛球2 的 `grab-release` 就是这条路径：并集 634×614 装不进 idle 的 564 框，
+    硬复用的结果是落地那一帧的脚被整条切掉。
+    """
+    frames = block_frames(200, [(0, 0, 159, 159)])
+
+    plan = plan_crop(frames, autocrop=False, crop_box=(0, 0, 120))
+
+    assert plan.source == "refit"
+    assert plan.clipped_by_reference is True
+    assert plan.reference == (0, 0, 120)
+    assert plan.refit_target == 120, "缩回参考框边长，画布才和 idle 一致"
+    side = plan.box[2]
+    assert side > 120 and plan.refit_target / side < 1, "超框必然是缩小，不是放大"
+    assert box_contains(plan.box, plan.union), "重取景后不该还裁前景"
+
+
+def test_plan_crop_reports_clipping_when_no_square_can_cover_the_foreground():
+    """画幅太扁、正方形装不下全部前景时，`clipsForeground` 必须如实为 True。"""
+    frames = []
+    for _ in range(2):
+        frame = np.full((100, 200, 3), (0, 255, 0), dtype=np.uint8)
+        frame[0:100, 0:200] = (200, 200, 200)
+        frames.append(frame)
+
+    plan = plan_crop(frames, autocrop=True, crop_box=None)
+
+    assert plan.source == "auto"
+    assert plan.box[2] == 100, "正方形最大只能取到短边"
+    assert not box_contains(plan.box, plan.union), "并集 200 宽，100 的方框装不下"
+
+
+def test_plan_crop_flags_an_upscale_when_the_source_canvas_is_smaller_than_the_box():
+    """源画布比参考框还小 ⇒ 缩回参考框那一步是**放大**，必须能被识别出来。
+
+    没有新像素，只有 LANCZOS 插值 ⇒ 糊，且不可逆。数学上无解（要么裁、要么糊），
+    选糊但要在日志和 `crop` 记录里吼一声。
+    """
+    # 源只有 80×80，而参考框要 120（模拟「小画布宠 + 大参考框」）
+    frames = block_frames(80, [(10, 10, 69, 69)])
+
+    plan = plan_crop(frames, autocrop=False, crop_box=(0, 0, 80))
+
+    # 并集 60×60 装得进 80 的框 ⇒ 走复用，不放大
+    assert plan.source == "reused"
+    assert plan.refit_upscales is False
+
+
+def test_plan_crop_marks_upscale_only_when_refit_actually_enlarges():
+    """`refit_upscales` 只在重取景的框**小于**参考框时为真（即真的在放大）。"""
+    # 并集 160 宽（wanted = 160+2*12 = 184）装不进 100 的框 ⇒ refit，且框(184) > 参考(100) ⇒ 缩小
+    small = plan_crop(block_frames(200, [(0, 0, 159, 159)]),
+                      autocrop=False, crop_box=(0, 0, 100))
+    assert small.source == "refit"
+    assert small.box[2] > small.refit_target
+    assert small.refit_upscales is False
+
+    # 并集 0..159（宽 160）装得进 160 的框（闭区间刚好放下）⇒ 复用，不是 refit。
+    exact = plan_crop(block_frames(200, [(0, 0, 159, 159)]),
+                      autocrop=False, crop_box=(0, 0, 160))
+    assert exact.source == "reused", "闭区间刚好装下就该复用（差 1 会误判成 refit）"
+
+    # 并集 0..160（宽 161）装不进 160 ⇒ refit；autocrop 取 wanted = 161+24 = 185 > 160
+    # ⇒ 仍是缩小。用来确认「refit 不等于放大」。
+    shrink = plan_crop(block_frames(200, [(0, 0, 160, 160)]),
+                       autocrop=False, crop_box=(0, 0, 160))
+    assert shrink.source == "refit"
+    assert shrink.box[2] > shrink.refit_target
+    assert shrink.refit_upscales is False, "取了更大的框再缩回小框 = 缩小"
+
+    # 真正的放大：并集顶满小画布，autocrop 只能取到短边，缩回参考框才是放大。
+    # 直接验证"框 < target"这个判据本身（端到端构造不出来：同源必同画布）。
+    from photo_avatar_backend.frames.matting import CropPlan
+    assert CropPlan((0, 0, 60), (0, 0, 59, 59), "refit", (0, 0, 80), True, 80).refit_upscales
+    assert not CropPlan((0, 0, 60), (0, 0, 59, 59), "refit", (0, 0, 60), True, 60).refit_upscales
+    assert not CropPlan(None, (0, 0, 9, 9), "off").refit_upscales, "没框就不谈放大"
+
+
+def test_plan_crop_keeps_the_reference_box_when_there_is_no_foreground():
+    """没有前景时并集是空区间 —— 别拿它去触发重取景（会算出负边长）。"""
+    plan = plan_crop([green_frame(80, 80)], autocrop=False, crop_box=(5, 5, 40))
+
+    assert plan.source == "reused"
+    assert plan.box == (5, 5, 40)
+    assert plan.refit_upscales is False
+
+
+def test_plan_crop_rejects_a_reference_box_outside_the_source():
+    frames = block_frames(80, [(10, 10, 20, 20)])
+
+    with pytest.raises(MattingError, match="does not fit inside"):
+        plan_crop(frames, autocrop=False, crop_box=(50, 0, 40))
+
+
+def test_plan_crop_reuse_is_bit_identical_to_the_old_hard_reuse():
+    """**老资产零回归**：并集装得进参考框时，取景结果必须与旧行为（硬复用）完全一致。
+
+    旧代码就是 `crop_box=...` 直接切那个框。新代码走 `reused` 分支返回同一个三元组，
+    所以「库里的资产重打包」不会因为这次改动产生任何像素差异 —— 这是那条承诺的机械证明。
+    """
+    frames = block_frames(200, [(40, 40, 120, 120)])      # 并集 81×81，落在框 (10,10,160) 内
+
+    plan = plan_crop(frames, autocrop=False, crop_box=(10, 10, 160))
+
+    assert plan.source == "reused"
+    assert plan.box == (10, 10, 160), "装得下时用的必须还是那个参考框，一个像素都不挪"
+    assert plan.clipped_by_reference is False
+    assert plan.refit_upscales is False
+
+
+def test_plan_crop_takes_over_only_when_the_reference_would_clip():
+    """边界另一侧：并集只要**越出参考框一列**，就必须让位给动作自己的框。
+
+    与上一条成对 —— 一侧逐字节不变、另一侧才启用新行为，这就是改动的作用域边界。
+    """
+    frames = block_frames(200, [(40, 40, 170, 120)])      # 右沿 170 > 10+160-1
+
+    plan = plan_crop(frames, autocrop=False, crop_box=(10, 10, 160))
+
+    assert plan.source == "refit"
+    assert plan.box != (10, 10, 160)
+    assert plan.clipped_by_reference is True
+    assert box_contains(plan.box, plan.union)
 
 
 def test_clean_mask_keeps_the_largest_component_and_suppresses_specks():

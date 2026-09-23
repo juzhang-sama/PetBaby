@@ -72,8 +72,9 @@ class ActionClip:
 
     只描述「这支视频对应哪个动作、要不要进 idleSchedule、悬空保持区间是多少」。
 
-    ⚠️ **取景框不在这里给**：动作必须复用 idle 的 crop box，那件事由
-    `build_frame_sequence` 统一做（它才知道 idle 抠出来的是什么框）。
+    ⚠️ **取景框不在这里给**：动作默认复用 idle 的 crop box（装不下时由 `matting` 自己
+    重取景，见 `plan_crop`），那件事由 `build_frame_sequence` 统一做
+    （它才知道 idle 抠出来的是什么框）。
     ⚠️ 抠像用的**锚点帧也由它统一给**（idle 的第 0 帧）—— 两支视频同源校色，
     触发瞬间才不会看出色差。
     """
@@ -173,7 +174,8 @@ def build_frame_sequence(
 
     `action_clips` 为空 → 单动作包（只有 idle），输出与多动作支持之前逐字节相同。
     非空 → idle 与每支动作并进**同一个**包（一个 job 一个 artifact → 必须一支 zip），
-    每支动作**复用 idle 的 crop box 与锚点帧**抠像，并各自跑四项验收。
+    每支动作**优先复用 idle 的 crop box 与锚点帧**抠像（装不下时 `matting` 会按动作
+    自身并集重取景并缩回同一画布，见 `matting.plan_crop`），并各自跑四项验收。
 
     只接受空目录（见模块开头的说明）。不抛验收 FAIL —— FAIL 是结论不是异常。
     """
@@ -206,23 +208,27 @@ def build_frame_sequence(
     extra_actions: list[packing.ExtraAction] = []
     action_acceptances: list[tuple[str, AcceptanceResult]] = []
     for clip in action_clips:
-        log(f"[动作] {clip.action_id}：抠像（复用 idle 的 crop box + 用 idle 第 0 帧校色）")
+        log(f"[动作] {clip.action_id}：抠像（优先复用 idle 的 crop box + 用 idle 第 0 帧校色）")
         action_matte = matte_video(
             Path(clip.video),
             out_dir / f"{MATTE_DIR}-{clip.action_id}",
             fps=fps,
             frame_duration_ms=frame_duration_ms,
             # crop_box 优先于 autocrop（见 matting）：动作各家自裁 = 触发瞬间错位。
+            # 但 **装不下时会自己重取景**（plan_crop）：硬复用裁掉的是真像素，补不回来。
             autocrop=False,
             crop_box=idle_crop_box(matte),
             color_match=matte.frames_dir / IDLE_ANCHOR_FRAME,
             path_base=path_base,
             log=log,
         )
-        log(f"[动作] {clip.action_id}：四项验收")
+        log(f"[动作] {clip.action_id}：四项验收 + 落地衔接")
         action_acceptance = accept_frames(
             action_matte.frames_dir,
             out_dir / f"{ACCEPTANCE_DIR}-{clip.action_id}",
+            # 同时跑「5-落地衔接」：动作的首/末帧得像 idle 第 0 帧，
+            # 否则切回待机时身体要挪一大截（毛球2 实测末帧 IoU 0.61）。
+            anchor_frames_dir=matte.frames_dir,
             path_base=path_base,
             log=log,
         )

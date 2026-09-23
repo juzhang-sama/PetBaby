@@ -118,9 +118,11 @@ describe("合并包：呼吸 + 眨眼（真实资产）", () => {
     renderer.update(168);
     expect(contexts[0]!.drawImage.mock.calls.at(-1)![0])
       .toBe(imageByUrl.get("/fake/宠物动作-毛砌墙-v3-2026-08-31/frames/blink/f0004.png"));
-    // 眨眼播完（补齐到 BLINK_MS）→ 回到呼吸 phase 0
+    // 眨眼播完（补齐到 BLINK_MS）→ 回到呼吸 phase 0。
+    // 动作末帧会叠在待机帧上做收尾溶解 ⇒ 本 tick 的**第一次** drawImage 才是当前动作帧。
+    contexts[0]!.drawImage.mockClear();
     renderer.update(BLINK_MS - 168);
-    expect(contexts[0]!.drawImage.mock.calls.at(-1)![0])
+    expect(contexts[0]!.drawImage.mock.calls[0]![0])
       .toBe(imageByUrl.get("/fake/宠物动作-毛砌墙-v3-2026-08-31/frames/breath/f0000.png"));
 
     renderer.destroy();

@@ -156,6 +156,85 @@ def compute_autocrop(rgbs: list[np.ndarray]) -> tuple[tuple[int, int, int], tupl
     return (x0, y0, side), (x0f, y0f, x1f, y1f)
 
 
+def box_contains(box: tuple[int, int, int], union: tuple[int, int, int, int]) -> bool:
+    """取景框能不能装下前景并集（**闭区间**：框内最右列是 `x + side - 1`）。
+
+    差 1 就会漏判一整列像素，所以别写成 `x + side >= fx1`。
+    """
+    x, y, side = box
+    fx0, fy0, fx1, fy1 = union
+    return x <= fx0 and y <= fy0 and x + side - 1 >= fx1 and y + side - 1 >= fy1
+
+
+@dataclass(frozen=True)
+class CropPlan:
+    """一次抠像的取景决策（只算数，不碰像素）。
+
+    `source` 四种：
+      - `"auto"`   自己按并集 autocrop（idle 走这条）
+      - `"reused"` 动作并集装得进参考框 → 原样复用（触发瞬间零跳位）
+      - `"refit"`  装不进 → 退回动作自己的并集取景，再整体缩回 `refit_target`
+      - `"off"`    不裁
+    """
+
+    box: tuple[int, int, int] | None
+    union: tuple[int, int, int, int]
+    source: str
+    reference: tuple[int, int, int] | None = None
+    clipped_by_reference: bool = False
+    refit_target: int = 0
+
+    @property
+    def refit_upscales(self) -> bool:
+        """重取景之后那一步是**放大**吗。
+
+        源画布比参考框还小时会发生（源 480² + 参考框 564 ⇒ ×1.175）：没有新像素，
+        只有 LANCZOS 插值 ⇒ 糊。数学上无解（要么裁、要么糊），选糊但必须吼一声。
+        """
+        return bool(self.box) and self.refit_target > self.box[2]
+
+
+def plan_crop(
+    rgbs: list[np.ndarray],
+    *,
+    autocrop: bool,
+    crop_box: tuple[int, int, int] | None,
+) -> CropPlan:
+    """决定这次抠像用哪个取景框。
+
+    【动作不再硬复用 idle 的框 2026-09-21】
+    「动作必须复用 idle 的框」只在**动作并集装得进那个框**时成立。装不进时它裁掉的是
+    真像素 —— 毛球2 的 `grab-release`：并集 `[4,24,637,637]`（634×614），idle 框
+    564@(3,31) ⇒ **右溢 71 / 下溢 43**，落地那一帧的脚被整条切掉。裁掉的像素打包侧
+    补不回来（`packing` 只能重采样已有的像素），所以改成：
+
+      - 装得进 → 复用参考框（**旧行为逐字节不变**，触发瞬间零跳位）
+      - 装不进 → 用动作自己的并集取景（与 idle 同一套 autocrop 规则），再整体缩回
+        `refit_target`，于是**一个像素都不裁**
+
+    代价是动作期间形象比 idle 小 `1 - refit_target/box.size`（毛球2 实测 11.6%）。
+    这是「少一点」和「缺一块」之间的选择，也比「静默裁切 + 事后才发现」好：
+    `clippedByReferenceBox` 会把这件事写明留档，要彻底解决仍需在提示词里约束动作幅度。
+    """
+    own_box, union = compute_autocrop(rgbs)
+    if crop_box is not None:
+        cx, cy, side = crop_box
+        src_h, src_w = rgbs[0].shape[:2]
+        if side <= 0 or cx < 0 or cy < 0 or cx + side > src_w or cy + side > src_h:
+            raise MattingError(
+                f"crop box ({cx},{cy},{side}) does not fit inside the "
+                f"{src_w}x{src_h} source frames"
+            )
+        # 没有前景（并集是空区间）就无所谓裁不裁，别拿空并集去触发重取景
+        empty = union[2] < union[0] or union[3] < union[1]
+        if empty or box_contains((cx, cy, side), union):
+            return CropPlan((cx, cy, side), union, "reused", (cx, cy, side))
+        return CropPlan(own_box, union, "refit", (cx, cy, side), True, side)
+    if autocrop:
+        return CropPlan(own_box, union, "auto", None, not box_contains(own_box, union))
+    return CropPlan(None, union, "off")
+
+
 def despill(rgb: np.ndarray, alpha: np.ndarray,
             bg_ref: np.ndarray | None = None) -> np.ndarray:
     """把被绿幕污染的颜色反算回真实前景色。
@@ -471,47 +550,54 @@ def matte_video(
     # 取景：Seedance 常把方图首帧铺进 16:9 画布，需要按「全部帧前景并集」裁正方形，
     # 否则会切掉甩出原方图范围的尾巴。
     #
-    # `crop_box` 给了就**优先用它**（跳过 autocrop）：**动作必须复用 idle 的框**，
+    # `crop_box` 给了就**优先用它**（跳过 autocrop）：**动作复用 idle 的框**，
     # 两支视频各自 autocrop 会让触发瞬间错位（05 的 yawn 就是这么错位 27px 的）。
+    # 但**装不下时不再硬复用** —— 那会裁掉真像素，详见 `plan_crop`。
     crop_record = None
-    if crop_box is not None:
-        cx, cy, side = crop_box
-        src_h, src_w = rgbs[0].shape[:2]
-        if side <= 0 or cx < 0 or cy < 0 or cx + side > src_w or cy + side > src_h:
-            raise MattingError(
-                f"crop box ({cx},{cy},{side}) does not fit inside the {src_w}x{src_h} source frames"
-            )
-        # 还是要算一遍前景并集 —— **只为了报「有没有超框」**。
-        # 超框不抛异常：这支视频的钱已经花过了，抛出去等于让用户重付；
-        # 契约里的处置是「改提示词重生成 vs 放宽取景框」，那是**人**的决定
-        # （放宽框 = idle 与所有动作一起重出）。所以这里只把事实大声记下来。
-        _, (fx0, fy0, fx1, fy1) = compute_autocrop(rgbs)
-        clipped = not (cx <= fx0 and cy <= fy0 and cx + side >= fx1 and cy + side >= fy1)
-        rgbs = [r[cy:cy + side, cx:cx + side] for r in rgbs]
+    plan = plan_crop(rgbs, autocrop=autocrop, crop_box=crop_box)
+    if plan.box is not None:
+        x, y, side = plan.box
+        rgbs = [r[y:y + side, x:x + side] for r in rgbs]
         crop_record = {
-            "x": cx, "y": cy, "size": side, "source": "reused",
-            "unionForegroundBBox": [fx0, fy0, fx1, fy1],
-            "clipsForeground": bool(clipped),
+            "x": x, "y": y, "size": side,
+            "source": plan.source,
+            "unionForegroundBBox": list(plan.union),
+            "clipsForeground": not box_contains(plan.box, plan.union),
         }
-        log(f"[取景] 复用调用方给的 crop {side}x{side} @({cx},{cy})"
-            f"（与 idle 同一个框，触发时不跳位）")
-        if clipped:
-            log(f"[警告] 动作前景 bbox=[{fx0},{fy0},{fx1},{fy1}] "
-                f"超出复用的 crop box(={cx},{cy},{side})！"
-                "处置：改提示词加负向词重生成，**不要**悄悄放宽取景框"
-                "（放宽 = idle 与所有动作一起重出）")
-    elif autocrop:
-        (cx, cy, side), (fx0, fy0, fx1, fy1) = compute_autocrop(rgbs)
-        clipped = not (cx <= fx0 and cy <= fy0 and cx + side >= fx1 and cy + side >= fy1)
-        rgbs = [r[cy:cy + side, cx:cx + side] for r in rgbs]
-        crop_record = {
-            "x": cx, "y": cy, "size": side,
-            "unionForegroundBBox": [fx0, fy0, fx1, fy1],
-            "clipsForeground": bool(clipped),
-        }
-        log(f"[取景] 联合前景 bbox=[{fx0},{fy0},{fx1},{fy1}] -> 裁 {side}x{side} @({cx},{cy})")
-        if clipped:
-            log("[警告] 正方形取景框装不下全部前景，主体会被裁切！"
+        if plan.reference is not None:
+            crop_record["referenceBox"] = list(plan.reference)
+            crop_record["clippedByReferenceBox"] = plan.clipped_by_reference
+        scale_note = ""
+        if plan.refit_target and plan.refit_target != side:
+            target = plan.refit_target
+            rgbs = [
+                np.array(Image.fromarray(r).resize((target, target), Image.LANCZOS))
+                for r in rgbs
+            ]
+            upscale = target / side
+            crop_record["refitScale"] = round(upscale, 4)
+            scale_note = f"，再整体缩回 {target}x{target}（×{upscale:.3f}）"
+            # 源画布比参考框还小时，这一步是**放大**：没有新像素，只会把 LANCZOS 的
+            # 插值糊上去（源 480² 配 564 参考框 ⇒ ×1.175）。数学上无解 —— 要么裁、要么糊。
+            # 选了糊（不丢内容），但必须让人看见：这是**不可逆**的画质损失。
+            if plan.refit_upscales:
+                crop_record["refitUpscale"] = True
+                log(f"[警告] 动作并集需要 {side}px，而源视频画布只有那么大："
+                    f"缩回参考框是**放大** ×{upscale:.3f} —— 细节是插值出来的，糊了就回不来。"
+                    "处置：让 Seedance 直接输出 ≥ 参考框的方图，或收紧动作幅度。")
+        if plan.source == "reused":
+            log(f"[取景] 复用调用方给的 crop {side}x{side} @({x},{y})"
+                f"（与 idle 同一个框，触发时不跳位）")
+        elif plan.source == "refit":
+            rx, ry, rsize = plan.reference or (0, 0, 0)
+            log(f"[取景] 前景 bbox={list(plan.union)} 装不进参考框 {rsize}@({rx},{ry})："
+                "硬复用会裁掉真像素，而裁掉的像素打包侧补不回来。")
+            log(f"[取景] 改按动作自身并集取景 {side}x{side} @({x},{y}){scale_note} —— 不裁像素；"
+                "代价是动作期间形象比 idle 略小，彻底解决仍要在提示词里约束动作幅度。")
+        else:
+            log(f"[取景] 联合前景 bbox={list(plan.union)} -> 裁 {side}x{side} @({x},{y})")
+        if crop_record["clipsForeground"]:
+            log("[警告] 取景框装不下全部前景，主体会被裁切！"
                 "请关掉 autocrop 手动指定，或让 Seedance 输出与首帧同比例")
 
     if size > 0 and rgbs[0].shape[0] != size:

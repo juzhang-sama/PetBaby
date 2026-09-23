@@ -1,5 +1,5 @@
 import { describe, expect, it, vi } from "vitest";
-import { FrameSequenceRenderer } from "./frame-sequence-renderer";
+import { DEFAULT_TAIL_BLEND_MS, FrameSequenceRenderer } from "./frame-sequence-renderer";
 import type { PetCalibrationV1 } from "./pet-calibration";
 import type { PetRenderAsset } from "./pet-renderer";
 
@@ -41,13 +41,25 @@ function frameAsset(overrides: Partial<FrameSequenceAsset> = {}): FrameSequenceA
 
 function rendererHarness(
   overrides: Partial<FrameSequenceAsset> = {},
-  options: { maxCachedActions?: number } = {},
+  options: { maxCachedActions?: number; tailBlendMs?: number } = {},
 ) {
   const contexts = Array.from({ length: 2 }, () => ({
     clearRect: vi.fn(),
     drawImage: vi.fn(),
     setTransform: vi.fn(),
+    globalAlpha: 1,
   }));
+  // 记录 display context 的 globalAlpha 写入序列 —— 收尾溶解的淡出靠它，
+  // 而它画完就被复位成 1，只能在 setter 里抓。
+  const alphaLog: number[] = [];
+  let alpha = 1;
+  Object.defineProperty(contexts[0], "globalAlpha", {
+    get: () => alpha,
+    set: (value: number) => {
+      alpha = value;
+      alphaLog.push(value);
+    },
+  });
   const canvases = contexts.map((context) => ({
     width: 0,
     height: 0,
@@ -102,6 +114,7 @@ function rendererHarness(
     // 缓存淘汰是独立关注点，由专项测试用 maxCachedActions: 2 覆盖；
     // 行为测试给足缓存，避免淘汰策略把断言要用的动作提前清掉。
     maxCachedActions: options.maxCachedActions ?? 10,
+    tailBlendMs: options.tailBlendMs ?? DEFAULT_TAIL_BLEND_MS,
   });
   renderer.setVisibility(true);
   const asset = frameAsset(overrides);
@@ -128,6 +141,7 @@ function rendererHarness(
       renderer.playMotion("idle", { loop: true });
     },
     context: contexts[0]!,
+    alphaLog,
     hitContext: contexts[1]!,
     displayCanvas: canvases[0]!,
     hitCanvas: canvases[1]!,
@@ -308,14 +322,21 @@ describe("FrameSequenceRenderer", () => {
     test.context.drawImage.mockClear();
     test.renderer.update(120);
     const tailFrame0 = test.context.drawImage.mock.calls[0]![0];
+    expect(tailFrame0).toBe(test.imageByUrl.get("tail/f01.png"));
+    // 再走 120 ⇒ 越过 tail-wag 总时长（2×120），回归待机；动作末帧叠在上面做收尾溶解，
+    // 所以「当前动作帧」看本 tick 的第一次 drawImage，不是 at(-1)。
+    test.context.drawImage.mockClear();
     test.renderer.update(120);
-    const tailFrame1 = test.context.drawImage.mock.calls.at(-1)![0];
-    expect(tailFrame0).not.toBe(tailFrame1);
+    const backToBreath = test.context.drawImage.mock.calls[0]![0];
+    expect(backToBreath).toBe(test.imageByUrl.get("breath/f00.png"));
     test.renderer.update(120);
     test.context.drawImage.mockClear();
     test.renderer.update(180);
     const afterCycle = test.context.drawImage.mock.calls[0]![0];
-    expect(afterCycle).not.toBe(tailFrame1);
+    const breathFrames = ["breath/f00.png", "breath/f01.png", "breath/f02.png"].map(
+      (url) => test.imageByUrl.get(url),
+    );
+    expect(breathFrames).toContain(afterCycle); // 一个周期后回到待机，不再播 tail-wag
     handle.cancel();
   });
 
@@ -392,12 +413,15 @@ describe("FrameSequenceRenderer", () => {
     test.renderer.resize({ width: 400, height: 500, dpr: 2 });
     await test.loadAll();
     test.context.drawImage.mockClear();
-    test.renderer.update(2500);
+    test.renderer.update(2500); // 到点触发 tail-wag（weight 1）
+    test.context.drawImage.mockClear();
     test.renderer.update(120);
-    const tailFrame0 = test.context.drawImage.mock.calls.at(-1)![0];
+    const tailFrame0 = test.context.drawImage.mock.calls[0]![0];
     expect(tailFrame0).toBeDefined();
+    // 越过 tail-wag 总时长 ⇒ 回归待机（动作末帧叠在上面做收尾溶解 ⇒ 看 calls[0]）。
+    test.context.drawImage.mockClear();
     test.renderer.update(120);
-    const tailFrame1 = test.context.drawImage.mock.calls.at(-1)![0];
+    const tailFrame1 = test.context.drawImage.mock.calls[0]![0];
     expect(tailFrame1).not.toBe(tailFrame0);
   });
 
@@ -482,9 +506,14 @@ describe("FrameSequenceRenderer", () => {
     test.renderer.update(100); // 2600
     test.renderer.update(100); // 2700 boundary -> blink frame 0
     test.renderer.update(150); // blink frame 1
+    test.context.drawImage.mockClear();
     test.renderer.update(150); // blink done -> resume breath at phase 0
-    const resumed = test.context.drawImage.mock.calls.at(-1)![0];
-    expect(resumed).toBe(test.imageByUrl.get("breath/f00.png"));
+    // 收尾溶解：这一 tick 画两次 —— 先待机帧，再把动作末帧按剩余不透明度叠上去。
+    // 「当前动作帧」= 第一次 drawImage，不是 at(-1)。
+    const calls = test.context.drawImage.mock.calls;
+    expect(calls).toHaveLength(2);
+    expect(calls[0]![0]).toBe(test.imageByUrl.get("breath/f00.png"));
+    expect(calls[1]![0]).toBe(test.imageByUrl.get("blink/f01.png"));
   });
 
   // 窗口裁剪区（SetWindowRgn）按 hit surface 的 alpha 生成。若 hit surface 固定在
@@ -637,10 +666,12 @@ describe("FrameSequenceRenderer 交互保持（holdRange）", () => {
     const tailEnd = test.context.drawImage.mock.calls.at(-1)![0];
     expect(tailEnd).toBe(frameAt(test, "grab/f0120.webp"));
 
-    // 再跨过总时长 → 放下段播完，回归默认动作 breath。
+    // 再跨过总时长 → 放下段播完，回归默认动作 breath（末帧叠在上面做收尾溶解）。
+    test.context.drawImage.mockClear();
     test.renderer.update(42);
-    const backToIdle = test.context.drawImage.mock.calls.at(-1)![0];
-    expect(backToIdle).toBe(frameAt(test, "breath/f0000.webp"));
+    const calls = test.context.drawImage.mock.calls;
+    expect(calls[0]![0]).toBe(frameAt(test, "breath/f0000.webp"));
+    expect(calls[1]![0]).toBe(frameAt(test, "grab/f0120.webp"));
   });
 
   it("拎起中途松手：立即跳到放下段", async () => {
@@ -655,5 +686,117 @@ describe("FrameSequenceRenderer 交互保持（holdRange）", () => {
     const resumed = test.context.drawImage.mock.calls.at(-1)![0];
     expect(resumed).toBe(frameAt(test, "grab/f0064.webp"));
     expect(resumed).not.toBe(frameAt(test, "grab/f0010.webp"));
+  });
+});
+
+describe("FrameSequenceRenderer 收尾溶解（tailBlend）", () => {
+  // 由来：切回待机是硬切，而硬切好看的前提是「动作末帧 == 待机 phase-0 那一帧的姿态」。
+  // 生成侧给不了这个保证 —— 实测末帧 vs 待机锚点 IoU 在 0.55~0.99 之间随机摆
+  // （暹罗 0.99 看不见跳，毛球 0.55 就是老王说的「松手后闪一下」）。
+  function blendAsset() {
+    return frameAsset({
+      actions: [
+        { actionId: "breath", loop: true, frameDurationMs: 42, frameUrls: ["breath/f00.png"] },
+        {
+          actionId: "blink",
+          loop: false,
+          frameDurationMs: 100,
+          frameUrls: ["blink/f00.png", "blink/f01.png"],
+        },
+      ],
+      defaultAction: "breath",
+      semantics: { idle: "breath", blink: "blink" },
+      idleSchedule: null,
+    });
+  }
+
+  const drawnUrls = (test: ReturnType<typeof rendererHarness>) =>
+    test.context.drawImage.mock.calls.map((call) => {
+      for (const [url, image] of test.imageByUrl) if (image === call[0]) return url;
+      return "?";
+    });
+
+  it("一次性动作播完：待机帧先画，动作末帧叠在上面逐级淡出，到时收工", async () => {
+    const test = rendererHarness(blendAsset());
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.loadAll();
+
+    test.renderer.playMotion("blink");
+    await test.renderer.whenReady();
+    test.renderer.update(1); // elapsed 1 → f00
+    test.renderer.update(100); // elapsed 101 → f01（末帧）
+    test.context.drawImage.mockClear();
+
+    test.renderer.update(100); // elapsed 201 ≥ 200 ⇒ 播完，起溶解
+    expect(drawnUrls(test)).toEqual(["breath/f00.png", "blink/f01.png"]);
+
+    // 每 50ms 一跳：剩余不透明度 1 → .8 → .6 → .4 → .2 → 收工。
+    const seen: number[] = [];
+    for (let step = 0; step < 5; step += 1) {
+      test.context.drawImage.mockClear();
+      test.alphaLog.length = 0;
+      test.renderer.update(50);
+      seen.push(test.context.drawImage.mock.calls.length === 2 ? (test.alphaLog[0] ?? 1) : 0);
+    }
+    expect(seen[0]).toBeCloseTo(0.8, 5);
+    expect(seen[1]).toBeCloseTo(0.6, 5);
+    expect(seen[2]).toBeCloseTo(0.4, 5);
+    expect(seen[3]).toBeCloseTo(0.2, 5);
+    expect(seen[4]).toBe(0); // 收工：不再叠帧
+
+    // 溶解全程的不透明度必须单调下降（先画后叠 ⇒ 半透明窗口不会中途透出桌面）。
+    test.context.drawImage.mockClear();
+    test.renderer.update(42);
+    expect(drawnUrls(test)).toEqual(["breath/f00.png"]);
+  });
+
+  it("tailBlendMs = 0 ⇒ 退回硬切（只画一次，不写 globalAlpha）", async () => {
+    const test = rendererHarness(blendAsset(), { tailBlendMs: 0 });
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.loadAll();
+
+    test.renderer.playMotion("blink");
+    await test.renderer.whenReady();
+    test.renderer.update(1);
+    test.renderer.update(100);
+    test.context.drawImage.mockClear();
+    test.alphaLog.length = 0;
+    test.renderer.update(100); // 播完
+    expect(drawnUrls(test)).toEqual(["breath/f00.png"]);
+    expect(test.alphaLog).toEqual([]);
+  });
+
+  it("溶解期间沿用动作那一支的窗口轮廓，结束后才收回待机轮廓", async () => {
+    const test = rendererHarness(blendAsset());
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.loadAll();
+
+    test.renderer.playMotion("blink");
+    await test.renderer.whenReady();
+    test.renderer.update(1);
+    expect(test.renderer.consumeSilhouetteDirty()).toBe(true); // 切到 blink，重烘焙
+    test.renderer.update(100);
+    test.renderer.update(100); // 播完 → 起溶解
+    // 此刻画面里还叠着动作末帧：换成待机轮廓会把超出待机的那部分被 SetWindowRgn 切掉。
+    expect(test.renderer.consumeSilhouetteDirty()).toBe(false);
+    test.renderer.update(250); // 溶解结束
+    expect(test.renderer.consumeSilhouetteDirty()).toBe(true);
+  });
+
+  it("溶解中途起新动作：溶解立即作废，旧动作末帧不会盖在新动作上", async () => {
+    const test = rendererHarness(blendAsset());
+    test.renderer.resize({ width: 400, height: 500, dpr: 2 });
+    await test.loadAll();
+
+    test.renderer.playMotion("blink");
+    await test.renderer.whenReady();
+    test.renderer.update(1);
+    test.renderer.update(100);
+    test.renderer.update(100); // 起溶解
+    test.renderer.update(50); // 溶解中（remaining 0.8）
+    test.context.drawImage.mockClear();
+    test.renderer.playMotion("blink"); // 重新触发
+    test.renderer.update(1);
+    expect(drawnUrls(test)).toEqual(["blink/f00.png"]);
   });
 });

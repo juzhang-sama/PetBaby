@@ -29,6 +29,9 @@ from photo_avatar_backend.frames.acceptance import (
     composite,
     load_frames,
     make_background,
+    LANDING_CRITERION,
+    check_landing,
+    mask_iou,
 )
 
 SIZE = 48
@@ -287,6 +290,95 @@ def test_accept_frames_reports_failure_without_raising(tmp_path: Path):
 def test_accept_frames_rejects_missing_frames_dir(tmp_path: Path):
     with pytest.raises(AcceptanceError, match="帧序列目录不存在"):
         accept_frames(tmp_path / "nope", tmp_path / "out")
+
+
+# ------------------------------------------------------- 5-落地衔接（锚点 IoU）
+
+def test_mask_iou_is_zero_for_two_empty_masks():
+    """两张都透明 ≠ 长得一样。`0/0` 必须返回 0.0，不能返回 1.0。"""
+    empty = np.zeros((4, 4), dtype=bool)
+
+    assert mask_iou(empty, empty) == 0.0
+
+
+def test_check_landing_scores_first_and_last_frames_against_the_anchor():
+    """首帧管「触发跳位」、末帧管「收尾落不回」—— 两项都要过。"""
+    anchor = np.zeros((SIZE, SIZE), dtype=bool)
+    anchor[14:34, 14:34] = True
+
+    # 首帧=锚点、末帧挪开一大块 ⇒ 末帧 IoU 低
+    good_then_bad = np.stack([
+        frame(box=(14, 14, 34, 34))[:, :, 3] >= 128,
+        frame(box=(26, 26, 44, 44))[:, :, 3] >= 128,
+    ])
+    result = check_landing(good_then_bad, anchor=anchor)
+
+    assert result["passed"] is False
+    assert result["firstFrameIou"] == pytest.approx(1.0)
+    assert result["lastFrameIou"] < 0.88
+
+
+def test_check_landing_passes_when_both_ends_match_the_anchor():
+    anchor = np.zeros((SIZE, SIZE), dtype=bool)
+    anchor[14:34, 14:34] = True
+    same = np.stack([frame()[:, :, 3] >= 128 for _ in range(3)])
+
+    result = check_landing(same, anchor=anchor)
+
+    assert result["passed"] is True
+    assert result["firstFrameIou"] == pytest.approx(1.0)
+    assert result["lastFrameIou"] == pytest.approx(1.0)
+
+
+def test_check_landing_does_not_judge_without_an_anchor():
+    """缺参考 ≠ 不合格：没有锚点时必须返回 `passed=None`，否则引擎侧会误报 FAIL。"""
+    result = check_landing(np.stack([frame()[:, :, 3] >= 128]), anchor=None)
+
+    assert result["passed"] is None
+    assert "不判" in result["note"]
+
+
+def test_check_tail_attributes_edge_touching_to_the_offending_edges():
+    """贴边的**归因**：上/下多为起跳落地超框、左/右多为横摆超框。
+
+    两者处置不同 —— 前者看取景（`matting` 自动 refit），后者要收紧横向动作幅度。
+    """
+    # 造一串底部贴边的帧：主体下沿压到画布最后一行
+    touching = np.stack([frame(box=(14, 14, 34, SIZE))[:, :, 3] >= 128 for _ in range(4)])
+    result = check_tail(touching.astype(np.float32))
+
+    attribution = result["edgeTouchAttribution"]
+    assert result["edgeTouchFrameCount"] > 0
+    assert attribution is not None
+    assert attribution["worstEdge"] == "下"
+    assert attribution["edgeHitFrameCounts"]["下"] == result["edgeTouchFrameCount"]
+    assert attribution["touchFrameRatio"] == pytest.approx(
+        result["edgeTouchFrameCount"] / 4, abs=1e-4
+    )
+
+
+def test_check_tail_leaves_attribution_empty_when_nothing_touches_an_edge():
+    clean = np.stack([frame()[:, :, 3] >= 128 for _ in range(3)])
+
+    result = check_tail(clean.astype(np.float32))
+
+    assert result["edgeTouchFrameCount"] == 0
+    assert result["edgeTouchAttribution"] is None, "没贴边就不该有归因块"
+
+
+def test_accept_frames_adds_the_landing_criterion_only_when_an_anchor_is_given(tmp_path: Path):
+    """不做动作的包（idle 单支）**不**多出这一条 —— 自比没意义。"""
+    frames_dir = write_sequence(tmp_path, [frame() for _ in range(4)])
+
+    without = accept_frames(frames_dir, tmp_path / "out-plain")
+    assert LANDING_CRITERION not in without.criteria
+    assert list(without.criteria) == list(CRITERIA)
+
+    with_anchor = accept_frames(
+        frames_dir, tmp_path / "out-anchor", anchor_frames_dir=frames_dir
+    )
+    assert LANDING_CRITERION in with_anchor.criteria
+    assert with_anchor.criteria[LANDING_CRITERION]["passed"] is True
 
 
 def test_acceptance_error_is_a_normal_exception():

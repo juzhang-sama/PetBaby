@@ -54,8 +54,15 @@ THRESHOLDS = {
     "ringMeanAlpha": 0.30,                # 外圈平均 alpha 上限，过大 = 边缘发虚
 }
 
-# 四项判据的展示名（同时是 `验收报告.json` 里 `criteria` 的键，别改名）
+# 落地衔接的 IoU 参考线。**不是新发明**：建国出厂版实测 0.8802，就定在 0.88。
+# 对照：暹罗 grab-release 末帧 0.9875（没问题）、毛球2 0.61（落地没站稳）。
+LANDING_IOU_REFERENCE = 0.88
+
+# 判据的展示名（同时是 `验收报告.json` 里 `criteria` 的键，别改名）
 CRITERIA = ("1-尾巴完整", "2-无绿边", "3-帧间不闪烁", "4-黑白棋盘格自然")
+
+# 一次性动作的「落地衔接」判据（只有动作支才跑，idle 不跑 —— 见 `check_landing`）
+LANDING_CRITERION = "5-落地衔接"
 
 EVIDENCE_LABELS = {"checker": "棋盘格", "black": "黑底", "white": "白底"}
 
@@ -118,12 +125,44 @@ def check_tail(alphas: np.ndarray) -> dict:
 
     passed = (not stray_frames) and area_var <= THRESHOLDS["foregroundAreaVariation"] \
         and not touch_frames
+
+    # 贴边的**归因**：同样报 FAIL，处置完全不同 ——
+    #   "framing"  动作并集装不进取景框 ⇒ 改取景（`matting.plan_crop` 已能自动重取景，0 算力）
+    #   "source"   源视频自己就贴边 ⇒ 只能重出（换提示词收紧动作幅度）
+    # 判据：源帧尺寸 = 取景框尺寸时说明这一路没被裁过，贴边是源视频自带的。
+    touch_attribution, touch_worst_edge = None, None
+    if touch_frames:
+        edge_hits = {"上": 0, "下": 0, "左": 0, "右": 0}
+        for item in touch_frames:
+            x0, y0, x1, y1 = item["bbox"]
+            if y0 <= 1:
+                edge_hits["上"] += 1
+            if y1 >= h - 2:
+                edge_hits["下"] += 1
+            if x0 <= 1:
+                edge_hits["左"] += 1
+            if x1 >= w - 2:
+                edge_hits["右"] += 1
+        touch_worst_edge = max(edge_hits, key=lambda k: edge_hits[k])
+        # 贴边帧占全片比例很高 ⇒ 不是偶发（偶发是模型抖动），是取景/幅度层面的系统问题
+        ratio = len(touch_frames) / max(1, mask.shape[0])
+        touch_attribution = {
+            "edgeHitFrameCounts": edge_hits,
+            "worstEdge": touch_worst_edge,
+            "touchFrameRatio": round(ratio, 4),
+            "note": "贴边帧的分布。worstEdge 上/下多为动作幅度（起跳、落地）"
+                    "超出取景框；左/右多为横摆超出。数量少是模型抖动，"
+                    "数量多（touchFrameRatio 高）是系统问题：先看 `matting` 日志里"
+                    "有没有 `refit`，有则是取景已尽力、要改提示词。",
+        }
+
     return {
         "passed": bool(passed),
         "strayComponentFrames": stray_frames[:10],
         "strayComponentFrameCount": len(stray_frames),
         "edgeTouchFrames": touch_frames[:10],
         "edgeTouchFrameCount": len(touch_frames),
+        "edgeTouchAttribution": touch_attribution,
         "maxConnectedComponents": int(max_components),
         "foregroundAreaVariation": round(area_var, 5),
         "diagnostic_tailSwingAmplitude": round(swing, 5),
@@ -134,6 +173,65 @@ def check_tail(alphas: np.ndarray) -> dict:
         "note": "strayComponentFrames 非空说明尾巴被抠成飞块；edgeTouchFrames 非空说明"
                 "主体贴到画布边、被取景框裁掉；diagnostic_tailSwingAmplitude 是尾尖摆动"
                 "幅度，属于正常动作，不参与判定。",
+    }
+
+
+def mask_iou(a: np.ndarray, b: np.ndarray) -> float:
+    """两个二值掩码的 IoU。`a`/`b` 是同尺寸的 bool 数组。
+
+    空掩码（全透明帧）直接返回 0.0：那种帧没有轮廓可言，
+    拿它去比只会得到 `0/0`，而"两张都没有东西"不该被当成"长得一样"。
+    """
+    union = int(np.logical_or(a, b).sum())
+    if union == 0:
+        return 0.0
+    return float(np.logical_and(a, b).sum()) / union
+
+
+def check_landing(
+    alphas: np.ndarray,
+    *,
+    anchor: np.ndarray | None,
+    reference_iou: float = LANDING_IOU_REFERENCE,
+) -> dict:
+    """落地衔接：动作的**首帧与末帧**都得长得像 idle 的锚点。
+
+    为什么要它：毛球2 的 `grab-release` 末帧是「悬垂」姿态（404×577），
+    而 idle 锚点是「端坐」（485×520），IoU **0.61** ⇒ 播放器切回 idle 时身体要挪一大截，
+    看着就是「落地没站稳」。这个数字**一直被算得出来**，只是没有一条判据在报它。
+
+    判据的两端（缺一不可）：
+      - **首帧**像锚点 = 触发瞬间不跳位（动作是从待机姿势起手的）
+      - **末帧**像锚点 = 收尾能落回待机（一次性动作播完就切 idle）
+
+    对照：暹罗首帧≈锚点、末帧 IoU **0.9875** ⇒ 它没问题；建国出厂版 0.8802
+    ⇒ 门槛就定在 0.88。
+
+    ⚠️ `anchor` 缺省（没有 idle 帧可比）时**不判**，返回 `passed=None`：
+    「缺参考」和「不合格」是两件事，混在一起会让引擎侧误报。
+    """
+    if anchor is None:
+        return {
+            "passed": None,
+            "note": "没有 idle 锚点帧可比 → 这一条不判（缺参考 ≠ 不合格）",
+        }
+    if alphas.shape[0] == 0:
+        return {"passed": False, "note": "没有帧"}
+
+    first = alphas[0] >= 0.5
+    last = alphas[-1] >= 0.5
+    first_iou = mask_iou(first, anchor)
+    last_iou = mask_iou(last, anchor)
+    passed = first_iou >= reference_iou and last_iou >= reference_iou
+    return {
+        "passed": bool(passed),
+        "firstFrameIou": round(first_iou, 4),
+        "lastFrameIou": round(last_iou, 4),
+        "referenceIou": reference_iou,
+        "thresholds": {"landingIou": reference_iou},
+        "note": "首帧 IoU 管「触发瞬间跳不跳位」，末帧 IoU 管「收尾能不能落回待机」。"
+                "两项都要 ≥ 参考线；低于它说明这支动作的首/末姿态与待机差得远，"
+                "靠改数字救不回来，只能重出或改提示词。",
     }
 
 
@@ -435,10 +533,14 @@ def accept_frames(
     frames_dir: Path,
     out_dir: Path,
     *,
+    anchor_frames_dir: Path | None = None,
     path_base: Path | None = None,
     log: Callable[[str], None] = print,
 ) -> AcceptanceResult:
-    """对 `frames_dir` 下的 `f*.png` 跑四项判据并写出报告与证据图。
+    """对 `frames_dir` 下的 `f*.png` 跑判据并写出报告与证据图。
+
+    `anchor_frames_dir` 给了就**多跑**一条 `5-落地衔接`（拿它的第 0 帧当待机锚点）。
+    只有动作支才给（idle 自己就是锚点，自比没意义）。
 
     **返回结果不代表通过**：FAIL 也正常产出报告（判据数据要留档），
     是否放行由调用方看 `overall_passed` / `failed_criteria` 决定。
@@ -468,6 +570,11 @@ def accept_frames(
         (CRITERIA[2], check_flicker(stack, alphas)),
         (CRITERIA[3], check_halo(stack, alphas)),
     ]
+    if anchor_frames_dir is not None:
+        anchor_stack, anchor_alphas = load_frames(anchor_frames_dir)
+        checks.append(
+            (LANDING_CRITERION, check_landing(alphas, anchor=anchor_alphas[0] >= 0.5))
+        )
     for name, result in checks:
         report["criteria"][name] = result
         log(f"[{'PASS' if result.get('passed') else 'FAIL'}] {name}")

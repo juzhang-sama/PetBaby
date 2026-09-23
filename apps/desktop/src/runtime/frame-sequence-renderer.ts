@@ -34,7 +34,19 @@ export interface FrameSequenceRendererOptions {
   random?: () => number;
   /** Maximum number of decoded action groups retained, including the default action. */
   maxCachedActions?: number;
+  /**
+   * 一次性动作播完、切回待机时的**收尾溶解时长**（毫秒）。传 0 = 关掉（硬切）。
+   *
+   * 为什么需要它：切回待机时是硬切，而硬切好看的前提是「动作末帧 == 待机 phase-0
+   * 那一帧的姿态」。生成侧给不了这个保证 —— 实测末帧 vs 待机锚点的 IoU 在
+   * 0.55~0.99 之间随机摆（暹罗 0.99 看不见跳，毛球 0.55 就是明显的「闪一下」）。
+   * 溶解把这一帧的跳变摊到 ~250ms，接缝就看不见了。
+   */
+  tailBlendMs?: number;
 }
+
+/** 收尾溶解的默认时长：6 帧 @42ms，够短（不像慢动作）、够长（看不出接缝）。 */
+export const DEFAULT_TAIL_BLEND_MS = 250;
 
 interface LoadedAction {
   action: FrameSequenceRenderAction;
@@ -50,6 +62,7 @@ export class FrameSequenceRenderer implements PetRenderer {
   private readonly createMaskCanvas: (() => HTMLCanvasElement) | undefined;
   private readonly random: () => number;
   private readonly maxCachedActions: number;
+  private readonly tailBlendMs: number;
 
   private baseImage: FrameImage | undefined;
   private actions: LoadedAction[] = [];
@@ -92,6 +105,15 @@ export class FrameSequenceRenderer implements PetRenderer {
   private renderedHitActionId: string | undefined;
   private silhouetteDirty = false;
   private unionMasks = new Map<string, FrameImage>();
+  // 收尾溶解：一次性动作播完时，把动作最后一帧暂存下来叠在待机帧之上淡出。
+  private tailBlendImage: FrameImage | undefined;
+  private tailBlendElapsedMs = 0;
+  /**
+   * 上一 tick **真正画出去的**那一帧。不能用 `currentFrameImage()` 现算：
+   * 动作播完的那一 tick 下标已经绕回 0 了，现算会拿到首帧而不是刚还显示在屏幕上的末帧。
+   */
+  private lastRenderedFrame: FrameImage | undefined;
+
   private actionGeneration = 0;
   private actionLoop = false;
   private idleAccumulatedMs = 0;
@@ -127,6 +149,11 @@ export class FrameSequenceRenderer implements PetRenderer {
       throw new RangeError("maxCachedActions must be an integer >= 2");
     }
     this.maxCachedActions = options.maxCachedActions ?? 2;
+    const tailBlend = options.tailBlendMs ?? DEFAULT_TAIL_BLEND_MS;
+    if (!Number.isFinite(tailBlend) || tailBlend < 0) {
+      throw new RangeError("tailBlendMs must be a non-negative finite number");
+    }
+    this.tailBlendMs = tailBlend;
     this.displayCanvas.style.display = "block";
     this.hitCanvas.style.display = "none";
     this.displayCanvas.style.visibility = "hidden";
@@ -190,6 +217,9 @@ export class FrameSequenceRenderer implements PetRenderer {
       this.lastOneShotActionId = null;
       this.lastOneShotAtMs = 0;
       this.pendingAlignedOneShot = false;
+      this.tailBlendImage = undefined;
+      this.tailBlendElapsedMs = 0;
+      this.lastRenderedFrame = undefined;
       this.root.replaceChildren(this.displayCanvas, this.hitCanvas);
       this.recomputeLayout();
       this.renderDisplay();
@@ -313,12 +343,17 @@ export class FrameSequenceRenderer implements PetRenderer {
     this.actionElapsedMs += deltaMs;
     if (!this.currentActionId || !this.defaultAction) return;
 
+    // 「本 tick 开始时就已经在溶解了」的快照：本 tick 刚起头的溶解不该再吃一次 delta。
+    const blending = this.tailBlendImage !== undefined;
     const loaded = this.findAction(this.currentActionId);
     if (loaded) {
       const duration = loaded.action.frameDurationMs * loaded.frames.length;
       if (!this.actionLoop && this.actionElapsedMs >= duration) {
         this.lastOneShotActionId = this.currentActionId;
         this.lastOneShotAtMs = this.idleAccumulatedMs;
+        // 收尾溶解：把动作**此刻显示在屏幕上的那一帧**留下来，叠在待机帧之上淡出。
+        // 生成侧的落点有随机性（末帧 vs 待机锚点 IoU 0.55~0.99），硬切就是「闪一下」。
+        this.beginTailBlend();
         this.currentActionId = this.defaultAction;
         // Resume the default loop at phase 0: one-shot frames built on the
         // default action's phase-0 body (composited blink) end exactly on that
@@ -328,6 +363,15 @@ export class FrameSequenceRenderer implements PetRenderer {
         this.actionLoop = true;
         this.idleAccumulatedMs = 0;
         this.nextOneShotAtMs = this.rollOneShotDelay();
+      }
+    }
+    if (blending) {
+      this.tailBlendElapsedMs += deltaMs;
+      if (this.tailBlendElapsedMs >= this.tailBlendMs) {
+        this.tailBlendImage = undefined;
+        this.tailBlendElapsedMs = 0;
+        // 溶解结束 ⇒ 窗口轮廓可以收回待机那一支了（下面 renderDisplay 会重烘焙）。
+        this.renderedHitActionId = undefined;
       }
     }
 
@@ -406,6 +450,9 @@ export class FrameSequenceRenderer implements PetRenderer {
     this.unionMasks = new Map();
     this.renderedHitActionId = undefined;
     this.silhouetteDirty = false;
+    this.tailBlendImage = undefined;
+    this.tailBlendElapsedMs = 0;
+    this.lastRenderedFrame = undefined;
     this.defaultAction = undefined;
     this.currentActionId = undefined;
     this.actionDefs = new Map();
@@ -417,6 +464,9 @@ export class FrameSequenceRenderer implements PetRenderer {
 
   /** 真正把"正在显示的动作"切换过去；releasing 时进度快照到 hold 窗口末尾。 */
   private switchAction(actionId: string, loop: boolean, releasing: boolean): void {
+    // 开始播新动作 → 上一次的收尾溶解作废（否则旧动作末帧会盖在新动作上）。
+    this.tailBlendImage = undefined;
+    this.tailBlendElapsedMs = 0;
     this.currentActionId = actionId;
     this.actionLoop = loop;
     if (releasing) {
@@ -565,6 +615,7 @@ export class FrameSequenceRenderer implements PetRenderer {
     if (!this.viewport || !this.bounds || this.destroyed) return;
     const loaded = this.currentActionId ? this.findAction(this.currentActionId) : undefined;
     const frame = this.currentFrameImage(loaded);
+    if (frame) this.lastRenderedFrame = frame;
     this.displayContext.clearRect(0, 0, this.viewport.width, this.viewport.height);
     if (frame) {
       this.displayContext.drawImage(
@@ -583,7 +634,31 @@ export class FrameSequenceRenderer implements PetRenderer {
         this.bounds.height,
       );
     }
+    // 收尾溶解：待机帧画完之后，把动作末帧按「剩余不透明度」叠在上面。
+    // source-over 的合成结果是 old*a + new*(1-a)，总 alpha 恒为 1 ⇒ 半透明窗口
+    // 不会在溶解中途「透出桌面」（反过来画就会，试过，别改）。
+    if (frame && this.tailBlendImage) {
+      const remaining = 1 - this.tailBlendElapsedMs / this.tailBlendMs;
+      if (remaining > 0) {
+        this.displayContext.globalAlpha = remaining;
+        this.displayContext.drawImage(
+          this.tailBlendImage,
+          this.bounds.x,
+          this.bounds.y,
+          this.bounds.width,
+          this.bounds.height,
+        );
+        this.displayContext.globalAlpha = 1;
+      }
+    }
     this.syncHitSurface();
+  }
+
+  /** 起一段收尾溶解。`tailBlendMs = 0`（显式关掉）时什么都不做。 */
+  private beginTailBlend(): void {
+    if (this.tailBlendMs <= 0 || !this.lastRenderedFrame) return;
+    this.tailBlendImage = this.lastRenderedFrame;
+    this.tailBlendElapsedMs = 0;
   }
 
   /**
@@ -594,6 +669,9 @@ export class FrameSequenceRenderer implements PetRenderer {
    */
   private syncHitSurface(): void {
     if (this.renderedHitActionId === this.currentActionId) return;
+    // 收尾溶解期间**沿用动作那一支的轮廓**：窗口裁剪区（SetWindowRgn）按轮廓切，
+    // 此刻画面里还叠着动作末帧，换成待机轮廓会把它超出待机的那部分裁掉。
+    if (this.tailBlendImage && this.renderedHitActionId !== undefined) return;
     this.renderHitSurface();
     // 布局尚未就绪（load 早于 resize）时 renderHitSurface 是空操作，留到下次再试。
     if (!this.viewport || !this.bounds) return;
